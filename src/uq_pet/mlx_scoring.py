@@ -21,15 +21,20 @@ def entropy_bits_from_logprobs(logprobs: mx.array) -> float:
 class MLXGenerator:
     """Loads a local model once and samples completions with per-token entropies."""
 
+    batch_size = 1  # mlx-lm has no batched generate; sequences decode one at a time
+
     def __init__(self, model_name: str):
         self.model, self.tokenizer = load(model_name)
 
-    def sample_batch(self, prompt: str, temperature: float, max_tokens: int,
-                     seeds: list[int]) -> tuple[list[str], list[list[float]]]:
-        """len(seeds) sampled completions, generated one at a time (mlx-lm has
-        no batched generate); one seed per sample."""
-        results = [self.sample(prompt, temperature, max_tokens, seed) for seed in seeds]
-        return [text for text, _ in results], [entropies for _, entropies in results]
+    def sample_batch(self, prompts: list[str], temperature: float, max_tokens: int,
+                     seeds: list[list[int]]) -> list[tuple[list[str], list[list[float]]]]:
+        """len(seeds[i]) sampled completions per prompt, generated one at a
+        time; one seed per sample keeps existing caches reproducible."""
+        results = []
+        for prompt, prompt_seeds in zip(prompts, seeds):
+            samples = [self.sample(prompt, temperature, max_tokens, seed) for seed in prompt_seeds]
+            results.append(([text for text, _ in samples], [ent for _, ent in samples]))
+        return results
 
     def sample(self, prompt: str, temperature: float, max_tokens: int,
                seed: int) -> tuple[str, list[float]]:

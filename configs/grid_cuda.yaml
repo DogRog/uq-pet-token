@@ -19,6 +19,9 @@ llm:
   # a lower cap bounds how far a rambling sample drags out its whole batch.
   max_tokens: 1024
   seed: 3407
+  # Sentences per batched generate call (× num_samples rows decoding in
+  # parallel). 8 → 40-wide batches; raise until the GPU runs out of memory.
+  batch_size: 8
 
 train:
   checkpoint: distilbert-base-cased

@@ -49,7 +49,8 @@ class LLMScoreConfig:
     (text only, black-box metrics); "mlx" (Apple Silicon) and "hf"
     (transformers, CUDA when available) run the model in-process and also
     record per-token predictive entropies (white-box metrics).
-    `max_concurrency`/`max_retries` only apply to "openrouter".
+    `max_concurrency`/`max_retries` only apply to "openrouter";
+    `batch_size` (sentences decoded per batched generate call) only to "hf".
     `prompt` names a template in prompts/<name>.txt; each prompt gets its
     own score cache.
     """
@@ -63,6 +64,7 @@ class LLMScoreConfig:
     seed: int = SEED
     max_concurrency: int = 8
     max_retries: int = 3
+    batch_size: int = 8
 
     def __post_init__(self):
         if self.backend not in ("openrouter", "mlx", "hf"):

@@ -208,7 +208,7 @@ async def score_pool(cfg: LLMScoreConfig, pool: Dataset, limit: int | None = Non
             generator = MLXGenerator(cfg.model)
         else:
             from .hf_scoring import HFGenerator
-            generator = HFGenerator(cfg.model)
+            generator = HFGenerator(cfg.model, batch_size=cfg.batch_size)
         with open(cache_path, "a") as f:
             _score_pending_local(generator, cfg, pending, few_shot_tokens, few_shot_tags, cache, f)
         return cache
@@ -242,18 +242,30 @@ async def score_pool(cfg: LLMScoreConfig, pool: Dataset, limit: int | None = Non
 
 def _score_pending_local(generator, cfg: LLMScoreConfig, pending: list, few_shot_tokens: list,
                          few_shot_tags: list, cache: dict, f) -> None:
-    """In-process scoring, one sentence at a time.
+    """In-process scoring, `generator.batch_size` sentences at a time.
 
-    `generator` is any backend with a
-    `.sample_batch(prompt, temperature, max_tokens, seeds) -> (texts, entropies)`
-    method; the hf backend decodes all of a sentence's samples as one GPU batch.
+    `generator` is any backend with a `.sample_batch(prompts, temperature,
+    max_tokens, seeds) -> per-prompt (texts, entropies)` method; the hf backend
+    decodes a whole chunk's samples as one GPU batch. Sentences are ordered by
+    length so chunk mates finish at similar times (a batch decodes until its
+    longest row stops). The order is deterministic and records are written a
+    whole chunk at a time, so a resumed pass re-forms the same chunks and
+    reproduces the same draws.
     """
-    for example in tqdm(pending, desc="Scoring pool", unit="sent"):
-        key = sentence_key(example)
-        prompt = build_ner_prompt(example["tokens"], few_shot_tokens, few_shot_tags, cfg.prompt)
-        seeds = [derive_sample_seed(cfg.seed, key, i) for i in range(cfg.num_samples)]
-        raw, entropies = generator.sample_batch(prompt, cfg.temperature, cfg.max_tokens, seeds)
-        record = _sentence_record(example, raw, entropies)
-        f.write(json.dumps(record) + "\n")
+    pending = sorted(pending, key=lambda ex: len(ex["tokens"]))
+    progress = tqdm(total=len(pending), desc="Scoring pool", unit="sent")
+    for start in range(0, len(pending), generator.batch_size):
+        chunk = pending[start:start + generator.batch_size]
+        keys = [sentence_key(ex) for ex in chunk]
+        prompts = [build_ner_prompt(ex["tokens"], few_shot_tokens, few_shot_tags, cfg.prompt)
+                   for ex in chunk]
+        seeds = [[derive_sample_seed(cfg.seed, key, i) for i in range(cfg.num_samples)]
+                 for key in keys]
+        results = generator.sample_batch(prompts, cfg.temperature, cfg.max_tokens, seeds)
+        for example, (raw, entropies) in zip(chunk, results):
+            record = _sentence_record(example, raw, entropies)
+            f.write(json.dumps(record) + "\n")
+            cache[record["key"]] = record
         f.flush()
-        cache[key] = record
+        progress.update(len(chunk))
+    progress.close()
