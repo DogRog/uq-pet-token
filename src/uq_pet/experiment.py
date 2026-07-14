@@ -11,6 +11,8 @@ import statistics
 from datetime import datetime, timezone
 from pathlib import Path
 
+from tqdm import tqdm
+
 from .config import RESULTS_DIR, ExperimentConfig, config_to_yaml, load_config
 from .data import sentence_key, split_pool_test
 from .llm_scoring import load_cache
@@ -146,12 +148,17 @@ def run_grid(cfg: ExperimentConfig, run_dir: Path) -> None:
             for seed in range(cfg.repeats):
                 grid.append((budget, strategy, seed))
 
+    # Per-cell detail goes to run.log (the console handler only shows
+    # warnings); the console gets one progress bar over the whole grid.
+    print(f"Grid: {len(grid)} cells ({len(completed)} already recorded)")
     logger.info(f"Grid: {len(grid)} cells ({len(completed)} already recorded)")
+    progress = tqdm(total=len(grid), desc="Grid", unit="cell")
     with open(records_path, "a") as runs_file:
-        for i, (budget, strategy, seed) in enumerate(grid, start=1):
+        for budget, strategy, seed in grid:
             cid = cell_id(budget, strategy, seed)
             if cid in completed:
-                logger.info(f"[{i}/{len(grid)}] skip (done): {cid}")
+                logger.info(f"skip (done): {cid}")
+                progress.update(1)
                 continue
 
             n = round(len(all_keys) * budget / 100)
@@ -164,7 +171,8 @@ def run_grid(cfg: ExperimentConfig, run_dir: Path) -> None:
                     scores_by_metric.get(metric_name), n, seed,
                 )
 
-            logger.info(f"[{i}/{len(grid)}] {cid} -> {len(selected_keys)} sentences")
+            progress.set_postfix_str(cid)
+            logger.info(f"{cid} -> {len(selected_keys)} sentences")
             selected = [by_key[k] for k in selected_keys]
             model, tokenizer = train_token_classifier(selected, cfg.train, seed)
             metrics = evaluate_model_on(model, tokenizer, test_examples, cfg.train)
@@ -197,5 +205,9 @@ def run_grid(cfg: ExperimentConfig, run_dir: Path) -> None:
             write_metrics_summary(list(completed.values()), run_dir / "metrics.json")
             logger.info(f"    entity_f1={metrics['entity_f1']:.4f} "
                         f"token_acc={metrics['token_accuracy']:.4f}")
+            progress.set_postfix_str(f"{cid} f1={metrics['entity_f1']:.3f}")
+            progress.update(1)
 
+    progress.close()
+    print(f"Done. Records in {records_path}")
     logger.info(f"Done. Records in {records_path}")

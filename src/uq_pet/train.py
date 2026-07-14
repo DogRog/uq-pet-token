@@ -8,6 +8,7 @@ only experimental variable. Evaluation is entity-level seqeval micro F1
 (primary) plus per-type F1 and token accuracy.
 """
 
+import logging
 import random
 
 import numpy as np
@@ -19,9 +20,18 @@ from transformers import (
     AutoTokenizer,
     get_linear_schedule_with_warmup,
 )
+from transformers.utils import logging as hf_logging
 
 from .config import NER_TAGS, TrainConfig
 from .data import tag_ids_to_labels
+
+# Every grid cell re-loads the checkpoint with a fresh classifier head, so
+# transformers' per-load report (missing/unexpected keys) and "Loading
+# weights" bar are expected noise repeated 65+ times per run.
+hf_logging.set_verbosity_error()
+hf_logging.disable_progress_bar()
+
+logger = logging.getLogger("uq_pet")
 
 
 def get_device() -> torch.device:
@@ -118,7 +128,7 @@ def train_token_classifier(examples: list[dict], cfg: TrainConfig, seed: int):
             optimizer.zero_grad()
             epoch_loss += outputs.loss.item()
         if epoch == 0 or (epoch + 1) % 5 == 0:
-            print(f"  epoch {epoch + 1}/{cfg.epochs} loss={epoch_loss / len(loader):.4f}")
+            logger.info(f"  epoch {epoch + 1}/{cfg.epochs} loss={epoch_loss / len(loader):.4f}")
 
     model.eval()
     return model, tokenizer

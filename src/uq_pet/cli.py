@@ -9,9 +9,13 @@ from .config import load_config
 
 
 def _setup_logging(log_path: Path | None = None) -> None:
+    """Full per-cell detail goes to run.log; the console only shows warnings
+    (progress lives in a tqdm bar, which log lines would break up)."""
     logger = logging.getLogger("uq_pet")
     logger.setLevel(logging.INFO)
-    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    stream_handler = logging.StreamHandler()
+    stream_handler.setLevel(logging.WARNING)
+    handlers: list[logging.Handler] = [stream_handler]
     if log_path is not None:
         handlers.append(logging.FileHandler(log_path))
     for handler in handlers:
