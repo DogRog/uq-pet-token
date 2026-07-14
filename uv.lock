@@ -3602,6 +3602,7 @@ dependencies = [
     { name = "scipy" },
     { name = "seqeval" },
     { name = "torch" },
+    { name = "tqdm" },
     { name = "transformers" },
 ]
 
@@ -3626,6 +3627,7 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.14" },
     { name = "seqeval", specifier = ">=1.2.2" },
     { name = "torch", specifier = ">=2.12.1" },
+    { name = "tqdm", specifier = ">=4.66" },
     { name = "transformers", specifier = ">=5.12.1" },
 ]
 

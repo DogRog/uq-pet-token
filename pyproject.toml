@@ -19,6 +19,7 @@ dependencies = [
     "scipy>=1.14",
     "seqeval>=1.2.2",
     "torch>=2.12.1",
+    "tqdm>=4.66",
     "transformers>=5.12.1",
 ]
 

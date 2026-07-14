@@ -21,6 +21,7 @@ from string import Template
 from datasets import Dataset
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
+from tqdm import tqdm
 
 from .config import (
     DEFAULT_PROMPT,
@@ -215,11 +216,10 @@ async def score_pool(cfg: LLMScoreConfig, pool: Dataset, limit: int | None = Non
     client = make_client()
     semaphore = asyncio.Semaphore(cfg.max_concurrency)
     write_lock = asyncio.Lock()
-    done_count = 0
+    progress = tqdm(total=len(pending), desc="Scoring pool", unit="sent")
 
     # Sentences run concurrently; the semaphore caps total in-flight API calls.
     async def score_sentence(example, f):
-        nonlocal done_count
         prompt = build_ner_prompt(example["tokens"], few_shot_tokens, few_shot_tags, cfg.prompt)
         raw = await asyncio.gather(*[
             get_single_sample(client, prompt, cfg, semaphore)
@@ -230,11 +230,12 @@ async def score_pool(cfg: LLMScoreConfig, pool: Dataset, limit: int | None = Non
             f.write(json.dumps(record) + "\n")
             f.flush()
             cache[record["key"]] = record
-            done_count += 1
-            print(f"Scored {done_count}/{len(pending)} ({record['key']})")
+            progress.set_postfix_str(record["key"])
+            progress.update(1)
 
     with open(cache_path, "a") as f:
         await asyncio.gather(*[score_sentence(ex, f) for ex in pending])
+    progress.close()
 
     return cache
 
@@ -247,7 +248,7 @@ def _score_pending_local(generator, cfg: LLMScoreConfig, pending: list, few_shot
     `.sample_batch(prompt, temperature, max_tokens, seeds) -> (texts, entropies)`
     method; the hf backend decodes all of a sentence's samples as one GPU batch.
     """
-    for example in pending:
+    for example in tqdm(pending, desc="Scoring pool", unit="sent"):
         key = sentence_key(example)
         prompt = build_ner_prompt(example["tokens"], few_shot_tokens, few_shot_tags, cfg.prompt)
         seeds = [derive_sample_seed(cfg.seed, key, i) for i in range(cfg.num_samples)]
@@ -256,4 +257,3 @@ def _score_pending_local(generator, cfg: LLMScoreConfig, pending: list, few_shot
         f.write(json.dumps(record) + "\n")
         f.flush()
         cache[key] = record
-        print(f"Scored {len(cache)} total ({key})")
