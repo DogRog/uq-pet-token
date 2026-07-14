@@ -7,13 +7,15 @@ cells are skipped when resuming a run, so the grid is resumable.
 
 import json
 import logging
+import multiprocessing
 import statistics
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
 from tqdm import tqdm
 
-from .config import RESULTS_DIR, ExperimentConfig, config_to_yaml, load_config
+from .config import RESULTS_DIR, ExperimentConfig, TrainConfig, config_to_yaml, load_config
 from .data import sentence_key, split_pool_test
 from .llm_scoring import load_cache
 from .train import evaluate_model_on, train_token_classifier
@@ -100,6 +102,20 @@ def write_metrics_summary(records: list[dict], out_path: Path) -> dict:
     return summary
 
 
+def _train_cell(selected: list[dict], test_examples: list[dict], train_cfg: TrainConfig,
+                seed: int) -> dict:
+    """Train one grid cell and evaluate it on the test set.
+
+    Runs in a worker process when cfg.workers > 1, so it must stay a
+    top-level (picklable) function. Training re-seeds per cell, so results
+    do not depend on which process a cell lands in.
+    """
+    model, tokenizer = train_token_classifier(selected, train_cfg, seed)
+    metrics = evaluate_model_on(model, tokenizer, test_examples, train_cfg)
+    del model
+    return metrics
+
+
 def run_grid(cfg: ExperimentConfig, run_dir: Path) -> None:
     records_path = run_dir / "records.jsonl"
     pool, test = split_pool_test(seed=cfg.llm.seed)
@@ -152,32 +168,32 @@ def run_grid(cfg: ExperimentConfig, run_dir: Path) -> None:
     # warnings); the console gets one progress bar over the whole grid.
     print(f"Grid: {len(grid)} cells ({len(completed)} already recorded)")
     logger.info(f"Grid: {len(grid)} cells ({len(completed)} already recorded)")
-    progress = tqdm(total=len(grid), desc="Grid", unit="cell")
+    pending = [cell for cell in grid if cell_id(*cell) not in completed]
+
+    # Selection is cheap and deterministic, so it happens up front in the
+    # parent; workers only train and evaluate.
+    selected_by_cell: dict[tuple, list[str]] = {}
+    for budget, strategy, seed in pending:
+        n = round(len(all_keys) * budget / 100)
+        if strategy == "full":
+            selected_keys = all_keys
+        else:
+            selected_keys = select(
+                strategy, all_keys,
+                scores_by_metric.get(strategy_metric(strategy)), n, seed,
+            )
+        selected_by_cell[(budget, strategy, seed)] = selected_keys
+        logger.info(f"{cell_id(budget, strategy, seed)} -> {len(selected_keys)} sentences")
+
+    progress = tqdm(total=len(grid), initial=len(grid) - len(pending),
+                    desc="Grid", unit="cell")
     with open(records_path, "a") as runs_file:
-        for budget, strategy, seed in grid:
-            cid = cell_id(budget, strategy, seed)
-            if cid in completed:
-                logger.info(f"skip (done): {cid}")
-                progress.update(1)
-                continue
 
-            n = round(len(all_keys) * budget / 100)
+        def record_cell(cell: tuple, metrics: dict) -> None:
+            budget, strategy, seed = cell
+            cid = cell_id(*cell)
+            selected_keys = selected_by_cell[cell]
             metric_name = strategy_metric(strategy)
-            if strategy == "full":
-                selected_keys = all_keys
-            else:
-                selected_keys = select(
-                    strategy, all_keys,
-                    scores_by_metric.get(metric_name), n, seed,
-                )
-
-            progress.set_postfix_str(cid)
-            logger.info(f"{cid} -> {len(selected_keys)} sentences")
-            selected = [by_key[k] for k in selected_keys]
-            model, tokenizer = train_token_classifier(selected, cfg.train, seed)
-            metrics = evaluate_model_on(model, tokenizer, test_examples, cfg.train)
-            del model
-
             mean_len = sum(len(by_key[k]["tokens"]) for k in selected_keys) / len(selected_keys)
             record = {
                 "budget_pct": budget,
@@ -203,10 +219,30 @@ def run_grid(cfg: ExperimentConfig, run_dir: Path) -> None:
             runs_file.flush()
             completed[cid] = record
             write_metrics_summary(list(completed.values()), run_dir / "metrics.json")
-            logger.info(f"    entity_f1={metrics['entity_f1']:.4f} "
+            logger.info(f"{cid} entity_f1={metrics['entity_f1']:.4f} "
                         f"token_acc={metrics['token_accuracy']:.4f}")
             progress.set_postfix_str(f"{cid} f1={metrics['entity_f1']:.3f}")
             progress.update(1)
+
+        if cfg.workers > 1:
+            # One worker process per concurrent cell, sharing the GPU.
+            # Records land in completion order; resume keys on cell_id, so
+            # order in records.jsonl does not matter.
+            context = multiprocessing.get_context("spawn")
+            with ProcessPoolExecutor(max_workers=cfg.workers, mp_context=context) as pool:
+                futures = {
+                    pool.submit(_train_cell, [by_key[k] for k in selected_by_cell[cell]],
+                                test_examples, cfg.train, cell[2]): cell
+                    for cell in pending
+                }
+                for future in as_completed(futures):
+                    record_cell(futures[future], future.result())
+        else:
+            for cell in pending:
+                progress.set_postfix_str(cell_id(*cell))
+                metrics = _train_cell([by_key[k] for k in selected_by_cell[cell]],
+                                      test_examples, cfg.train, cell[2])
+                record_cell(cell, metrics)
 
     progress.close()
     print(f"Done. Records in {records_path}")

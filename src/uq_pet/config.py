@@ -97,7 +97,12 @@ class TrainConfig:
 
 @dataclass
 class ExperimentConfig:
-    """Full grid: budgets x strategies x seeds."""
+    """Full grid: budgets x strategies x seeds.
+
+    `workers` is how many grid cells train concurrently (worker processes
+    sharing one GPU); cells are independent and each seeds itself, so results
+    do not depend on it. 1 keeps everything in-process.
+    """
 
     budgets: list[int] = field(default_factory=lambda: [10, 25, 50, 100])
     strategies: list[str] = field(default_factory=lambda: [
@@ -107,6 +112,7 @@ class ExperimentConfig:
         "uncertainty:jaccard_distance",
     ])
     repeats: int = 5
+    workers: int = 1
     llm: LLMScoreConfig = field(default_factory=LLMScoreConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
 

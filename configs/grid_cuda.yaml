@@ -9,6 +9,9 @@ strategies:
   - uncertainty:sequence_entropy        # black-box baseline
   - uncertainty:predictive_entropy      # white-box (needs a local-backend cache)
 repeats: 5
+# Grid cells trained concurrently (worker processes sharing the GPU); each
+# cell seeds itself, so results are independent of this value.
+workers: 8
 
 llm:
   backend: hf
