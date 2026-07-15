@@ -59,7 +59,7 @@ class RawEntropyTemperature(LogitsProcessor):
 class HFGenerator:
     """Loads a local HF model once and samples completions with per-token entropies."""
 
-    def __init__(self, model_name: str, batch_size: int = 8):
+    def __init__(self, model_name: str, batch_size: int = 8, quantization: str | None = None):
         self.batch_size = batch_size
         self.device = get_device()
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -68,8 +68,35 @@ class HFGenerator:
         self.tokenizer.padding_side = "left"
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
-        self.model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto").to(self.device)
+        kwargs: dict = {"dtype": "auto"}
+        if quantization is not None:
+            from transformers import BitsAndBytesConfig
+
+            kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=quantization == "4bit",
+                load_in_8bit=quantization == "8bit",
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_quant_type="nf4",
+            )
+            # bitsandbytes places the weights at load time; .to() on a
+            # quantized model raises.
+            kwargs["device_map"] = str(self.device)
+        self.model = self._load_model(model_name, **kwargs)
+        if quantization is None:
+            self.model = self.model.to(self.device)
         self.model.eval()
+
+    @staticmethod
+    def _load_model(model_name: str, **kwargs):
+        try:
+            return AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
+        except ValueError:
+            # Multimodal checkpoints (e.g. gemma image-text-to-text) register
+            # only with the multimodal auto class; text-only generate on them
+            # works the same as on a causal LM.
+            from transformers import AutoModelForImageTextToText
+
+            return AutoModelForImageTextToText.from_pretrained(model_name, **kwargs)
 
     def _stop_ids(self) -> list[int]:
         eos = self.model.generation_config.eos_token_id

@@ -231,7 +231,9 @@ async def score_pool(
         else:
             from .hf_scoring import HFGenerator
 
-            generator = HFGenerator(cfg.model, batch_size=cfg.batch_size)
+            generator = HFGenerator(
+                cfg.model, batch_size=cfg.batch_size, quantization=cfg.quantization
+            )
         with open(cache_path, "a") as f:
             _score_pending_local(
                 generator,

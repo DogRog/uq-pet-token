@@ -60,9 +60,11 @@ class LLMScoreConfig:
     (transformers, CUDA when available) run the model in-process and also
     record per-token predictive entropies (white-box metrics).
     `max_concurrency`/`max_retries` only apply to "openrouter";
-    `batch_size` (sentences decoded per batched generate call) only to "hf".
-    `prompt` names a template in prompts/<name>.txt; each prompt gets its
-    own score cache.
+    `batch_size` (sentences decoded per batched generate call) and
+    `quantization` ("4bit"/"8bit" bitsandbytes loading, needs CUDA) only
+    to "hf". `prompt` names a template in prompts/<name>.txt; each prompt
+    gets its own score cache, as does each quantization level (quantized
+    weights sample from a different distribution).
     """
 
     backend: str = "openrouter"
@@ -75,11 +77,16 @@ class LLMScoreConfig:
     max_concurrency: int = 8
     max_retries: int = 3
     batch_size: int = 8
+    quantization: str | None = None
 
     def __post_init__(self):
         if self.backend not in ("openrouter", "mlx", "hf"):
             raise ValueError(
                 f"Unknown llm.backend '{self.backend}' (expected 'openrouter', 'mlx' or 'hf')"
+            )
+        if self.quantization not in (None, "4bit", "8bit"):
+            raise ValueError(
+                f"Unknown llm.quantization '{self.quantization}' (expected '4bit', '8bit' or null)"
             )
 
     def prompt_path(self) -> Path:
@@ -88,6 +95,9 @@ class LLMScoreConfig:
     def cache_path(self, split: str = "pool") -> Path:
         safe_model = self.model.replace("/", "_")
         name = f"{safe_model}_k{self.num_samples}_t{self.temperature}_seed{self.seed}"
+        # Full precision (the default) keeps the historical filename so old caches stay valid.
+        if self.quantization is not None:
+            name += f"_{self.quantization}"
         # The default prompt keeps the historical filename so old caches stay valid.
         if self.prompt != DEFAULT_PROMPT:
             name += f"_{self.prompt}"

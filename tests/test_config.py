@@ -48,6 +48,19 @@ def test_unknown_backend_raises():
         LLMScoreConfig(backend="bogus")
 
 
+def test_unknown_quantization_raises():
+    assert LLMScoreConfig().quantization is None
+    assert LLMScoreConfig(quantization="4bit").quantization == "4bit"
+    with pytest.raises(ValueError):
+        LLMScoreConfig(quantization="3bit")
+
+
+def test_quantization_gets_its_own_cache():
+    # Full precision (the default) keeps the historical filename; quantized is suffixed.
+    path = LLMScoreConfig(quantization="4bit").cache_path()
+    assert path.name == "meta-llama_llama-3-8b-instruct_k5_t0.7_seed3407_4bit.jsonl"
+
+
 def test_cache_path_under_processed_llm_scores():
     path = LLMScoreConfig().cache_path()
     assert path.parts[-3:-1] == ("processed", "llm_scores")
