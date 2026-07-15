@@ -5,13 +5,15 @@ import uq_pet.data as data_module
 from uq_pet.config import NER_TAGS
 from uq_pet.data import sentence_key, split_pool_test, tag_ids_to_labels
 
-FEATURES = Features({
-    "document name": Value("string"),
-    "sentence-ID": Value("int8"),
-    "tokens": Sequence(Value("string")),
-    "tokens-IDs": Sequence(Value("int8")),
-    "ner-tags": Sequence(ClassLabel(names=NER_TAGS)),
-})
+FEATURES = Features(
+    {
+        "document name": Value("string"),
+        "sentence-ID": Value("int8"),
+        "tokens": Sequence(Value("string")),
+        "tokens-IDs": Sequence(Value("int8")),
+        "ner-tags": Sequence(ClassLabel(names=NER_TAGS)),
+    }
+)
 
 
 @pytest.fixture

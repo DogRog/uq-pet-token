@@ -29,17 +29,27 @@ LLM_SCORES_DIR = PROCESSED_DATA_DIR / "llm_scores"
 RESULTS_DIR = PROJECT_ROOT / "results"
 
 NER_DATASET_URL = (
-    "https://raw.githubusercontent.com/patriziobellan86/PETv1.1/master/"
-    "PETv1.1-entities.jsonl"
+    "https://raw.githubusercontent.com/patriziobellan86/PETv1.1/master/PETv1.1-entities.jsonl"
 )
 
 NER_TAGS = [
-    "O", "B-Actor", "I-Actor", "B-Activity", "I-Activity",
-    "B-Activity Data", "I-Activity Data", "B-Further Specification",
-    "I-Further Specification", "B-XOR Gateway", "I-XOR Gateway",
-    "B-Condition Specification", "I-Condition Specification",
-    "B-AND Gateway", "I-AND Gateway"
+    "O",
+    "B-Actor",
+    "I-Actor",
+    "B-Activity",
+    "I-Activity",
+    "B-Activity Data",
+    "I-Activity Data",
+    "B-Further Specification",
+    "I-Further Specification",
+    "B-XOR Gateway",
+    "I-XOR Gateway",
+    "B-Condition Specification",
+    "I-Condition Specification",
+    "B-AND Gateway",
+    "I-AND Gateway",
 ]
+
 
 @dataclass
 class LLMScoreConfig:
@@ -68,7 +78,9 @@ class LLMScoreConfig:
 
     def __post_init__(self):
         if self.backend not in ("openrouter", "mlx", "hf"):
-            raise ValueError(f"Unknown llm.backend '{self.backend}' (expected 'openrouter', 'mlx' or 'hf')")
+            raise ValueError(
+                f"Unknown llm.backend '{self.backend}' (expected 'openrouter', 'mlx' or 'hf')"
+            )
 
     def prompt_path(self) -> Path:
         return PROMPTS_DIR / f"{self.prompt}.txt"
@@ -108,12 +120,14 @@ class ExperimentConfig:
     """
 
     budgets: list[int] = field(default_factory=lambda: [10, 25, 50, 100])
-    strategies: list[str] = field(default_factory=lambda: [
-        "random",
-        "uncertainty:mean_token_entropy",
-        "uncertainty:sequence_entropy",
-        "uncertainty:jaccard_distance",
-    ])
+    strategies: list[str] = field(
+        default_factory=lambda: [
+            "random",
+            "uncertainty:mean_token_entropy",
+            "uncertainty:sequence_entropy",
+            "uncertainty:jaccard_distance",
+        ]
+    )
     repeats: int = 5
     workers: int = 1
     llm: LLMScoreConfig = field(default_factory=LLMScoreConfig)

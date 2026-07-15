@@ -48,8 +48,9 @@ def set_seed(seed: int) -> None:
         torch.mps.manual_seed(seed)
 
 
-def encode_batch(tokenizer, batch_tokens: list[list[str]], batch_tags: list[list[int]] | None,
-                 max_length: int):
+def encode_batch(
+    tokenizer, batch_tokens: list[list[str]], batch_tags: list[list[int]] | None, max_length: int
+):
     """Tokenize pre-split words; label first subword per word, -100 elsewhere."""
     encoding = tokenizer(
         batch_tokens,
@@ -103,11 +104,17 @@ def train_token_classifier(examples: list[dict], cfg: TrainConfig, seed: int):
         return encoding, labels
 
     generator = torch.Generator().manual_seed(seed)
-    loader = DataLoader(list(examples), batch_size=cfg.batch_size, shuffle=True,
-                        generator=generator, collate_fn=collate)
+    loader = DataLoader(
+        list(examples),
+        batch_size=cfg.batch_size,
+        shuffle=True,
+        generator=generator,
+        collate_fn=collate,
+    )
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate,
-                                  weight_decay=cfg.weight_decay)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay
+    )
     total_steps = len(loader) * cfg.epochs
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
@@ -135,8 +142,9 @@ def train_token_classifier(examples: list[dict], cfg: TrainConfig, seed: int):
 
 
 @torch.no_grad()
-def predict_tags(model, tokenizer, examples: list[dict],
-                 cfg: TrainConfig, batch_size: int = 32) -> list[list[str]]:
+def predict_tags(
+    model, tokenizer, examples: list[dict], cfg: TrainConfig, batch_size: int = 32
+) -> list[list[str]]:
     """Predict one tag per word (first-subword logits) for each example."""
     device = get_device()
     model.eval()
@@ -144,7 +152,7 @@ def predict_tags(model, tokenizer, examples: list[dict],
 
     examples = list(examples)
     for start in range(0, len(examples), batch_size):
-        batch = examples[start:start + batch_size]
+        batch = examples[start : start + batch_size]
         batch_tokens = [ex["tokens"] for ex in batch]
         encoding, _ = encode_batch(tokenizer, batch_tokens, None, cfg.max_length)
         encoding = {k: v.to(device) for k, v in encoding.items()}
@@ -152,7 +160,9 @@ def predict_tags(model, tokenizer, examples: list[dict],
 
         for i, tokens in enumerate(batch_tokens):
             word_ids = tokenizer(
-                [tokens], is_split_into_words=True, truncation=True,
+                [tokens],
+                is_split_into_words=True,
+                truncation=True,
                 max_length=cfg.max_length,
             ).word_ids(batch_index=0)
             tags = ["O"] * len(tokens)  # words truncated away default to O
@@ -179,8 +189,10 @@ def evaluate(predictions: list[list[str]], gold: list[list[str]]) -> dict:
 
     total = sum(len(seq) for seq in gold)
     correct = sum(
-        1 for pred_seq, gold_seq in zip(predictions, gold, strict=True)
-        for p, g in zip(pred_seq, gold_seq, strict=True) if p == g
+        1
+        for pred_seq, gold_seq in zip(predictions, gold, strict=True)
+        for p, g in zip(pred_seq, gold_seq, strict=True)
+        if p == g
     )
 
     return {

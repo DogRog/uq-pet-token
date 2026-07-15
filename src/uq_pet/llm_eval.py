@@ -18,8 +18,9 @@ from .train import evaluate
 from .uncertainty import majority_vote
 
 
-def llm_baseline_metrics(cache: dict[str, dict],
-                         exclude_keys: frozenset[str] = frozenset()) -> dict:
+def llm_baseline_metrics(
+    cache: dict[str, dict], exclude_keys: frozenset[str] = frozenset()
+) -> dict:
     """seqeval metrics of the LLM's majority-vote prediction against gt_tags.
 
     Adds `n_sentences` and the mean±std entity F1 of the K individual samples
@@ -42,9 +43,10 @@ def llm_baseline_metrics(cache: dict[str, dict],
     return metrics
 
 
-def token_agreement_correctness(cache: dict[str, dict],
-                                exclude_keys: frozenset[str] = frozenset(),
-                                ) -> tuple[np.ndarray, np.ndarray]:
+def token_agreement_correctness(
+    cache: dict[str, dict],
+    exclude_keys: frozenset[str] = frozenset(),
+) -> tuple[np.ndarray, np.ndarray]:
     """Flat per-token (confidence, correct) arrays over the whole cache:
     confidence = fraction of the K samples agreeing with the majority tag,
     correct = majority tag matches the ground-truth tag."""

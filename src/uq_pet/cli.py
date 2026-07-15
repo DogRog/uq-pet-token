@@ -43,10 +43,15 @@ def cmd_score_pool(args) -> None:
     if args.split in ("test", "both"):
         # The few-shot example always comes from the pool so the prompt matches
         # the pool cache and no test sentence appears in its own prompt.
-        cache = asyncio.run(score_pool(
-            cfg.llm, test, limit=args.limit,
-            few_shot_example=pool[FEW_SHOT_EXAMPLE_INDEX], split="test",
-        ))
+        cache = asyncio.run(
+            score_pool(
+                cfg.llm,
+                test,
+                limit=args.limit,
+                few_shot_example=pool[FEW_SHOT_EXAMPLE_INDEX],
+                split="test",
+            )
+        )
         print(f"Test cache now holds {len(cache)} sentences at {cfg.llm.cache_path('test')}")
 
 
@@ -85,23 +90,33 @@ def main(argv: list[str] | None = None) -> None:
 
     p_score = sub.add_parser("score-pool", help="LLM repeated-sampling pass over the pool")
     p_score.add_argument("--config", required=True, help="YAML experiment config")
-    p_score.add_argument("--limit", type=int, default=None,
-                         help="score only the first N sentences per split (smoke test)")
-    p_score.add_argument("--split", choices=["pool", "test", "both"], default="both",
-                         help="which split(s) to score; test enables the LLM-alone "
-                              "baseline in reports (default: both)")
+    p_score.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="score only the first N sentences per split (smoke test)",
+    )
+    p_score.add_argument(
+        "--split",
+        choices=["pool", "test", "both"],
+        default="both",
+        help="which split(s) to score; test enables the LLM-alone "
+        "baseline in reports (default: both)",
+    )
     p_score.set_defaults(func=cmd_score_pool)
 
     p_run = sub.add_parser("run", help="run the selection/training grid")
     group = p_run.add_mutually_exclusive_group(required=True)
     group.add_argument("--config", help="YAML experiment config (starts a new run)")
-    group.add_argument("--resume", metavar="RUN_ID",
-                       help="resume an existing results/<run_id>/ (config from its snapshot)")
+    group.add_argument(
+        "--resume",
+        metavar="RUN_ID",
+        help="resume an existing results/<run_id>/ (config from its snapshot)",
+    )
     p_run.set_defaults(func=cmd_run)
 
     p_report = sub.add_parser("report", help="figures + summary table for a run")
-    p_report.add_argument("--run-id", default=None,
-                          help="run to report on (default: latest)")
+    p_report.add_argument("--run-id", default=None, help="run to report on (default: latest)")
     p_report.set_defaults(func=cmd_report)
 
     args = parser.parse_args(argv)

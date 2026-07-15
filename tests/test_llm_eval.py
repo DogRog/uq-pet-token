@@ -63,8 +63,13 @@ def test_llm_baseline_metrics_empty_cache():
 
 def test_token_agreement_correctness():
     # Token 0: unanimous and right. Token 1: 3/5 say "O", gt disagrees.
-    samples = [["B-Actor", "O"], ["B-Actor", "O"], ["B-Actor", "O"],
-               ["B-Actor", "B-Activity"], ["B-Actor", "B-Activity"]]
+    samples = [
+        ["B-Actor", "O"],
+        ["B-Actor", "O"],
+        ["B-Actor", "O"],
+        ["B-Actor", "B-Activity"],
+        ["B-Actor", "B-Activity"],
+    ]
     cache = {"doc-0::0": _record(samples, ["B-Actor", "B-Activity"])}
     confidence, correct = token_agreement_correctness(cache)
     assert confidence.tolist() == [1.0, 0.6]

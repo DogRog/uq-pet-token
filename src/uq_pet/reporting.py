@@ -73,12 +73,12 @@ def plot_ner_heatmap(ner, out_path=None):
     return fig
 
 
-def plot_selection_bias(by_key: dict[str, dict], selections: dict[str, list[str]],
-                        out_path=None):
+def plot_selection_bias(by_key: dict[str, dict], selections: dict[str, list[str]], out_path=None):
     """What kind of sentences does each selection pick? Three panels comparing
     the named key subsets (e.g. pool vs random vs uncertainty): sentence-length
     distribution, entity density, and entity-type mix. Answers whether an
     uncertainty metric merely favors long / entity-dense sentences."""
+
     def subset_tags(keys):
         return [tag_ids_to_labels(by_key[k]["ner-tags"]) for k in keys]
 
@@ -88,8 +88,13 @@ def plot_selection_bias(by_key: dict[str, dict], selections: dict[str, list[str]
     bins = np.linspace(0, max_len, 25)
     for name, keys in selections.items():
         lengths = [len(by_key[k]["tokens"]) for k in keys]
-        ax_len.hist(lengths, bins=bins, density=True, alpha=0.45,
-                    label=f"{name} (mean {np.mean(lengths):.1f})")
+        ax_len.hist(
+            lengths,
+            bins=bins,
+            density=True,
+            alpha=0.45,
+            label=f"{name} (mean {np.mean(lengths):.1f})",
+        )
     ax_len.set_xlabel("tokens per sentence")
     ax_len.set_ylabel("density")
     ax_len.set_title("Sentence length")
@@ -104,19 +109,29 @@ def plot_selection_bias(by_key: dict[str, dict], selections: dict[str, list[str]
     ax_density.set_ylabel("fraction of non-O tokens")
     ax_density.set_title("Entity density")
 
-    entity_types = sorted({
-        t.removeprefix("B-") for tags in subset_tags(selections[next(iter(selections))])
-        for t in tags if t.startswith("B-")
-    })
+    entity_types = sorted(
+        {
+            t.removeprefix("B-")
+            for tags in subset_tags(selections[next(iter(selections))])
+            for t in tags
+            if t.startswith("B-")
+        }
+    )
     width = 0.8 / len(selections)
     for i, (name, keys) in enumerate(selections.items()):
-        counts = Counter(t.removeprefix("B-") for tags in subset_tags(keys)
-                         for t in tags if t.startswith("B-"))
+        counts = Counter(
+            t.removeprefix("B-") for tags in subset_tags(keys) for t in tags if t.startswith("B-")
+        )
         total = sum(counts.values())
         shares = [counts.get(t, 0) / total if total else 0.0 for t in entity_types]
         ax_types.bar(np.arange(len(entity_types)) + i * width, shares, width, label=name)
-    ax_types.set_xticks(np.arange(len(entity_types)) + 0.4 - width / 2, entity_types,
-                        rotation=30, ha="right", fontsize=8)
+    ax_types.set_xticks(
+        np.arange(len(entity_types)) + 0.4 - width / 2,
+        entity_types,
+        rotation=30,
+        ha="right",
+        fontsize=8,
+    )
     ax_types.set_ylabel("share of entities")
     ax_types.set_title("Entity-type mix")
     ax_types.legend(fontsize=8)
@@ -127,8 +142,9 @@ def plot_selection_bias(by_key: dict[str, dict], selections: dict[str, list[str]
     return fig
 
 
-def score_length_correlations(cache: dict[str, dict],
-                              scores_by_metric: dict[str, dict[str, float]]) -> dict[str, float]:
+def score_length_correlations(
+    cache: dict[str, dict], scores_by_metric: dict[str, dict[str, float]]
+) -> dict[str, float]:
     """Spearman correlation between each metric's scores and sentence length.
 
     A high ρ means the metric's top-N selection is largely a longest-sentences
@@ -173,8 +189,7 @@ def plot_learning_curves(runs: list[dict], out_path) -> None:
     full_runs = [r for (b, s), rs in groups.items() if s == "full" for r in rs]
     if full_runs:
         full_mean = np.mean([r["metrics"]["entity_f1"] for r in full_runs])
-        ax.axhline(full_mean, linestyle="--", color="gray",
-                   label=f"full pool ({full_mean:.3f})")
+        ax.axhline(full_mean, linestyle="--", color="gray", label=f"full pool ({full_mean:.3f})")
 
     ax.set_xlabel("Training budget (% of pool)")
     ax.set_ylabel("Entity-level micro F1 (test)")
@@ -189,17 +204,18 @@ def plot_learning_curves(runs: list[dict], out_path) -> None:
 def summary_table(runs: list[dict]) -> str:
     groups = _group_runs(runs)
     budgets = sorted({b for (b, s) in groups if s != "full"})
-    strategies = sorted({s for (_, s) in groups if s != "full"},
-                        key=lambda s: (s != "random", s))
+    strategies = sorted({s for (_, s) in groups if s != "full"}, key=lambda s: (s != "random", s))
 
     lines = [
         "| Budget | Strategy | Entity F1 (mean±std) | ΔF1 vs random | Token acc | Mean sent. len |",
         "|--------|----------|----------------------|---------------|-----------|----------------|",
     ]
     for budget in budgets:
-        random_f1 = np.mean([
-            r["metrics"]["entity_f1"] for r in groups.get((budget, "random"), [])
-        ]) if (budget, "random") in groups else np.nan
+        random_f1 = (
+            np.mean([r["metrics"]["entity_f1"] for r in groups.get((budget, "random"), [])])
+            if (budget, "random") in groups
+            else np.nan
+        )
         for strategy in strategies:
             cell = groups.get((budget, strategy))
             if not cell:
@@ -241,8 +257,7 @@ def _applicable_metric_names(cache: dict[str, dict], keys: list[str]) -> list[st
     token_entropies (local backends only)."""
     has_entropies = all(cache[k].get("token_entropies") for k in keys)
     names = [
-        name for name, metric in sorted(METRICS.items())
-        if metric.box != "white" or has_entropies
+        name for name, metric in sorted(METRICS.items()) if metric.box != "white" or has_entropies
     ]
     skipped = sorted(set(METRICS) - set(names))
     if skipped:
@@ -279,8 +294,12 @@ def _llm_metrics_row(label: str, m: dict) -> str:
     )
 
 
-def llm_baseline_section(pool_cache: dict[str, dict], test_cache: dict[str, dict],
-                         exclude_keys: frozenset[str], model: str) -> str:
+def llm_baseline_section(
+    pool_cache: dict[str, dict],
+    test_cache: dict[str, dict],
+    exclude_keys: frozenset[str],
+    model: str,
+) -> str:
     """Markdown section: the LLM's own NER quality (same seqeval metrics as the
     fine-tuned model) plus how well its sample agreement tracks correctness."""
     pool_metrics = llm_baseline_metrics(pool_cache, exclude_keys)
@@ -312,17 +331,22 @@ def llm_baseline_section(pool_cache: dict[str, dict], test_cache: dict[str, dict
         f"full agreement — invisible to agreement-based uncertainty",
         "",
     ]
-    caveat = ("Test rows share the eval set with the fine-tuned model above; pool rows "
-              "cover the scored pool minus the few-shot prompt example.")
+    caveat = (
+        "Test rows share the eval set with the fine-tuned model above; pool rows "
+        "cover the scored pool minus the few-shot prompt example."
+    )
     if not test_cache:
-        caveat += (" No test-split cache found — run `uq-pet score-pool --split test` "
-                   "for a direct comparison with the fine-tuned model.")
+        caveat += (
+            " No test-split cache found — run `uq-pet score-pool --split test` "
+            "for a direct comparison with the fine-tuned model."
+        )
     lines.append(f"*{caveat}*")
     return "\n".join(lines)
 
 
-def plot_llm_calibration(cache: dict[str, dict], out_path,
-                         exclude_keys: frozenset[str] = frozenset()) -> None:
+def plot_llm_calibration(
+    cache: dict[str, dict], out_path, exclude_keys: frozenset[str] = frozenset()
+) -> None:
     """Left: reliability diagram of token-level sample agreement (is the LLM
     right when its samples agree?). Right: sentence-level risk-coverage curves
     — mean LLM error over the most-confident fraction of sentences, one curve
@@ -333,15 +357,28 @@ def plot_llm_calibration(cache: dict[str, dict], out_path,
     fig, (ax_rel, ax_rc) = plt.subplots(1, 2, figsize=(12, 4.5))
 
     ax_rel.plot([0, 1], [0, 1], linestyle="--", color="gray", label="perfect calibration")
-    ax_rel.plot([b["confidence"] for b in bins], [b["accuracy"] for b in bins],
-                marker="o", color="steelblue", label="token accuracy")
+    ax_rel.plot(
+        [b["confidence"] for b in bins],
+        [b["accuracy"] for b in bins],
+        marker="o",
+        color="steelblue",
+        label="token accuracy",
+    )
     for b in bins:
-        ax_rel.annotate(f"n={b['count']}", (b["confidence"], b["accuracy"]),
-                        textcoords="offset points", xytext=(0, -12), ha="center", fontsize=7)
+        ax_rel.annotate(
+            f"n={b['count']}",
+            (b["confidence"], b["accuracy"]),
+            textcoords="offset points",
+            xytext=(0, -12),
+            ha="center",
+            fontsize=7,
+        )
     ax_rel.set_xlabel("sample agreement (majority fraction)")
     ax_rel.set_ylabel("token accuracy")
-    ax_rel.set_title(f"Reliability — AUROC {auroc(confidence, correct):.3f}, "
-                     f"ECE {expected_calibration_error(bins):.3f}")
+    ax_rel.set_title(
+        f"Reliability — AUROC {auroc(confidence, correct):.3f}, "
+        f"ECE {expected_calibration_error(bins):.3f}"
+    )
     ax_rel.set_xlim(0, 1.05)
     ax_rel.set_ylim(0, 1.05)
     ax_rel.legend(fontsize=8)
@@ -352,8 +389,7 @@ def plot_llm_calibration(cache: dict[str, dict], out_path,
     for name in _applicable_metric_names(cache, keys):
         scores = np.array([compute_metric(name, cache[k]) for k in keys])
         coverage, risk = risk_coverage(scores, error_rates)
-        ax_rc.plot(coverage, risk,
-                   label=f"{name} [{METRICS[name].box}] (AURC {aurc(risk):.3f})")
+        ax_rc.plot(coverage, risk, label=f"{name} [{METRICS[name].box}] (AURC {aurc(risk):.3f})")
     ax_rc.set_xlabel("coverage (fraction answered, most confident first)")
     ax_rc.set_ylabel("risk (mean sentence error rate)")
     ax_rc.set_title("Risk–coverage (sentence level)")
@@ -384,12 +420,11 @@ def build_report(run_dir: Path, cfg: ExperimentConfig | None = None) -> None:
 
     cache = load_cache(cfg.llm.cache_path())
     if cache:
-        correlations = plot_uncertainty_vs_error(
-            cache, figures_dir / "uncertainty_vs_error.png"
-        )
+        correlations = plot_uncertainty_vs_error(cache, figures_dir / "uncertainty_vs_error.png")
         print(f"\nWrote {figures_dir / 'uncertainty_vs_error.png'}")
-        print("Spearman(uncertainty, LLM error):",
-              {k: round(v, 3) for k, v in correlations.items()})
+        print(
+            "Spearman(uncertainty, LLM error):", {k: round(v, 3) for k, v in correlations.items()}
+        )
 
         # The few-shot example appears verbatim in every prompt, so it is
         # excluded from the LLM's own evaluation.

@@ -119,17 +119,32 @@ def test_score_pool_test_split_writes_own_cache(monkeypatch, tmp_path):
 
     monkeypatch.setattr(uq_pet.llm_scoring, "get_single_sample", fake_sample)
 
-    few_shot = {"document name": "doc-fs", "sentence-ID": 0,
-                "tokens": ["Alice", "approves"], "ner-tags": [1, 3]}
-    test_split = Dataset.from_list([{
-        "document name": "doc-9", "sentence-ID": 1,
-        "tokens": TOKENS, "ner-tags": [1, 2, 3, 0, 0],
-    }])
+    few_shot = {
+        "document name": "doc-fs",
+        "sentence-ID": 0,
+        "tokens": ["Alice", "approves"],
+        "ner-tags": [1, 3],
+    }
+    test_split = Dataset.from_list(
+        [
+            {
+                "document name": "doc-9",
+                "sentence-ID": 1,
+                "tokens": TOKENS,
+                "ner-tags": [1, 2, 3, 0, 0],
+            }
+        ]
+    )
     cfg = LLMScoreConfig(num_samples=2)
 
-    cache = asyncio.run(score_pool(
-        cfg, test_split, few_shot_example=few_shot, split="test",
-    ))
+    cache = asyncio.run(
+        score_pool(
+            cfg,
+            test_split,
+            few_shot_example=few_shot,
+            split="test",
+        )
+    )
 
     assert set(cache) == {"doc-9::1"}
     assert cache["doc-9::1"]["parsed_samples"] == [["B-Actor", "O", "O", "O", "O"]] * 2

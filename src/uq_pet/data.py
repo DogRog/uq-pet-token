@@ -20,16 +20,16 @@ def download_pet_ner(dest: Path = RAW_DATASET_PATH, force: bool = False) -> Path
 def load_pet_ner(path: Path = RAW_DATASET_PATH) -> Dataset:
     """Load the PET entities dataset (417 sentence-level examples) from data/raw/."""
     if not path.exists():
-        raise FileNotFoundError(
-            f"{path} not found — run `uv run uq-pet download-data` first."
-        )
-    features = Features({
-        "document name": Value("string"),
-        "sentence-ID": Value("int8"),
-        "tokens": Sequence(Value("string")),
-        "tokens-IDs": Sequence(Value("int8")),
-        "ner-tags": Sequence(ClassLabel(names=NER_TAGS)),
-    })
+        raise FileNotFoundError(f"{path} not found — run `uv run uq-pet download-data` first.")
+    features = Features(
+        {
+            "document name": Value("string"),
+            "sentence-ID": Value("int8"),
+            "tokens": Sequence(Value("string")),
+            "tokens-IDs": Sequence(Value("int8")),
+            "ner-tags": Sequence(ClassLabel(names=NER_TAGS)),
+        }
+    )
     dataset = load_dataset("json", data_files={"full": str(path)}, features=features)
     return dataset["full"]
 

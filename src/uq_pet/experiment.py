@@ -48,10 +48,11 @@ def resume_run_dir(run_id: str) -> tuple[ExperimentConfig, Path]:
 
 def latest_run_id() -> str | None:
     """Newest run dir under results/ that has records, by mtime."""
-    candidates = [
-        d for d in RESULTS_DIR.iterdir()
-        if d.is_dir() and (d / "records.jsonl").exists()
-    ] if RESULTS_DIR.exists() else []
+    candidates = (
+        [d for d in RESULTS_DIR.iterdir() if d.is_dir() and (d / "records.jsonl").exists()]
+        if RESULTS_DIR.exists()
+        else []
+    )
     if not candidates:
         return None
     return max(candidates, key=lambda d: (d / "records.jsonl").stat().st_mtime).name
@@ -63,7 +64,9 @@ def load_completed_runs(records_path: Path) -> dict[str, dict]:
         with open(records_path) as f:
             for line in f:
                 record = json.loads(line)
-                completed[cell_id(record["budget_pct"], record["strategy"], record["seed"])] = record
+                completed[cell_id(record["budget_pct"], record["strategy"], record["seed"])] = (
+                    record
+                )
     return completed
 
 
@@ -95,15 +98,18 @@ def write_metrics_summary(records: list[dict], out_path: Path) -> dict:
                 "entity_f1": stats([m["entity_f1"] for m in metrics]),
                 "token_accuracy": stats([m["token_accuracy"] for m in metrics]),
             }
-            for (budget, strategy), metrics in sorted(groups.items(), key=lambda kv: (kv[0][0], kv[0][1]))
+            for (budget, strategy), metrics in sorted(
+                groups.items(), key=lambda kv: (kv[0][0], kv[0][1])
+            )
         ],
     }
     out_path.write_text(json.dumps(summary, indent=2))
     return summary
 
 
-def _train_cell(selected: list[dict], test_examples: list[dict], train_cfg: TrainConfig,
-                seed: int) -> dict:
+def _train_cell(
+    selected: list[dict], test_examples: list[dict], train_cfg: TrainConfig, seed: int
+) -> dict:
     """Train one grid cell and evaluate it on the test set.
 
     Runs in a worker process when cfg.workers > 1, so it must stay a
@@ -125,9 +131,7 @@ def run_grid(cfg: ExperimentConfig, run_dir: Path) -> None:
     all_keys = list(by_key)
 
     # Precompute uncertainty scores per metric from the LLM sample cache.
-    metric_names = {
-        name for s in cfg.strategies if (name := strategy_metric(s)) is not None
-    }
+    metric_names = {name for s in cfg.strategies if (name := strategy_metric(s)) is not None}
     scores_by_metric: dict[str, dict[str, float]] = {}
     if metric_names:
         cache = load_cache(cfg.llm.cache_path())
@@ -150,9 +154,7 @@ def run_grid(cfg: ExperimentConfig, run_dir: Path) -> None:
                     "llm.backend: mlx."
                 )
         for name in metric_names:
-            scores_by_metric[name] = {
-                k: compute_metric(name, cache[k]) for k in all_keys
-            }
+            scores_by_metric[name] = {k: compute_metric(name, cache[k]) for k in all_keys}
 
     completed = load_completed_runs(records_path)
 
@@ -179,14 +181,16 @@ def run_grid(cfg: ExperimentConfig, run_dir: Path) -> None:
             selected_keys = all_keys
         else:
             selected_keys = select(
-                strategy, all_keys,
-                scores_by_metric.get(strategy_metric(strategy)), n, seed,
+                strategy,
+                all_keys,
+                scores_by_metric.get(strategy_metric(strategy)),
+                n,
+                seed,
             )
         selected_by_cell[(budget, strategy, seed)] = selected_keys
         logger.info(f"{cell_id(budget, strategy, seed)} -> {len(selected_keys)} sentences")
 
-    progress = tqdm(total=len(grid), initial=len(grid) - len(pending),
-                    desc="Grid", unit="cell")
+    progress = tqdm(total=len(grid), initial=len(grid) - len(pending), desc="Grid", unit="cell")
     with open(records_path, "a") as runs_file:
 
         def record_cell(cell: tuple, metrics: dict) -> None:
@@ -219,8 +223,10 @@ def run_grid(cfg: ExperimentConfig, run_dir: Path) -> None:
             runs_file.flush()
             completed[cid] = record
             write_metrics_summary(list(completed.values()), run_dir / "metrics.json")
-            logger.info(f"{cid} entity_f1={metrics['entity_f1']:.4f} "
-                        f"token_acc={metrics['token_accuracy']:.4f}")
+            logger.info(
+                f"{cid} entity_f1={metrics['entity_f1']:.4f} "
+                f"token_acc={metrics['token_accuracy']:.4f}"
+            )
             progress.set_postfix_str(f"{cid} f1={metrics['entity_f1']:.3f}")
             progress.update(1)
 
@@ -231,8 +237,13 @@ def run_grid(cfg: ExperimentConfig, run_dir: Path) -> None:
             context = multiprocessing.get_context("spawn")
             with ProcessPoolExecutor(max_workers=cfg.workers, mp_context=context) as pool:
                 futures = {
-                    pool.submit(_train_cell, [by_key[k] for k in selected_by_cell[cell]],
-                                test_examples, cfg.train, cell[2]): cell
+                    pool.submit(
+                        _train_cell,
+                        [by_key[k] for k in selected_by_cell[cell]],
+                        test_examples,
+                        cfg.train,
+                        cell[2],
+                    ): cell
                     for cell in pending
                 }
                 for future in as_completed(futures):
@@ -240,8 +251,9 @@ def run_grid(cfg: ExperimentConfig, run_dir: Path) -> None:
         else:
             for cell in pending:
                 progress.set_postfix_str(cell_id(*cell))
-                metrics = _train_cell([by_key[k] for k in selected_by_cell[cell]],
-                                      test_examples, cfg.train, cell[2])
+                metrics = _train_cell(
+                    [by_key[k] for k in selected_by_cell[cell]], test_examples, cfg.train, cell[2]
+                )
                 record_cell(cell, metrics)
 
     progress.close()

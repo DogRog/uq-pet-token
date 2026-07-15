@@ -26,8 +26,9 @@ class MLXGenerator:
     def __init__(self, model_name: str):
         self.model, self.tokenizer = load(model_name)
 
-    def sample_batch(self, prompts: list[str], temperature: float, max_tokens: int,
-                     seeds: list[list[int]]) -> list[tuple[list[str], list[list[float]]]]:
+    def sample_batch(
+        self, prompts: list[str], temperature: float, max_tokens: int, seeds: list[list[int]]
+    ) -> list[tuple[list[str], list[list[float]]]]:
         """len(seeds[i]) sampled completions per prompt, generated one at a
         time; one seed per sample keeps existing caches reproducible."""
         results = []
@@ -36,27 +37,33 @@ class MLXGenerator:
             results.append(([text for text, _ in samples], [ent for _, ent in samples]))
         return results
 
-    def sample(self, prompt: str, temperature: float, max_tokens: int,
-               seed: int) -> tuple[str, list[float]]:
+    def sample(
+        self, prompt: str, temperature: float, max_tokens: int, seed: int
+    ) -> tuple[str, list[float]]:
         """One sampled completion; returns (text, per-generated-token entropies)."""
         messages = [{"role": "user", "content": prompt}]
         try:
             # Qwen3 defaults to thinking mode; <think> blocks would break NER
             # parsing and pollute the entropy signal with reasoning tokens.
             text_prompt = self.tokenizer.apply_chat_template(
-                messages, add_generation_prompt=True, tokenize=False,
+                messages,
+                add_generation_prompt=True,
+                tokenize=False,
                 enable_thinking=False,
             )
         except TypeError:
             text_prompt = self.tokenizer.apply_chat_template(
-                messages, add_generation_prompt=True, tokenize=False,
+                messages,
+                add_generation_prompt=True,
+                tokenize=False,
             )
         mx.random.seed(seed)
         sampler = make_sampler(temp=temperature)
         texts: list[str] = []
         entropies: list[float] = []
-        for response in stream_generate(self.model, self.tokenizer, text_prompt,
-                                        max_tokens=max_tokens, sampler=sampler):
+        for response in stream_generate(
+            self.model, self.tokenizer, text_prompt, max_tokens=max_tokens, sampler=sampler
+        ):
             texts.append(response.text)
             entropies.append(round(entropy_bits_from_logprobs(response.logprobs), 4))
         return "".join(texts).strip(), entropies

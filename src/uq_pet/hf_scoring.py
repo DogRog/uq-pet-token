@@ -84,17 +84,22 @@ class HFGenerator:
             # Qwen3 defaults to thinking mode; <think> blocks would break NER
             # parsing and pollute the entropy signal with reasoning tokens.
             return self.tokenizer.apply_chat_template(
-                messages, add_generation_prompt=True, tokenize=False,
+                messages,
+                add_generation_prompt=True,
+                tokenize=False,
                 enable_thinking=False,
             )
         except TypeError:
             return self.tokenizer.apply_chat_template(
-                messages, add_generation_prompt=True, tokenize=False,
+                messages,
+                add_generation_prompt=True,
+                tokenize=False,
             )
 
     @torch.no_grad()
-    def sample_batch(self, prompts: list[str], temperature: float, max_tokens: int,
-                     seeds: list[list[int]]) -> list[tuple[list[str], list[list[float]]]]:
+    def sample_batch(
+        self, prompts: list[str], temperature: float, max_tokens: int, seeds: list[list[int]]
+    ) -> list[tuple[list[str], list[list[float]]]]:
         """One batched generate call: len(seeds[i]) sampled completions of each
         prompt; returns per-prompt (texts, per-generated-token entropy lists).
 
@@ -120,12 +125,14 @@ class HFGenerator:
             # temperature=0.6, top_k=20, top_p=0.95): the recorder applies our
             # temperature itself after measuring raw entropy, giving pure
             # temperature sampling like the mlx and API backends.
-            temperature=1.0, top_k=0, top_p=1.0,
+            temperature=1.0,
+            top_k=0,
+            top_p=1.0,
             logits_processor=LogitsProcessorList([recorder]),
             max_new_tokens=max_tokens,
             pad_token_id=self.tokenizer.pad_token_id,
         )
-        generated = sequences[:, input_ids.shape[1]:].cpu()
+        generated = sequences[:, input_ids.shape[1] :].cpu()
         # [rows, steps] in one device-to-host transfer.
         step_entropies = torch.stack(recorder.step_entropies, dim=1).cpu()
 

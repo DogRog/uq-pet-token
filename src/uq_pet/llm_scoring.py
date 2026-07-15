@@ -50,9 +50,12 @@ def load_prompt_template(prompt: str = DEFAULT_PROMPT) -> Template:
     return Template(path.read_text().removesuffix("\n"))
 
 
-def build_ner_prompt(tokens: list, example_tokens: list, example_tags: list,
-                     prompt: str = DEFAULT_PROMPT) -> str:
-    example_pairs = [{"token": tok, "tag": tag} for tok, tag in zip(example_tokens, example_tags, strict=True)]
+def build_ner_prompt(
+    tokens: list, example_tokens: list, example_tags: list, prompt: str = DEFAULT_PROMPT
+) -> str:
+    example_pairs = [
+        {"token": tok, "tag": tag} for tok, tag in zip(example_tokens, example_tags, strict=True)
+    ]
     return load_prompt_template(prompt).substitute(
         tags=", ".join(f"'{tag}'" for tag in NER_TAGS),
         example_tokens=example_tokens,
@@ -92,8 +95,9 @@ def parse_ner_output(output_str: str, tokens: list) -> list[str]:
     return [tag if tag in NER_TAGS else "O" for tag in extracted_tags]
 
 
-def prompt_fingerprint(few_shot_tokens: list, few_shot_tags: list,
-                       prompt: str = DEFAULT_PROMPT) -> str:
+def prompt_fingerprint(
+    few_shot_tokens: list, few_shot_tags: list, prompt: str = DEFAULT_PROMPT
+) -> str:
     """Hash of the prompt template + few-shot example, to detect stale caches."""
     template = build_ner_prompt(["<TOKENS>"], few_shot_tokens, few_shot_tags, prompt)
     return hashlib.sha256(template.encode()).hexdigest()[:16]
@@ -106,8 +110,9 @@ def make_client() -> AsyncOpenAI:
     )
 
 
-async def get_single_sample(client: AsyncOpenAI, prompt: str, cfg: LLMScoreConfig,
-                            semaphore: asyncio.Semaphore) -> str:
+async def get_single_sample(
+    client: AsyncOpenAI, prompt: str, cfg: LLMScoreConfig, semaphore: asyncio.Semaphore
+) -> str:
     async with semaphore:
         for attempt in range(cfg.max_retries):
             try:
@@ -122,12 +127,13 @@ async def get_single_sample(client: AsyncOpenAI, prompt: str, cfg: LLMScoreConfi
                 if attempt == cfg.max_retries - 1:
                     print(f"API error after {cfg.max_retries} attempts: {e}")
                     return ""
-                await asyncio.sleep(2 ** attempt)
+                await asyncio.sleep(2**attempt)
     return ""
 
 
-def _sentence_record(example: dict, raw_responses: list[str],
-                     token_entropies: list[list[float]] | None = None) -> dict:
+def _sentence_record(
+    example: dict, raw_responses: list[str], token_entropies: list[list[float]] | None = None
+) -> dict:
     """One cache line: the raw LLM responses + parsed tags for one sentence."""
     tokens = example["tokens"]
     record = {
@@ -168,9 +174,14 @@ def load_cache(cache_path: Path, expected_header: dict | None = None) -> dict[st
     return cache
 
 
-async def score_pool(cfg: LLMScoreConfig, dataset: Dataset, limit: int | None = None,
-                     *, few_shot_example: dict | None = None,
-                     split: str = "pool") -> dict[str, dict]:
+async def score_pool(
+    cfg: LLMScoreConfig,
+    dataset: Dataset,
+    limit: int | None = None,
+    *,
+    few_shot_example: dict | None = None,
+    split: str = "pool",
+) -> dict[str, dict]:
     """Sample the LLM K times for every sentence, appending results to the cache.
 
     `dataset` is normally the pool; pass the test split with `split="test"`
@@ -215,13 +226,23 @@ async def score_pool(cfg: LLMScoreConfig, dataset: Dataset, limit: int | None = 
     if cfg.backend in ("mlx", "hf"):
         if cfg.backend == "mlx":
             from .mlx_scoring import MLXGenerator
+
             generator = MLXGenerator(cfg.model)
         else:
             from .hf_scoring import HFGenerator
+
             generator = HFGenerator(cfg.model, batch_size=cfg.batch_size)
         with open(cache_path, "a") as f:
-            _score_pending_local(generator, cfg, pending, few_shot_tokens, few_shot_tags,
-                                 cache, f, desc=f"Scoring {split}")
+            _score_pending_local(
+                generator,
+                cfg,
+                pending,
+                few_shot_tokens,
+                few_shot_tags,
+                cache,
+                f,
+                desc=f"Scoring {split}",
+            )
         return cache
 
     client = make_client()
@@ -232,10 +253,9 @@ async def score_pool(cfg: LLMScoreConfig, dataset: Dataset, limit: int | None = 
     # Sentences run concurrently; the semaphore caps total in-flight API calls.
     async def score_sentence(example, f):
         prompt = build_ner_prompt(example["tokens"], few_shot_tokens, few_shot_tags, cfg.prompt)
-        raw = await asyncio.gather(*[
-            get_single_sample(client, prompt, cfg, semaphore)
-            for _ in range(cfg.num_samples)
-        ])
+        raw = await asyncio.gather(
+            *[get_single_sample(client, prompt, cfg, semaphore) for _ in range(cfg.num_samples)]
+        )
         record = _sentence_record(example, list(raw))
         async with write_lock:
             f.write(json.dumps(record) + "\n")
@@ -251,8 +271,16 @@ async def score_pool(cfg: LLMScoreConfig, dataset: Dataset, limit: int | None = 
     return cache
 
 
-def _score_pending_local(generator, cfg: LLMScoreConfig, pending: list, few_shot_tokens: list,
-                         few_shot_tags: list, cache: dict, f, desc: str = "Scoring pool") -> None:
+def _score_pending_local(
+    generator,
+    cfg: LLMScoreConfig,
+    pending: list,
+    few_shot_tokens: list,
+    few_shot_tags: list,
+    cache: dict,
+    f,
+    desc: str = "Scoring pool",
+) -> None:
     """In-process scoring, `generator.batch_size` sentences at a time.
 
     `generator` is any backend with a `.sample_batch(prompts, temperature,
@@ -266,12 +294,15 @@ def _score_pending_local(generator, cfg: LLMScoreConfig, pending: list, few_shot
     pending = sorted(pending, key=lambda ex: len(ex["tokens"]))
     progress = tqdm(total=len(pending), desc=desc, unit="sent")
     for start in range(0, len(pending), generator.batch_size):
-        chunk = pending[start:start + generator.batch_size]
+        chunk = pending[start : start + generator.batch_size]
         keys = [sentence_key(ex) for ex in chunk]
-        prompts = [build_ner_prompt(ex["tokens"], few_shot_tokens, few_shot_tags, cfg.prompt)
-                   for ex in chunk]
-        seeds = [[derive_sample_seed(cfg.seed, key, i) for i in range(cfg.num_samples)]
-                 for key in keys]
+        prompts = [
+            build_ner_prompt(ex["tokens"], few_shot_tokens, few_shot_tags, cfg.prompt)
+            for ex in chunk
+        ]
+        seeds = [
+            [derive_sample_seed(cfg.seed, key, i) for i in range(cfg.num_samples)] for key in keys
+        ]
         results = generator.sample_batch(prompts, cfg.temperature, cfg.max_tokens, seeds)
         for example, (raw, entropies) in zip(chunk, results, strict=True):
             record = _sentence_record(example, raw, entropies)

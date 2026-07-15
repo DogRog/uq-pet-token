@@ -32,10 +32,12 @@ METRICS: dict[str, Metric] = {}
 def register(name: str, box: str = "black"):
     """Register a metric; black-box functions take `parsed_samples` and are
     wrapped so every registered fn takes the full cache record."""
+
     def decorator(fn):
         record_fn = fn if box == "white" else (lambda record: fn(record["parsed_samples"]))
         METRICS[name] = Metric(record_fn, box)
         return fn
+
     return decorator
 
 
@@ -64,10 +66,7 @@ def token_entropies(parsed_samples: list[list[str]]) -> list[float]:
     if not parsed_samples:
         return []
     length = len(parsed_samples[0])
-    return [
-        shannon_entropy([sample[i] for sample in parsed_samples])
-        for i in range(length)
-    ]
+    return [shannon_entropy([sample[i] for sample in parsed_samples]) for i in range(length)]
 
 
 def majority_vote(parsed_samples: list[list[str]]) -> list[str]:
@@ -76,8 +75,7 @@ def majority_vote(parsed_samples: list[list[str]]) -> list[str]:
         return []
     length = len(parsed_samples[0])
     return [
-        Counter(sample[i] for sample in parsed_samples).most_common(1)[0][0]
-        for i in range(length)
+        Counter(sample[i] for sample in parsed_samples).most_common(1)[0][0] for i in range(length)
     ]
 
 
@@ -168,8 +166,9 @@ def select_random(keys: list[str], n: int, seed: int) -> list[str]:
     return random.Random(seed).sample(list(keys), n)
 
 
-def select(strategy: str, keys: list[str], scores: dict[str, float] | None,
-           n: int, seed: int) -> list[str]:
+def select(
+    strategy: str, keys: list[str], scores: dict[str, float] | None, n: int, seed: int
+) -> list[str]:
     if strategy == "random":
         return select_random(keys, n, seed)
     if strategy_metric(strategy) is not None:
