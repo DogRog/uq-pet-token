@@ -31,13 +31,23 @@ def cmd_download_data(args) -> None:
 
 
 def cmd_score_pool(args) -> None:
+    from .config import FEW_SHOT_EXAMPLE_INDEX
     from .data import split_pool_test
     from .llm_scoring import score_pool
 
     cfg = load_config(args.config)
-    pool, _ = split_pool_test(seed=cfg.llm.seed)
-    cache = asyncio.run(score_pool(cfg.llm, pool, limit=args.limit))
-    print(f"Cache now holds {len(cache)} sentences at {cfg.llm.cache_path()}")
+    pool, test = split_pool_test(seed=cfg.llm.seed)
+    if args.split in ("pool", "both"):
+        cache = asyncio.run(score_pool(cfg.llm, pool, limit=args.limit))
+        print(f"Pool cache now holds {len(cache)} sentences at {cfg.llm.cache_path()}")
+    if args.split in ("test", "both"):
+        # The few-shot example always comes from the pool so the prompt matches
+        # the pool cache and no test sentence appears in its own prompt.
+        cache = asyncio.run(score_pool(
+            cfg.llm, test, limit=args.limit,
+            few_shot_example=pool[FEW_SHOT_EXAMPLE_INDEX], split="test",
+        ))
+        print(f"Test cache now holds {len(cache)} sentences at {cfg.llm.cache_path('test')}")
 
 
 def cmd_run(args) -> None:
@@ -76,7 +86,10 @@ def main(argv: list[str] | None = None) -> None:
     p_score = sub.add_parser("score-pool", help="LLM repeated-sampling pass over the pool")
     p_score.add_argument("--config", required=True, help="YAML experiment config")
     p_score.add_argument("--limit", type=int, default=None,
-                         help="score only the first N pool sentences (smoke test)")
+                         help="score only the first N sentences per split (smoke test)")
+    p_score.add_argument("--split", choices=["pool", "test", "both"], default="both",
+                         help="which split(s) to score; test enables the LLM-alone "
+                              "baseline in reports (default: both)")
     p_score.set_defaults(func=cmd_score_pool)
 
     p_run = sub.add_parser("run", help="run the selection/training grid")

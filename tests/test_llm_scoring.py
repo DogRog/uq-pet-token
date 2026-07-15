@@ -1,13 +1,18 @@
+import asyncio
 import json
 
 import pytest
 
+import uq_pet.config
+import uq_pet.llm_scoring
+from uq_pet.config import LLMScoreConfig
 from uq_pet.llm_scoring import (
     build_ner_prompt,
     derive_sample_seed,
     load_cache,
     parse_ner_output,
     prompt_fingerprint,
+    score_pool,
 )
 from uq_pet.uncertainty import WhiteboxDataMissingError, compute_metric
 
@@ -101,3 +106,43 @@ def test_old_cache_without_entropies_still_loads(tmp_path):
     assert compute_metric("mean_token_entropy", cache["doc-0"]) == pytest.approx(0.2)
     with pytest.raises(WhiteboxDataMissingError):
         compute_metric("predictive_entropy", cache["doc-0"])
+
+
+def test_score_pool_test_split_writes_own_cache(monkeypatch, tmp_path):
+    from datasets import Dataset
+
+    monkeypatch.setattr(uq_pet.config, "LLM_SCORES_DIR", tmp_path)
+    monkeypatch.setattr(uq_pet.llm_scoring, "make_client", lambda: None)
+
+    async def fake_sample(client, prompt, cfg, semaphore):
+        return _output(["B-Actor", "O", "O", "O", "O"])
+
+    monkeypatch.setattr(uq_pet.llm_scoring, "get_single_sample", fake_sample)
+
+    few_shot = {"document name": "doc-fs", "sentence-ID": 0,
+                "tokens": ["Alice", "approves"], "ner-tags": [1, 3]}
+    test_split = Dataset.from_list([{
+        "document name": "doc-9", "sentence-ID": 1,
+        "tokens": TOKENS, "ner-tags": [1, 2, 3, 0, 0],
+    }])
+    cfg = LLMScoreConfig(num_samples=2)
+
+    cache = asyncio.run(score_pool(
+        cfg, test_split, few_shot_example=few_shot, split="test",
+    ))
+
+    assert set(cache) == {"doc-9::1"}
+    assert cache["doc-9::1"]["parsed_samples"] == [["B-Actor", "O", "O", "O", "O"]] * 2
+    assert cache["doc-9::1"]["gt_tags"] == ["B-Actor", "I-Actor", "B-Activity", "O", "O"]
+
+    cache_path = cfg.cache_path("test")
+    assert cache_path.name.endswith("_test.jsonl")
+    assert not cfg.cache_path().exists()  # the pool cache is untouched
+    with open(cache_path) as f:
+        header = json.loads(f.readline())["header"]
+    assert header["split"] == "test"
+    # The prompt (and so its fingerprint) is built from the pool's few-shot
+    # example, matching the pool cache.
+    assert header["prompt_fingerprint"] == prompt_fingerprint(
+        few_shot["tokens"], ["B-Actor", "B-Activity"]
+    )

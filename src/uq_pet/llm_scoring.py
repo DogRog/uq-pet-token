@@ -8,7 +8,9 @@ per-token predictive entropies in bits) for white-box metrics, and the header
 carries `backend: mlx`. Metrics are never stored — they are recomputed from
 the cached fields, so budgets, metrics and repeats can be swept without new
 generation. Existing keys are skipped on rerun, so an interrupted pass resumes
-where it left off.
+where it left off. Scoring the held-out test split (for the LLM-alone baseline
+in reports) writes a separate cache with a `_test` filename suffix and
+`split: test` in the header.
 """
 
 import asyncio
@@ -166,12 +168,18 @@ def load_cache(cache_path: Path, expected_header: dict | None = None) -> dict[st
     return cache
 
 
-async def score_pool(cfg: LLMScoreConfig, pool: Dataset, limit: int | None = None) -> dict[str, dict]:
-    """Sample the LLM K times for every pool sentence, appending results to the cache.
+async def score_pool(cfg: LLMScoreConfig, dataset: Dataset, limit: int | None = None,
+                     *, few_shot_example: dict | None = None,
+                     split: str = "pool") -> dict[str, dict]:
+    """Sample the LLM K times for every sentence, appending results to the cache.
 
+    `dataset` is normally the pool; pass the test split with `split="test"`
+    (own cache file) and the pool's `few_shot_example` so the prompt is
+    identical and the test set never appears in its own prompts.
     Returns the full cache (existing + newly scored records).
     """
-    few_shot_example = pool[FEW_SHOT_EXAMPLE_INDEX]
+    if few_shot_example is None:
+        few_shot_example = dataset[FEW_SHOT_EXAMPLE_INDEX]
     few_shot_tokens = few_shot_example["tokens"]
     few_shot_tags = tag_ids_to_labels(few_shot_example["ner-tags"])
 
@@ -188,19 +196,21 @@ async def score_pool(cfg: LLMScoreConfig, pool: Dataset, limit: int | None = Non
         header["backend"] = cfg.backend
     if cfg.prompt != DEFAULT_PROMPT:
         header["prompt"] = cfg.prompt
+    if split != "pool":
+        header["split"] = split
 
-    cache_path = cfg.cache_path()
+    cache_path = cfg.cache_path(split)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache = load_cache(cache_path, expected_header=header)
     if not cache_path.exists():
         with open(cache_path, "w") as f:
             f.write(json.dumps({"header": header}) + "\n")
 
-    examples = list(pool)
+    examples = list(dataset)
     if limit is not None:
         examples = examples[:limit]
     pending = [ex for ex in examples if sentence_key(ex) not in cache]
-    print(f"Scoring pool: {len(pending)} to score, {len(cache)} cached ({cache_path})")
+    print(f"Scoring {split}: {len(pending)} to score, {len(cache)} cached ({cache_path})")
 
     if cfg.backend in ("mlx", "hf"):
         if cfg.backend == "mlx":
@@ -210,13 +220,14 @@ async def score_pool(cfg: LLMScoreConfig, pool: Dataset, limit: int | None = Non
             from .hf_scoring import HFGenerator
             generator = HFGenerator(cfg.model, batch_size=cfg.batch_size)
         with open(cache_path, "a") as f:
-            _score_pending_local(generator, cfg, pending, few_shot_tokens, few_shot_tags, cache, f)
+            _score_pending_local(generator, cfg, pending, few_shot_tokens, few_shot_tags,
+                                 cache, f, desc=f"Scoring {split}")
         return cache
 
     client = make_client()
     semaphore = asyncio.Semaphore(cfg.max_concurrency)
     write_lock = asyncio.Lock()
-    progress = tqdm(total=len(pending), desc="Scoring pool", unit="sent")
+    progress = tqdm(total=len(pending), desc=f"Scoring {split}", unit="sent")
 
     # Sentences run concurrently; the semaphore caps total in-flight API calls.
     async def score_sentence(example, f):
@@ -241,7 +252,7 @@ async def score_pool(cfg: LLMScoreConfig, pool: Dataset, limit: int | None = Non
 
 
 def _score_pending_local(generator, cfg: LLMScoreConfig, pending: list, few_shot_tokens: list,
-                         few_shot_tags: list, cache: dict, f) -> None:
+                         few_shot_tags: list, cache: dict, f, desc: str = "Scoring pool") -> None:
     """In-process scoring, `generator.batch_size` sentences at a time.
 
     `generator` is any backend with a `.sample_batch(prompts, temperature,
@@ -253,7 +264,7 @@ def _score_pending_local(generator, cfg: LLMScoreConfig, pending: list, few_shot
     reproduces the same draws.
     """
     pending = sorted(pending, key=lambda ex: len(ex["tokens"]))
-    progress = tqdm(total=len(pending), desc="Scoring pool", unit="sent")
+    progress = tqdm(total=len(pending), desc=desc, unit="sent")
     for start in range(0, len(pending), generator.batch_size):
         chunk = pending[start:start + generator.batch_size]
         keys = [sentence_key(ex) for ex in chunk]

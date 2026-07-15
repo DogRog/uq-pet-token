@@ -60,6 +60,14 @@ def test_custom_prompt_gets_its_own_cache():
     assert path.name == "meta-llama_llama-3-8b-instruct_k5_t0.7_seed3407_ner_v2.jsonl"
 
 
+def test_test_split_gets_its_own_cache():
+    # The pool split keeps the historical filename; test is suffixed.
+    cfg = LLMScoreConfig()
+    assert cfg.cache_path("pool") == cfg.cache_path()
+    assert cfg.cache_path("test").name == "meta-llama_llama-3-8b-instruct_k5_t0.7_seed3407_test.jsonl"
+    assert LLMScoreConfig(prompt="ner_v2").cache_path("test").name.endswith("_ner_v2_test.jsonl")
+
+
 def test_prompt_path_points_into_prompts_dir():
     path = LLMScoreConfig().prompt_path()
     assert path.name == "ner_v1.txt"

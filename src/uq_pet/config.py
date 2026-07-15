@@ -73,12 +73,15 @@ class LLMScoreConfig:
     def prompt_path(self) -> Path:
         return PROMPTS_DIR / f"{self.prompt}.txt"
 
-    def cache_path(self) -> Path:
+    def cache_path(self, split: str = "pool") -> Path:
         safe_model = self.model.replace("/", "_")
         name = f"{safe_model}_k{self.num_samples}_t{self.temperature}_seed{self.seed}"
         # The default prompt keeps the historical filename so old caches stay valid.
         if self.prompt != DEFAULT_PROMPT:
             name += f"_{self.prompt}"
+        # The pool split keeps the historical filename too.
+        if split != "pool":
+            name += f"_{split}"
         return LLM_SCORES_DIR / f"{name}.jsonl"
 
 
