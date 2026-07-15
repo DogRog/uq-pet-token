@@ -55,7 +55,7 @@ def plot_ner_heatmap(ner, out_path=None):
     fig.colorbar(im, ax=ax, label="count")
     fig.tight_layout()
     if out_path is not None:
-        fig.savefig(out_path, dpi=150)
+        fig.savefig(out_path, dpi=300)
     return fig
 
 
@@ -109,7 +109,7 @@ def plot_selection_bias(by_key: dict[str, dict], selections: dict[str, list[str]
 
     fig.tight_layout()
     if out_path is not None:
-        fig.savefig(out_path, dpi=150)
+        fig.savefig(out_path, dpi=300)
     return fig
 
 
@@ -168,7 +168,7 @@ def plot_learning_curves(runs: list[dict], out_path) -> None:
     ax.legend()
     ax.grid(alpha=0.3)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path, dpi=300)
     plt.close(fig)
 
 
@@ -241,7 +241,7 @@ def plot_uncertainty_vs_error(cache: dict[str, dict], out_path) -> dict[str, flo
         ax.set_xlabel("uncertainty")
     np.atleast_1d(axes)[0].set_ylabel("LLM majority-vote error rate")
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path, dpi=300)
     plt.close(fig)
     return correlations
 

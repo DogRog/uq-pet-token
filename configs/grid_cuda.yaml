@@ -18,8 +18,6 @@ llm:
   model: Qwen/Qwen3-4B
   num_samples: 5
   temperature: 0.7
-  # Longest completion in the Qwen3-8B mlx cache (same prompt) is 612 tokens;
-  # a lower cap bounds how far a rambling sample drags out its whole batch.
   max_tokens: 1024
   seed: 3407
   # Sentences per batched generate call (× num_samples rows decoding in

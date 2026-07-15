@@ -4,8 +4,8 @@
 budgets: [10, 25, 50, 100]
 strategies:
   - random
-  - uncertainty:mean_token_entropy      # black-box baseline
-  - uncertainty:sequence_entropy        # black-box baseline
+  # - uncertainty:mean_token_entropy      # black-box baseline
+  # - uncertainty:sequence_entropy        # black-box baseline
   - uncertainty:predictive_entropy      # white-box (needs the mlx cache)
 repeats: 5
 
@@ -14,7 +14,7 @@ llm:
   model: mlx-community/Qwen3-4B-4bit
   num_samples: 5
   temperature: 0.7
-  max_tokens: 1500
+  max_tokens: 1024
   seed: 3407
 
 train:
