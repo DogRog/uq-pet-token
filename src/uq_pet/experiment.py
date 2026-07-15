@@ -10,7 +10,7 @@ import logging
 import multiprocessing
 import statistics
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from tqdm import tqdm
@@ -213,7 +213,7 @@ def run_grid(cfg: ExperimentConfig, run_dir: Path) -> None:
                     "temperature": cfg.llm.temperature,
                     "seed": cfg.llm.seed,
                 },
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             }
             runs_file.write(json.dumps(record) + "\n")
             runs_file.flush()

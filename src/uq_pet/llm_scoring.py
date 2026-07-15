@@ -52,7 +52,7 @@ def load_prompt_template(prompt: str = DEFAULT_PROMPT) -> Template:
 
 def build_ner_prompt(tokens: list, example_tokens: list, example_tags: list,
                      prompt: str = DEFAULT_PROMPT) -> str:
-    example_pairs = [{"token": tok, "tag": tag} for tok, tag in zip(example_tokens, example_tags)]
+    example_pairs = [{"token": tok, "tag": tag} for tok, tag in zip(example_tokens, example_tags, strict=True)]
     return load_prompt_template(prompt).substitute(
         tags=", ".join(f"'{tag}'" for tag in NER_TAGS),
         example_tokens=example_tokens,
@@ -273,7 +273,7 @@ def _score_pending_local(generator, cfg: LLMScoreConfig, pending: list, few_shot
         seeds = [[derive_sample_seed(cfg.seed, key, i) for i in range(cfg.num_samples)]
                  for key in keys]
         results = generator.sample_batch(prompts, cfg.temperature, cfg.max_tokens, seeds)
-        for example, (raw, entropies) in zip(chunk, results):
+        for example, (raw, entropies) in zip(chunk, results, strict=True):
             record = _sentence_record(example, raw, entropies)
             f.write(json.dumps(record) + "\n")
             cache[record["key"]] = record

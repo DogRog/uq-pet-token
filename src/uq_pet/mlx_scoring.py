@@ -31,7 +31,7 @@ class MLXGenerator:
         """len(seeds[i]) sampled completions per prompt, generated one at a
         time; one seed per sample keeps existing caches reproducible."""
         results = []
-        for prompt, prompt_seeds in zip(prompts, seeds):
+        for prompt, prompt_seeds in zip(prompts, seeds, strict=True):
             samples = [self.sample(prompt, temperature, max_tokens, seed) for seed in prompt_seeds]
             results.append(([text for text, _ in samples], [ent for _, ent in samples]))
         return results

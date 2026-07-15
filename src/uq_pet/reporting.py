@@ -55,7 +55,7 @@ def plot_ner_heatmap(ner, out_path=None):
     counts = np.zeros((len(docs), len(entity_types)))
     doc_idx = {d: i for i, d in enumerate(docs)}
     type_idx = {t: i for i, t in enumerate(entity_types)}
-    for doc, tags in zip(ner["document name"], ner["ner-tags"]):
+    for doc, tags in zip(ner["document name"], ner["ner-tags"], strict=True):
         for tid in tags:
             name = tag_names[tid]
             if name != "O":
@@ -232,7 +232,7 @@ def _sentence_error_rates(cache: dict[str, dict], keys: list[str]) -> list[float
         record = cache[k]
         prediction = majority_vote(record["parsed_samples"])
         gt = record["gt_tags"]
-        error_rates.append(sum(p != g for p, g in zip(prediction, gt)) / len(gt))
+        error_rates.append(sum(p != g for p, g in zip(prediction, gt, strict=True)) / len(gt))
     return error_rates
 
 
@@ -258,7 +258,7 @@ def plot_uncertainty_vs_error(cache: dict[str, dict], out_path) -> dict[str, flo
 
     correlations = {}
     fig, axes = plt.subplots(1, len(names), figsize=(4 * len(names), 4), sharey=True)
-    for ax, name in zip(np.atleast_1d(axes), names):
+    for ax, name in zip(np.atleast_1d(axes), names, strict=True):
         scores = [compute_metric(name, cache[k]) for k in keys]
         rho, _ = spearmanr(scores, error_rates)
         correlations[name] = float(rho)

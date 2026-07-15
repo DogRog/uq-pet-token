@@ -27,7 +27,7 @@ def test_entropy_batched_rows_match_per_row():
     logits = torch.randn(3, 7)
     batched = entropy_bits(logits)
     assert batched.shape == (3,)
-    for row, expected in zip(logits, batched):
+    for row, expected in zip(logits, batched, strict=True):
         assert entropy_bits(row).item() == pytest.approx(expected.item(), abs=1e-6)
 
 

@@ -16,8 +16,8 @@ Strategy strings are "random", "uncertainty:<metric_name>", or "full".
 import math
 import random
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 
 @dataclass(frozen=True)

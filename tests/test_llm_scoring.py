@@ -20,7 +20,7 @@ TOKENS = ["The", "clerk", "checks", "the", "form"]
 
 
 def _output(tags: list[str]) -> str:
-    return json.dumps([{"token": t, "tag": tag} for t, tag in zip(TOKENS, tags)])
+    return json.dumps([{"token": t, "tag": tag} for t, tag in zip(TOKENS, tags, strict=True)])
 
 
 def test_parse_ner_output_valid_json():

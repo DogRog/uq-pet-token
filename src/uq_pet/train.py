@@ -179,8 +179,8 @@ def evaluate(predictions: list[list[str]], gold: list[list[str]]) -> dict:
 
     total = sum(len(seq) for seq in gold)
     correct = sum(
-        1 for pred_seq, gold_seq in zip(predictions, gold)
-        for p, g in zip(pred_seq, gold_seq) if p == g
+        1 for pred_seq, gold_seq in zip(predictions, gold, strict=True)
+        for p, g in zip(pred_seq, gold_seq, strict=True) if p == g
     )
 
     return {
