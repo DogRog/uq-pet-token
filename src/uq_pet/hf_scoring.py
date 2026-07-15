@@ -77,6 +77,7 @@ class HFGenerator:
                 load_in_8bit=quantization == "8bit",
                 bnb_4bit_compute_dtype=torch.bfloat16,
                 bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
             )
             # bitsandbytes places the weights at load time; .to() on a
             # quantized model raises.
@@ -90,7 +91,9 @@ class HFGenerator:
     def _load_model(model_name: str, **kwargs):
         try:
             return AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
-        except ValueError:
+        except ValueError as e:
+            if "Unrecognized configuration class" not in str(e):
+                raise
             # Multimodal checkpoints (e.g. gemma image-text-to-text) register
             # only with the multimodal auto class; text-only generate on them
             # works the same as on a causal LM.

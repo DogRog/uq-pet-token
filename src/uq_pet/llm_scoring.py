@@ -289,11 +289,12 @@ def _score_pending_local(
     max_tokens, seeds) -> per-prompt (texts, entropies)` method; the hf backend
     decodes a whole chunk's samples as one GPU batch. Sentences are ordered by
     length so chunk mates finish at similar times (a batch decodes until its
-    longest row stops). The order is deterministic and records are written a
-    whole chunk at a time, so a resumed pass re-forms the same chunks and
-    reproduces the same draws.
+    longest row stops), longest first so the memory worst case is the first
+    batch: a run that survives it won't OOM later. The order is deterministic
+    and records are written a whole chunk at a time, so a resumed pass
+    re-forms the same chunks and reproduces the same draws.
     """
-    pending = sorted(pending, key=lambda ex: len(ex["tokens"]))
+    pending = sorted(pending, key=lambda ex: len(ex["tokens"]), reverse=True)
     progress = tqdm(total=len(pending), desc=desc, unit="sent")
     for start in range(0, len(pending), generator.batch_size):
         chunk = pending[start : start + generator.batch_size]
