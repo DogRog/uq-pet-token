@@ -720,17 +720,6 @@ wheels = [
 ]
 
 [[package]]
-name = "dotenv"
-version = "0.9.9"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "python-dotenv" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b2/b7/545d2c10c1fc15e48653c91efde329a790f2eecfbbf2bd16003b5db2bab0/dotenv-0.9.9-py2.py3-none-any.whl", hash = "sha256:29cf74a087b31dafdb5a446b6d7e11cbce8ed2741540e2339c69fbef92c94ce9", size = 1892, upload-time = "2025-02-19T22:15:01.647Z" },
-]
-
-[[package]]
 name = "executing"
 version = "2.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3596,6 +3585,18 @@ wheels = [
 ]
 
 [[package]]
+name = "typeguard"
+version = "4.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b4/de/4420db493fa8fc0856d5e5c1b159c63a323d2de2317babe36b01568928e8/typeguard-4.6.0.tar.gz", hash = "sha256:e7414f09111317de3e335de92cd397c5c0ca00b1cc1676de12e1d444a79b3f21", size = 82330, upload-time = "2026-07-26T08:40:23.207Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8f/eb/461d5f167b6f5c7d97696f397c82f82e3480e003fce3f0a1cd1dd26e2eb2/typeguard-4.6.0-py3-none-any.whl", hash = "sha256:79878165bb86f2cf5d41d159a0ff1792a796cf496882d2fe1b1c6c7049b9cdd7", size = 36884, upload-time = "2026-07-26T08:40:21.868Z" },
+]
+
+[[package]]
 name = "typer"
 version = "0.25.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3648,7 +3649,6 @@ dependencies = [
     { name = "accelerate", marker = "sys_platform == 'linux'" },
     { name = "bitsandbytes", marker = "sys_platform == 'linux'" },
     { name = "datasets" },
-    { name = "dotenv" },
     { name = "ipykernel" },
     { name = "ipywidgets" },
     { name = "jupyter" },
@@ -3657,6 +3657,7 @@ dependencies = [
     { name = "mlx-lm", marker = "sys_platform == 'darwin'" },
     { name = "openai" },
     { name = "pandas" },
+    { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "scipy" },
     { name = "seqeval" },
@@ -3669,6 +3670,7 @@ dependencies = [
 dev = [
     { name = "pytest" },
     { name = "ruff" },
+    { name = "typeguard" },
 ]
 
 [package.metadata]
@@ -3676,7 +3678,6 @@ requires-dist = [
     { name = "accelerate", marker = "sys_platform == 'linux'", specifier = ">=1.0" },
     { name = "bitsandbytes", marker = "sys_platform == 'linux'", specifier = ">=0.45" },
     { name = "datasets", specifier = "==2.19.2" },
-    { name = "dotenv", specifier = ">=0.9.9" },
     { name = "ipykernel", specifier = ">=7.3.0" },
     { name = "ipywidgets", specifier = ">=8.1.0" },
     { name = "jupyter", specifier = ">=1.1.1" },
@@ -3685,6 +3686,7 @@ requires-dist = [
     { name = "mlx-lm", marker = "sys_platform == 'darwin'", specifier = ">=0.31.3,<0.32" },
     { name = "openai", specifier = ">=2.44.0" },
     { name = "pandas", specifier = ">=3.0.3" },
+    { name = "python-dotenv", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "scipy", specifier = ">=1.14" },
     { name = "seqeval", specifier = ">=1.2.2" },
@@ -3697,6 +3699,7 @@ requires-dist = [
 dev = [
     { name = "pytest", specifier = ">=8.0" },
     { name = "ruff", specifier = ">=0.14" },
+    { name = "typeguard", specifier = ">=4.6.0" },
 ]
 
 [[package]]

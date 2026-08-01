@@ -1,18 +1,21 @@
-# Tiny smoke run: 2 grid cells, 2 epochs. The llm block must match grid_full's
-# sampling params so cache_path() resolves to the existing score cache and the
-# run needs no OpenRouter calls.
-budgets: [10]
-strategies:
-  - random
-  - uncertainty:mean_token_entropy
-repeats: 1
+# Cheap sanity run over the whole pipeline (~2 minutes, no API calls).
+#
+# It deliberately omits every `llm` sampling field so LLMConfig's defaults apply —
+# and those defaults are exactly what produced the existing
+# data/processed/llm_scores/nhr_gemma_pool_dist.jsonl, so this config hits that cache
+# and never reaches the network. Run it with --skip-scoring to enforce that:
+#
+#   uv run python -m uq_pet.main --config configs/smoke.yaml --skip-scoring
+
+budget_pct: 3          # -> max(1, int(328 * 0.03)) = 9 sentences per arm
+arms: [uncertainty, random]
+score: filtered
+selection_seed: 42
+train_seeds: [0]
 
 llm:
-  model: meta-llama/llama-3-8b-instruct
-  num_samples: 5
-  temperature: 0.7
-  seed: 3407
+  workers: 4
 
 train:
-  checkpoint: distilbert-base-cased
   epochs: 2
+  max_length: 128

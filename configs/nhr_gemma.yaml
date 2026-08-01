@@ -1,0 +1,39 @@
+# Real run: score the 328-sentence pool with gemma through the NHR@FAU gateway, then
+# fine-tune distilbert on the 10% most-uncertain sentences vs. a random 10%.
+#
+# The `llm` block below reproduces the existing cache at
+# data/processed/llm_scores/nhr_gemma_pool_dist.jsonl. If you change any sampling
+# field, change cache_suffix too — otherwise load_cache rejects every cached record
+# (model/params mismatch) and the pool is re-scored from scratch.
+
+budget_pct: 10
+arms: [uncertainty, random]
+score: filtered        # "pure" = every token logprob | "filtered" = tag-id tokens only
+selection_seed: 42
+tie_seed: 0
+train_seeds: [0, 1, 2]
+
+llm:
+  model: RedHatAI/gemma-4-31B-it-FP8-block
+  base_url: https://hub.nhr.fau.de/api/llmgw/v1
+  api_key_env: NHR_FAU_API_KEY
+  cache_prefix: nhr_gemma
+  cache_suffix: dist
+  n_samples: 5
+  temperature: 1.0
+  seed: 0
+  max_tokens: 256
+  logprobs: true
+  workers: 8
+  timeout: 120.0
+  max_retries: 5
+
+train:
+  checkpoint: distilbert-base-cased
+  epochs: 20
+  batch_size: 8
+  learning_rate: 5.0e-5
+  weight_decay: 0.01
+  warmup_fraction: 0.1
+  max_length: 256
+  eval_batch_size: 32

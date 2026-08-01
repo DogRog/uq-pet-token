@@ -4,43 +4,82 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-An experiment testing whether LLM uncertainty quantification is a good criterion for selecting training data (vs. random selection) on the PET process-extraction NER dataset. See README.md for the experiment design and how to read the results.
+An experiment testing whether LLM uncertainty quantification is a good criterion for
+selecting training data (vs. random selection) on the PET process-extraction NER
+dataset. One budget, two arms, N training seeds. See README.md for the design and how
+to read the results.
 
 ## Commands
 
 ```bash
-uv sync                                    # install (mlx deps are darwin-only via platform markers)
-uv run pytest                              # offline unit tests — no network, no API key needed
-uv run pytest tests/test_uncertainty.py   # single test file
-uv run pytest tests/test_selection.py::test_name -v   # single test
+uv sync
+uv run pytest                          # offline: no network, no API key, no model weights
+uv run pytest tests/test_uncertainty.py
+uv run pytest -m slow                  # the one test that downloads a checkpoint
+uv run ruff check .
 
-# Pipeline (each step feeds the next)
-uv run uq-pet download-data                          # PET jsonl → data/raw/
-uv run uq-pet score-pool --config configs/<cfg>.yaml # LLM sampling → data/processed/llm_scores/
-uv run uq-pet run --config configs/<cfg>.yaml        # selection→train→eval grid → results/<run_id>/
-uv run uq-pet run --resume <run_id>                  # continue an interrupted run
-uv run uq-pet report [--run-id <run_id>]             # figures + summary.md (default: latest run)
+# Sanity run: hits the existing score cache, makes no API calls, ~10s
+uv run python -m uq_pet.main --config configs/smoke.yaml --skip-scoring
+# Real run
+uv run python -m uq_pet.main --config configs/nhr_gemma.yaml
 ```
 
-`configs/smoke.yaml` is the cheap sanity config (2 cells, 2 epochs; reuses grid_full's score cache). `score-pool --limit N` scores only N sentences for smoke testing. `scripts/run_grid_*.sh` chain the whole pipeline per config.
-
-API scoring (`llm.backend: openrouter`) needs `OPENROUTER_API_KEY` in `.env`; local backends (`mlx` on Apple Silicon, `hf` on CUDA) need no key.
+There is no console script and no subcommands — `main.py` is the single entry point.
 
 ## Architecture
 
-Pipeline stages, each a module in `src/uq_pet/`:
+Seven modules in `src/uq_pet/`, in dependency order:
 
-1. **`data.py`** — downloads/loads PET, does the fixed 80/20 pool/test split (seed 3407, `SEED` in config.py). `sentence_key()` is the stable cache key for a sentence.
-2. **`llm_scoring.py`** — samples the LLM K times per sentence and caches raw responses + parsed tag sequences as JSONL in `data/processed/llm_scores/`. Backends: `openrouter` (async API), `mlx_scoring.py` and `hf_scoring.py` (in-process, additionally record per-token `token_entropies` for white-box metrics). Caches are resumable (existing keys skipped) and shared across runs.
-3. **`uncertainty.py`** — metric registry (`METRICS`), populated via the `register(name, box)` decorator. "black" metrics score disagreement between the K parsed samples (any backend); "white" metrics read `token_entropies` (local backends only). Metrics are **recomputed from the cache at run time, never stored**, so budgets/metrics/repeats can be swept without new LLM calls. Also holds selection strategies (`random`, `uncertainty:<metric>`, `full`).
-4. **`experiment.py`** — orchestrates the (budget × strategy × seed) grid, writing per-cell `records.jsonl` to `results/<run_id>/`. Completed cells are skipped on `--resume`. `workers > 1` trains cells in parallel processes.
-5. **`train.py`** — fixed distilbert fine-tuning recipe (manual torch loop); the selected data is the only variable across cells. Metrics via seqeval (entity-level micro F1).
-6. **`reporting.py`** — learning curves, summary table, UQ-vs-error diagnostic from a run dir. `llm_eval.py` adds the LLM-alone baseline (needs the test split scored: `score-pool --split test`/`both`).
+1. **`config.py`** — cache-identity constants, project paths, and the YAML-backed
+   dataclasses (`ExperimentConfig` → `LLMConfig` + `TrainConfig`). `load_config` raises
+   on unknown keys.
+2. **`dataset.py`** — PET download/load, the few-shot/pool/test split (5/328/84),
+   `to_examples()` (Dataset → plain dicts) and `sentence_key()`.
+3. **`prompt.py`** — the system/user `string.Template`s, `prompt_fingerprint()`, and
+   `parse_tag_ids()` (the response format is dictated by the template, so one module
+   owns both halves of the contract).
+4. **`llm.py`** — repeated sampling through an OpenAI-compatible gateway into a
+   resumable JSONL cache. Nothing else does network or cache I/O.
+5. **`uncertainty.py`** — scoring from cache records, **and** both selection strategies
+   (`uncertainty` and its `random` control).
+6. **`model_training.py`** — the fixed distilbert recipe, prediction, seqeval metrics.
+7. **`main.py`** — the pipeline and its argparse CLI. **Nothing imports from `main`.**
 
-Config: dataclasses in `config.py` (`ExperimentConfig` → `LLMScoreConfig` + `TrainConfig`), loaded from YAML in `configs/`; unknown keys raise. All project paths are constants in `config.py` (overridable root via `UQ_PET_ROOT`).
+### The rule that matters most
+
+**Every module is import-side-effect-free**: no I/O, no globals built from I/O, no
+logging reconfiguration at import time. This repo was broken once by pasting notebook
+cells into modules verbatim — four of seven modules raised `NameError` on import and
+ran a `ThreadPoolExecutor` at module scope. If you are moving code out of
+`notebooks/test.ipynb`, turn the cell-level globals into function parameters first.
+
+Corollaries already enforced: HF logging is configured only via
+`model_training.configure_hf_logging()`, called from `main()`; the OpenAI client is
+built lazily inside `score_split` so a complete cache needs no API key; and
+`random.seed()` is called only by `model_training.set_seed()` — selection uses local
+`random.Random` instances so it can't perturb training determinism.
 
 ## Cache invariants — don't break these
 
-- `LLMScoreConfig.cache_path()` derives the cache filename from model/K/temperature/seed/prompt/split. The default prompt and pool split keep the **historical filename** (no suffix) so old caches stay valid — preserve that behavior when touching it.
-- **Never edit `prompts/ner_v1.txt` in place**: the rendered prompt text is fingerprinted in existing cache headers, and a mismatch makes `score-pool` refuse the cache. New prompt variants go in a new file (`prompts/ner_v2.txt`) selected via `llm.prompt` in the config, which gets its own cache.
-- The few-shot example is always pool sentence `FEW_SHOT_EXAMPLE_INDEX` (also when scoring the test split), so prompts match the pool cache and no test sentence appears in its own prompt.
+The cache is `data/processed/llm_scores/nhr_gemma_pool_dist.jsonl`: 328 records, ~1,640
+gateway generations. It is gitignored and not backed up anywhere.
+
+1. **Records are keyed by `idx` = position in the `pool` split.** So `SEED`,
+   `TEST_SIZE`, `N_FEW_SHOT_EXAMPLES`, `FEW_SHOT_SPLIT_SEED` in `config.py` and the
+   exact `datasets==2.19.2` pin *define* the cache. They are module constants rather
+   than YAML knobs on purpose — changing one silently repoints every record at a
+   different sentence. `tests/test_dataset.py::test_split_sizes_and_first_key` is the
+   canary; `llm.verify_cache_alignment()` gates every run and must stay above 0.80
+   (measured 0.957 when aligned, <0.05 under any shift).
+2. **`LLMConfig()`'s defaults must keep producing `nhr_gemma_pool_dist.jsonl` and the
+   cached `params` dict.** `tests/test_config.py` locks both. `smoke.yaml` deliberately
+   omits every sampling field so it inherits those defaults and hits the same cache.
+3. **The filename does not encode the sampling parameters** — `load_cache` validates
+   `model`/`params`/`prompt_sha`/`key` against the config in hand instead, and drops
+   what disagrees. So if you deliberately change the recipe, bump `llm.cache_suffix`;
+   otherwise you'll re-score the pool without noticing.
+4. **Records predating `key`/`prompt_sha` are grandfathered.** All 328 current records
+   are in that category, so editing `SYSTEM_TEMPLATE` will *not* invalidate them
+   automatically. Delete the cache yourself when you change a prompt.
+5. Failed sentences are deliberately **not** written to the cache, so the next run
+   retries them. That looks like a bug in `score_split`; it isn't.

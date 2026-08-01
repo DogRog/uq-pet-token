@@ -5,67 +5,60 @@ Is **LLM uncertainty quantification a good criterion for choosing training data*
 ## Experiment design
 
 ```text
-PET NER dataset
-├── 80% experiment pool (333 sentences)
-│     │  LLM repeated sampling (llama-3-8b, K=5, temp 0.7) → uncertainty score per sentence
-│     ├── top-N% most uncertain  → fine-tune transformer → evaluate
-│     └── random N%              → fine-tune transformer → evaluate
-└── 20% held-out test (84 sentences) ──────────────────────→ used for both evaluations
+PET NER dataset (417 sentences)
+├── 5 few-shot examples (fixed, used in every prompt)
+├── 328 experiment pool
+│     │  LLM repeated sampling (K=5, temp 1.0, with token logprobs)
+│     │  → one uncertainty score per sentence
+│     ├── top-N% most uncertain  → fine-tune distilbert → evaluate
+│     └── random N%              → fine-tune distilbert → evaluate
+└── 84 held-out test ─────────────────────────────────→ used for both evaluations
 ```
 
-- **Budgets**: N ∈ {10%, 25%, 50%} + a 100% full-pool reference.
-- **Uncertainty metrics** (the metric is itself an experimental variable, see
-  `src/uq_pet/uncertainty.py`). Two families:
-  - *black-box* — disagreement between the K sampled tag sequences, works with
-    any API backend: `sequence_entropy`, `mean_token_entropy`,
-    `max_token_entropy`, `variation_ratio`, `jaccard_distance`;
-  - *white-box* — the model's own per-token predictive entropy, needs the
-    in-process mlx backend which caches `token_entropies`:
-    `predictive_entropy`.
-- **Trained model**: `distilbert-base-cased` token classifier, fixed recipe for
-  every cell (the selected data is the only variable), 5 seeds per cell.
+Both arms get **exactly the same number of sentences**, the same recipe and the same
+seeds — *which* sentences were selected is the only variable. Each arm is trained once
+per seed in `train_seeds`, because a ~32-sentence fine-tune is noisy enough that a
+single-seed gap between the arms would not be a result.
+
+- **Uncertainty score**: mean over the K samples of the average negative token
+  logprob — higher means the model was less confident. Two variants, set by `score:`
+  in the config:
+  - `pure` — every token in the response;
+  - `filtered` — only the tag-ID tokens, so brackets and commas (which the model is
+    always confident about, and which there are more of in long sentences) don't
+    dilute the signal.
+- **Trained model**: `distilbert-base-cased` token classifier, manual torch loop.
 - **Evaluation**: entity-level micro F1 (seqeval), per-type F1, token accuracy.
+
+Scores are recomputed from the cached samples on every run and never stored, so the
+score variant, the budget and the seeds can all be changed without new LLM calls.
 
 ## Running
 
-Experiments are defined as YAML files in `configs/` (`grid_full.yaml` is the
-API sweep; `grid_qwen.yaml` scores with a local Qwen3-4B-4bit via mlx and adds
-the white-box strategy; `grid_cuda.yaml` is its counterpart for a CUDA server,
-scoring Qwen/Qwen3-4B via transformers; `smoke.yaml` is a 2-cell sanity run).
-API scoring (`llm.backend: openrouter`) requires `OPENROUTER_API_KEY` in
-`.env`; local scoring (`llm.backend: mlx` on Apple Silicon, `llm.backend: hf`
-on CUDA/anything) needs no key but downloads the model weights on first run.
-mlx packages only install on macOS, so `uv sync` works on a Linux server too.
-
 ```bash
 uv sync
-uv run pytest                     # offline unit tests (metrics, selection, parsing, config)
+uv run pytest       # offline unit tests — no network, no API key, no model weights
 
-# 0. Download the PET dataset → data/raw/
-uv run uq-pet download-data
+# Sanity run: 9 sentences per arm, 2 epochs, ~10s. Hits the existing score cache,
+# so it makes no API calls at all.
+uv run python -m uq_pet.main --config configs/smoke.yaml --skip-scoring
 
-# 1. LLM sampling over the pool (~1,665 calls; cached + resumable in data/processed/llm_scores/)
-uv run uq-pet score-pool --config configs/grid_full.yaml
-
-# 2. Selection → training → evaluation grid (65 cells) → results/<run_id>/
-uv run uq-pet run --config configs/grid_full.yaml
-uv run uq-pet run --resume <run_id>          # continue an interrupted run
-
-# 3. Figures + summary table → results/<run_id>/figures/
-uv run uq-pet report                         # defaults to the latest run
-uv run uq-pet report --run-id <run_id>
+# The real run.
+uv run python -m uq_pet.main --config configs/nhr_gemma.yaml
 ```
 
-`scripts/run_grid_full.sh`, `scripts/run_grid_qwen.sh` and
-`scripts/run_grid_cuda.sh` chain the full pipeline
-(download → score-pool → run → report) for the respective config,
-with a `--resume RUN_ID` passthrough.
+The raw PET jsonl is downloaded on the first run. `NHR_FAU_API_KEY` in `.env` is
+needed **only** when the score cache doesn't already cover the pool — a complete cache
+means no client is ever constructed.
+
+Useful flags: `--skip-scoring` (never call the API; fail if the cache is short),
+`--limit N` (score only the first N pool sentences), `--dry-run` (stop after selection
+and print both arms), `--run-name`, `--no-plot`, `-v`.
 
 ### Conda instead of uv
 
-If you prefer conda (e.g. on a managed CUDA server), create the env and
-install the package with pip — the platform markers in `pyproject.toml` handle
-the rest (mlx only on macOS, torch picks the CUDA build on Linux):
+If you prefer conda (e.g. on a managed CUDA server), the platform markers in
+`pyproject.toml` handle the rest (torch picks the CUDA build on Linux):
 
 ```bash
 conda create -n uq-pet python=3.12 -y
@@ -74,67 +67,60 @@ pip install --use-pep517 seqeval   # seqeval's legacy setup.py build is broken; 
 pip install -e .                   # add: pip install pytest  — to run the tests
 ```
 
-Then drop the `uv run` prefix from every command above, e.g.:
+Then drop the `uv run` prefix. Note conda installs won't match `uv.lock` exactly — pip
+resolves fresh from `pyproject.toml`, so use uv when you need the pinned versions.
 
-```bash
-uq-pet download-data
-uq-pet score-pool --config configs/grid_cuda.yaml
-uq-pet run --config configs/grid_cuda.yaml
-uq-pet report
-```
+If the env came with torch preinstalled (typical on Jupyter images), pip's torch
+upgrade will strand the old `torchvision`/`torchaudio` builds, and transformers then
+crashes with `operator torchvision::nms does not exist`. This project needs neither —
+`pip uninstall -y torchvision torchaudio` fixes it. Afterwards confirm the GPU is still
+visible: `python -c "import torch; print(torch.cuda.is_available())"`.
 
-Note: conda installs won't match `uv.lock` exactly — pip resolves fresh from
-`pyproject.toml`, so use uv when you need the pinned versions.
+### Changing the prompt
 
-If the env came with torch preinstalled (typical on Jupyter images), pip's
-torch upgrade will strand the old `torchvision`/`torchaudio` builds, and
-transformers then crashes with `operator torchvision::nms does not exist` /
-`Could not import module 'Qwen3ForCausalLM'`. This project needs neither —
-`pip uninstall -y torchvision torchaudio` fixes it. Afterwards confirm the GPU
-is still visible: `python -c "import torch; print(torch.cuda.is_available())"`.
-
-### Experimenting with the prompt
-
-The NER prompt lives in `prompts/ner_v1.txt` as a `string.Template`
-(placeholders: `$tags`, `$example_tokens`, `$example_output`, `$tokens`). To
-try a variant, copy it to e.g. `prompts/ner_v2.txt`, edit, and set
-`llm.prompt: ner_v2` in the config — each prompt gets its own score cache, so
-variants never clobber each other. Don't edit `ner_v1.txt` in place: its
-rendered text is fingerprinted in the existing cache headers, and a mismatch
-makes `score-pool` refuse the stale cache.
-
-Each run directory `results/<run_id>/` holds a `config.yaml` snapshot,
-per-cell `records.jsonl`, an aggregated `metrics.json`, `run.log`, and the
-report's `figures/`. Uncertainty metrics are recomputed from the cached LLM
-samples, so budgets, metrics and repeats can be swept without new API calls.
+The prompt is a pair of `string.Template`s in `src/uq_pet/prompt.py`. Editing either
+changes `prompt_fingerprint()`, which is stamped onto every new cache record. Records
+written before fingerprinting exist are grandfathered in, so **nothing will stop you
+from mixing two prompts in one cache** — if you edit a template, bump `llm.cache_suffix`
+in your config or delete `data/processed/llm_scores/*.jsonl`.
 
 ## Layout
 
+Modules are listed in dependency order. Every one is import-side-effect-free: importing
+`uq_pet.anything` does no I/O, builds no globals from I/O, and reconfigures no logging.
+
 | Path | Purpose |
 | ---- | ------- |
-| `configs/` | YAML experiment definitions, one per run/sweep |
-| `prompts/` | NER prompt templates, selected per-config via `llm.prompt` |
+| `configs/` | YAML run definitions (`nhr_gemma.yaml` real, `smoke.yaml` cheap) |
 | `data/raw/` | downloaded PET jsonl (gitignored, never edited by hand) |
-| `data/processed/llm_scores/` | cached LLM samples, shared across runs (gitignored) |
-| `src/uq_pet/config.py` | tags, prompts, project paths, config dataclasses + YAML loader |
-| `src/uq_pet/data.py` | PET download/loading, 80/20 pool/test split (seed 3407) |
-| `src/uq_pet/llm_scoring.py` | prompt building, sampling, parsing, JSONL cache |
-| `src/uq_pet/mlx_scoring.py` | in-process mlx backend with per-token entropies (Apple Silicon) |
-| `src/uq_pet/hf_scoring.py` | in-process transformers backend with per-token entropies (CUDA) |
-| `src/uq_pet/uncertainty.py` | uncertainty-metric registry + selection strategies |
-| `src/uq_pet/train.py` | fine-tuning (manual torch loop, MPS), prediction, seqeval metrics |
-| `src/uq_pet/experiment.py` | grid orchestration, per-run dirs, resumable records |
-| `src/uq_pet/reporting.py` | learning curves, summary table, UQ-vs-error diagnostic, dataset heatmap |
-| `scripts/` | runnable entry points wrapping the `uq-pet` CLI |
+| `data/processed/llm_scores/` | cached LLM samples, resumable and shared across runs (gitignored) |
+| `src/uq_pet/config.py` | tags, project paths, cache-identity constants, config dataclasses + YAML loader |
+| `src/uq_pet/dataset.py` | PET download/loading, the few-shot/pool/test split, sentence keys |
+| `src/uq_pet/prompt.py` | prompt templates and the parser for the format they ask for |
+| `src/uq_pet/llm.py` | repeated sampling through an OpenAI-compatible gateway, JSONL cache |
+| `src/uq_pet/uncertainty.py` | uncertainty scoring **and** the selection strategies it's compared against |
+| `src/uq_pet/model_training.py` | fine-tuning, prediction, seqeval metrics |
+| `src/uq_pet/main.py` | the whole pipeline and its CLI — nothing imports from here |
 | `results/<run_id>/` | one directory per run (gitignored) |
-| `notebooks/pipeline.ipynb` | end-to-end walkthrough (cache-aware: reuses the score cache) |
 | `tests/` | offline unit tests |
+
+Each run directory holds a `config.yaml` snapshot (written before any work),
+`selection.json` (which sentences each arm got — the reproducibility audit trail),
+`results.csv`, `summary.csv`, `per_type_f1.csv`, `metrics.json`, `run.log`, and
+`figures/arm_f1.png`.
 
 ## Reading the results
 
-`results/<run_id>/figures/learning_curves.png` is the decision plot: if an uncertainty
-metric's F1-vs-budget curve sits above the random curve beyond the ±std bands
-consistently across budgets, uncertainty selection wins. Check
-`uncertainty_vs_error.png` (does the metric track LLM difficulty at all?) and
-the mean-sentence-length column in `summary.md` (unnormalized metrics favor
-long sentences, which buys more tokens per budget — a known confound).
+`figures/arm_f1.png` is the decision plot: bar = mean test F1 over seeds, dots = the
+individual seeds. Compare `metrics.json`'s `gap` (uncertainty minus random) against the
+spread of those dots — if the gap is smaller than the seed-to-seed variation, there is
+no result yet, only noise. Add seeds before believing a small gap.
+
+Two caveats the numbers won't show you:
+
+- The score is an unnormalized average negative logprob, so it mildly favors sentences
+  the model finds hard *anywhere* in the response. Longer sentences buy more tokens per
+  budget — a known confound; `per_type_f1.csv` helps show whether a gap is concentrated
+  in one entity type.
+- `metrics.json` reports `n_truncated`: choices that hit the `max_tokens` ceiling, whose
+  logprobs therefore cover a cut-off array. With the shipped config that's 13 of 1,640.
