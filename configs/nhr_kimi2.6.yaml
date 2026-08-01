@@ -24,15 +24,15 @@ arms:
 
 selection_seed: 42
 tie_seed: 0              # used in rank_by_uncertainty() to prevent order bias for equal scores   
-train_seeds: [0, 1]
+train_seeds: [0, 1, 2]
 
 llm:
-  model: RedHatAI/gemma-4-31B-it-FP8-block
+  model: moonshotai/Kimi-K2.6
   base_url: https://hub.nhr.fau.de/api/llmgw/v1
   api_key_env: NHR_FAU_API_KEY
-  cache_prefix: nhr_gemma
+  cache_prefix: nhr_kimi
   cache_suffix: dist
-  n_samples: 5
+  n_samples: 10
   temperature: 1.0
   seed: 0
   max_tokens: 256

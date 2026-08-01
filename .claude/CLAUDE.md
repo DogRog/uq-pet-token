@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 An experiment testing whether LLM uncertainty quantification is a good criterion for
 selecting training data (vs. random selection) on the PET process-extraction NER
-dataset. One budget, two arms, N training seeds. See README.md for the design and how
-to read the results.
+dataset. The grid is budgets x arms x training seeds. See README.md for the design and
+how to read the results.
 
 ## Commands
 
@@ -28,7 +28,7 @@ There is no console script and no subcommands — `main.py` is the single entry 
 
 ## Architecture
 
-Seven modules in `src/uq_pet/`, in dependency order:
+Eight modules in `src/uq_pet/`, in dependency order:
 
 1. **`config.py`** — cache-identity constants, project paths, and the YAML-backed
    dataclasses (`ExperimentConfig` → `LLMConfig` + `TrainConfig`). `load_config` raises
@@ -40,10 +40,24 @@ Seven modules in `src/uq_pet/`, in dependency order:
    owns both halves of the contract).
 4. **`llm.py`** — repeated sampling through an OpenAI-compatible gateway into a
    resumable JSONL cache. Nothing else does network or cache I/O.
-5. **`uncertainty.py`** — scoring from cache records, **and** both selection strategies
-   (`uncertainty` and its `random` control).
+5. **`uncertainty.py`** — the `METRICS` registry, **and** both selection strategies
+   (top-n by a named metric, and its `random` control).
+   **To add a metric: write one function and `@register` it — nothing else changes.**
+   Its keyword-only parameters automatically become the parameters its arm accepts in
+   YAML, and `validate_arm` derives them from the signature, so a typo in a config
+   fails at start-up rather than being silently ignored.
 6. **`model_training.py`** — the fixed distilbert recipe, prediction, seqeval metrics.
-7. **`main.py`** — the pipeline and its argparse CLI. **Nothing imports from `main`.**
+7. **`plotting.py`** — the palette and the two figures, reading the results DataFrame.
+   Presentation only: nothing here is imported by a stage that produces a number, so a
+   layout or color change cannot move a reported score. matplotlib is imported *inside*
+   the plotting functions because `matplotlib.use("Agg")` is a global side effect.
+8. **`main.py`** — the pipeline and its argparse CLI. **Nothing imports from `main`.**
+
+`config.py` imports nothing from the package and must stay that way, so `ArmConfig`
+validates only structure; metric names and their parameters are checked by
+`uncertainty.validate_arm`, called at the top of `main()`. Note `config_to_yaml` needs
+`arm_to_dict` rather than plain `asdict` — `asdict` emits a nested shape `load_config`
+cannot read, which would break every run's `config.yaml` snapshot.
 
 ### The rule that matters most
 

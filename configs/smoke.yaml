@@ -7,9 +7,13 @@
 #
 #   uv run python -m uq_pet.main --config configs/smoke.yaml --skip-scoring
 
-budget_pct: 3          # -> max(1, int(328 * 0.03)) = 9 sentences per arm
-arms: [uncertainty, random]
-score: filtered
+budget_pct: [3]        # -> max(1, int(328 * 0.03)) = 9 sentences per arm
+arms:
+  - strategy: random
+  - strategy: avg_neg_logprob
+    tokens: filtered
+  - strategy: output_disagreement
+    measure: vote_entropy
 selection_seed: 42
 train_seeds: [0]
 

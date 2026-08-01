@@ -27,19 +27,26 @@ from uq_pet.dataset import tag_ids_to_labels
 logger = logging.getLogger(__name__)
 
 
+def _drop_load_report(record: logging.LogRecord) -> bool:
+    """Reject transformers' per-checkpoint LOAD REPORT table, keep its other warnings."""
+    return "LOAD REPORT" not in record.getMessage()
+
+
 def configure_hf_logging(quiet: bool = True) -> None:
     """Silence per-load checkpoint reports and progress bars.
 
-    Each arm re-loads the checkpoint with a fresh classifier head, so transformers'
-    missing/unexpected-key warnings are expected noise. Called from the pipeline entry
-    point only — importing this module must not reconfigure a caller's logging.
+    Every arm re-loads the same checkpoint with a fresh classifier head, so the
+    missing/unexpected-key report and the weight-loading bar are expected noise at any
+    verbosity — `quiet` only controls transformers' *other* logging. Called from the
+    pipeline entry point only — importing this module must not reconfigure a caller's
+    logging.
     """
-    if quiet:
-        hf_logging.set_verbosity_error()
-        hf_logging.disable_progress_bar()
-    else:
-        hf_logging.set_verbosity_warning()
-        hf_logging.enable_progress_bar()
+    hf_logging.set_verbosity_error() if quiet else hf_logging.set_verbosity_warning()
+    hf_logging.disable_progress_bar()
+
+    modeling_logger = logging.getLogger("transformers.modeling_utils")
+    if _drop_load_report not in modeling_logger.filters:
+        modeling_logger.addFilter(_drop_load_report)
 
 
 def get_device() -> torch.device:

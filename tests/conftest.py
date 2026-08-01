@@ -24,6 +24,38 @@ def make_choice(tokens_and_logprobs: list[tuple[str, float]], finish_reason: str
     }
 
 
+def make_text_choice(text: str, finish_reason: str = "stop") -> dict:
+    """A choice carrying only the response text — no logprobs at all.
+
+    What the output-only metrics see in a cache produced by a gateway that returns no
+    logprobs, and what proves they never reach for any.
+    """
+    return {"text": text, "finish_reason": finish_reason}
+
+
+@pytest.fixture
+def tag_records():
+    """Factory: {idx: [tag array per sample]} -> cache records with text-only choices.
+
+    A sample given as a string is passed through verbatim, so a test can hand the parser
+    something unparsable.
+    """
+
+    def build(samples_by_idx: dict[int, list[list[int] | str]]) -> list[dict]:
+        return [
+            {
+                "idx": idx,
+                "key": f"doc::{idx}",
+                "choices": [
+                    make_text_choice(s if isinstance(s, str) else str(s)) for s in samples
+                ],
+            }
+            for idx, samples in samples_by_idx.items()
+        ]
+
+    return build
+
+
 @pytest.fixture
 def sample_examples() -> list[dict]:
     """Four PET-shaped sentences; two documents share sentence-ID 3."""

@@ -9,29 +9,68 @@ PET NER dataset (417 sentences)
 ├── 5 few-shot examples (fixed, used in every prompt)
 ├── 328 experiment pool
 │     │  LLM repeated sampling (K=5, temp 1.0, with token logprobs)
-│     │  → one uncertainty score per sentence
-│     ├── top-N% most uncertain  → fine-tune distilbert → evaluate
-│     └── random N%              → fine-tune distilbert → evaluate
-└── 84 held-out test ─────────────────────────────────→ used for both evaluations
+│     │  → one uncertainty score per sentence, per metric
+│     │    (from the logprobs, or from how much the K outputs disagree)
+│     ├── top-N% by metric A  → fine-tune distilbert → evaluate
+│     ├── top-N% by metric B  → fine-tune distilbert → evaluate
+│     └── random N%           → fine-tune distilbert → evaluate
+└── 84 held-out test ──────────────────────────────→ used for every evaluation
 ```
 
-Both arms get **exactly the same number of sentences**, the same recipe and the same
-seeds — *which* sentences were selected is the only variable. Each arm is trained once
-per seed in `train_seeds`, because a ~32-sentence fine-tune is noisy enough that a
-single-seed gap between the arms would not be a result.
+At a given budget every arm gets **exactly the same number of sentences**, the same
+recipe and the same seeds — *which* sentences were selected is the only variable. The
+grid is `budgets × arms × train_seeds`, because a ~32-sentence fine-tune is noisy
+enough that a single-seed gap between arms would not be a result.
 
-- **Uncertainty score**: mean over the K samples of the average negative token
-  logprob — higher means the model was less confident. Two variants, set by `score:`
-  in the config:
-  - `pure` — every token in the response;
-  - `filtered` — only the tag-ID tokens, so brackets and commas (which the model is
-    always confident about, and which there are more of in long sentences) don't
-    dilute the signal.
+- **Arms** are declared in the config. `strategy` names either `random` (the control)
+  or an uncertainty metric; every other key is a parameter of that metric:
+
+  ```yaml
+  budget_pct: [5, 10, 25]
+
+  arms:
+    - strategy: random
+    - strategy: avg_neg_logprob
+      tokens: filtered
+    - strategy: avg_neg_logprob      # the same metric, different parameter
+      tokens: pure
+  ```
+
+  Arms are labelled `strategy:params` (`avg_neg_logprob:pure`) unless you set an
+  explicit `label:`.
+- **Metrics** live in `src/uq_pet/uncertainty.py`. Today there are two, and they read
+  different halves of a cached sample:
+  - `avg_neg_logprob` — the mean over the K samples of the average negative token
+    logprob, higher meaning less confident. Its `tokens` parameter takes `filtered`
+    (tag-ID tokens only, so brackets and commas don't dilute the signal) or `pure`
+    (every token in the response).
+  - `output_disagreement` — **outputs only, no logprobs**: parse the K sampled tag
+    arrays and average, over token positions, how much the K votes disagree. The
+    samples are a committee; the more they vary, the less settled the model is.
+    Samples that disagree about the token count count as disagreeing (a sample that has
+    ended votes a distinct "missing" tag), so a truncated response reads as uncertain
+    rather than being dropped. Its `measure` parameter takes `vote_entropy` (Shannon
+    entropy of the votes over log K, so 0–1) or `disagreement` (the fraction of samples
+    off the plurality tag). Because it needs no logprobs, it also works against a
+    gateway that doesn't return them.
 - **Trained model**: `distilbert-base-cased` token classifier, manual torch loop.
 - **Evaluation**: entity-level micro F1 (seqeval), per-type F1, token accuracy.
 
-Scores are recomputed from the cached samples on every run and never stored, so the
-score variant, the budget and the seeds can all be changed without new LLM calls.
+Scores are recomputed from the cached samples on every run and never stored, so
+metrics, their parameters, the budgets and the seeds can all be swept **without new
+LLM calls**.
+
+### Adding an uncertainty metric
+
+Write one function in `uncertainty.py` and decorate it. Nothing else changes — the
+config, the CLI and the reporting pick it up from the registry, and its keyword-only
+parameters automatically become the parameters its arm accepts in YAML:
+
+```python
+@register("sequence_variance")
+def sequence_variance_scores(records, *, normalize: bool = True) -> dict[int, float]:
+    ...   # {pool index: score}, higher = less confident
+```
 
 ## Running
 
@@ -98,26 +137,34 @@ Modules are listed in dependency order. Every one is import-side-effect-free: im
 | `src/uq_pet/dataset.py` | PET download/loading, the few-shot/pool/test split, sentence keys |
 | `src/uq_pet/prompt.py` | prompt templates and the parser for the format they ask for |
 | `src/uq_pet/llm.py` | repeated sampling through an OpenAI-compatible gateway, JSONL cache |
-| `src/uq_pet/uncertainty.py` | uncertainty scoring **and** the selection strategies it's compared against |
+| `src/uq_pet/uncertainty.py` | the uncertainty-metric registry **and** the selection strategies |
 | `src/uq_pet/model_training.py` | fine-tuning, prediction, seqeval metrics |
+| `src/uq_pet/plotting.py` | the figures — presentation only, nothing here feeds back into a number |
 | `src/uq_pet/main.py` | the whole pipeline and its CLI — nothing imports from here |
 | `results/<run_id>/` | one directory per run (gitignored) |
 | `tests/` | offline unit tests |
 
 Each run directory holds a `config.yaml` snapshot (written before any work),
-`selection.json` (which sentences each arm got — the reproducibility audit trail),
-`results.csv`, `summary.csv`, `per_type_f1.csv`, `metrics.json`, `run.log`, and
-`figures/arm_f1.png`.
+`selection.json` (which sentences each arm got at each budget — the reproducibility
+audit trail), `results.csv`, `summary.csv`, `per_type_f1.csv`, `metrics.json`,
+`run.log`, and `figures/arm_f1.png`.
 
 ## Reading the results
 
-`figures/arm_f1.png` is the decision plot: bar = mean test F1 over seeds, dots = the
-individual seeds. Compare `metrics.json`'s `gap` (uncertainty minus random) against the
-spread of those dots — if the gap is smaller than the seed-to-seed variation, there is
-no result yet, only noise. Add seeds before believing a small gap.
+`figures/arm_f1.png` is the decision plot — a learning curve across budgets, or a bar
+chart when there is only one. The curve's error bars are +/-1 std over `train_seeds`,
+and its budgets are evenly spaced categories rather than points on a linear axis.
+Compare `metrics.json`'s `by_budget[…].gap_vs_random` against those bars: if a gap is
+smaller than the seed-to-seed variation, there is no result yet, only noise — and if
+two arms' bars overlap at a budget, they are tied there. Add seeds before believing a
+small gap.
 
-Two caveats the numbers won't show you:
+Three caveats the numbers won't show you:
 
+- **The random baseline is a single draw.** All `train_seeds` share one selected set per
+  (budget, arm) — the seeds vary training, not selection. So the error bars cover
+  training noise but not selection noise, and part of any gap could be luck of that one
+  draw.
 - The score is an unnormalized average negative logprob, so it mildly favors sentences
   the model finds hard *anywhere* in the response. Longer sentences buy more tokens per
   budget — a known confound; `per_type_f1.csv` helps show whether a gap is concentrated

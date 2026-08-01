@@ -29,14 +29,14 @@ from uq_pet.model_training import (
     get_device,
     train_and_evaluate,
 )
+from uq_pet.plotting import plot_results
 from uq_pet.prompt import build_system_prompt, build_user_prompts, prompt_fingerprint
-from uq_pet.uncertainty import n_from_percent, score_records, select
+from uq_pet.uncertainty import RANDOM, n_from_percent, score_arm, select, validate_arm
 
 logger = logging.getLogger("uq_pet")
 
 MIN_CACHE_ALIGNMENT = 0.80
 SCORES = ["entity_f1", "entity_precision", "entity_recall", "token_accuracy"]
-ARM_COLOR = {"uncertainty": "#4269d0", "random": "#e08a2e"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -161,117 +161,110 @@ def stage_score(
 
 def stage_select(
     cfg: ExperimentConfig, records: list[dict], pool_examples: list[dict]
-) -> dict[str, list[dict]]:
-    """Pick the same number of sentences for every arm."""
-    n = n_from_percent(len(pool_examples), cfg.budget_pct)
-    scores = score_records(records, digits_only=(cfg.score == "filtered"))
-    logger.info("Budget: %d of %d pool sentences (%.3g%%)", n, len(pool_examples), cfg.budget_pct)
+) -> dict[tuple[float, str], list[dict]]:
+    """Select one set of sentences per (budget, arm).
 
-    arms = {
-        name: select(
-            name,
-            pool_examples,
-            n,
-            scores=scores,
-            seed=cfg.selection_seed,
-            tie_seed=cfg.tie_seed,
-        )
-        for name in cfg.arms
+    Metric scores don't depend on the budget, so each metric is evaluated once and
+    reused across the sweep.
+    """
+    scores = {
+        arm.resolved_label(): score_arm(arm.strategy, records, **arm.params) for arm in cfg.arms
     }
 
-    sizes = {name: len(examples) for name, examples in arms.items()}
-    if len(set(sizes.values())) != 1:
-        # An unequal budget would make the arms incomparable; assert would vanish under -O.
-        raise ValueError(f"arms must have the same budget, got {sizes}")
-    return arms
+    cells: dict[tuple[float, str], list[dict]] = {}
+    for budget in cfg.budget_pct:
+        n = n_from_percent(len(pool_examples), budget)
+        logger.info("Budget %.3g%%: %d of %d pool sentences", budget, n, len(pool_examples))
+        for arm in cfg.arms:
+            label = arm.resolved_label()
+            cells[budget, label] = select(
+                arm.strategy,
+                pool_examples,
+                n,
+                scores=scores[label],
+                seed=cfg.selection_seed,
+                tie_seed=cfg.tie_seed,
+            )
+
+        sizes = {label: len(cells[budget, label]) for label in cfg.arm_labels()}
+        if len(set(sizes.values())) != 1:
+            # Unequal budgets make the arms incomparable; assert would vanish under -O.
+            raise ValueError(f"arms must have the same budget at {budget}%, got {sizes}")
+    return cells
 
 
 def stage_train(
-    cfg: ExperimentConfig, arms: dict[str, list[dict]], test_examples: list[dict]
+    cfg: ExperimentConfig,
+    cells: dict[tuple[float, str], list[dict]],
+    test_examples: list[dict],
 ) -> pd.DataFrame:
-    """Train one model per (arm, seed) and score it on the held-out test split."""
+    """Train one model per (budget, arm, seed) and score it on the held-out test split."""
     device = get_device()
     logger.info(
-        "Training %d arm(s) x %d seed(s) on %s, evaluating on %d sentences",
-        len(arms),
+        "Training %d cell(s) = %d budget(s) x %d arm(s) x %d seed(s) on %s, "
+        "evaluating on %d sentences",
+        len(cells) * len(cfg.train_seeds),
+        len(cfg.budget_pct),
+        len(cfg.arms),
         len(cfg.train_seeds),
         device,
         len(test_examples),
     )
 
     rows = []
-    for arm, examples in arms.items():
+    for (budget, arm), examples in cells.items():
         for seed in cfg.train_seeds:
             metrics = train_and_evaluate(examples, test_examples, seed, cfg.train, device=device)
-            rows.append({"arm": arm, "seed": seed, "n_train": len(examples), **metrics})
-            logger.info("  %-12s seed=%d  entity_F1=%.4f", arm, seed, metrics["entity_f1"])
+            rows.append(
+                {
+                    "budget_pct": budget,
+                    "arm": arm,
+                    "seed": seed,
+                    "n_train": len(examples),
+                    **metrics,
+                }
+            )
+            logger.info(
+                "  %5.3g%%  %-24s seed=%d  entity_F1=%.4f",
+                budget,
+                arm,
+                seed,
+                metrics["entity_f1"],
+            )
     return pd.DataFrame(rows)
 
 
-def summarize(results: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, float]:
-    """Mean +/- std over seeds, the per-entity-type table, and the uncertainty gap."""
-    summary = results.groupby("arm")[SCORES].agg(["mean", "std"]).round(4)
+def summarize(results: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """Mean +/- std over seeds, the per-entity-type table, and the gaps vs. random.
+
+    `gaps` is {budget: {arm: mean entity_f1 - random's mean entity_f1}}, empty when no
+    `random` control arm was configured.
+    """
+    summary = results.groupby(["budget_pct", "arm"])[SCORES].agg(["mean", "std"]).round(4)
 
     entity_types = sorted({t for d in results["per_type_f1"] for t in d})
     per_type = (
         results.join(results["per_type_f1"].apply(pd.Series))
-        .groupby("arm")[entity_types]
+        .groupby(["budget_pct", "arm"])[entity_types]
         .mean()
         .round(3)
         .T.rename_axis("entity type")
     )
 
-    means = results.groupby("arm")["entity_f1"].mean()
-    gap = float(means.get("uncertainty", float("nan")) - means.get("random", float("nan")))
-    if {"uncertainty", "random"} <= set(per_type.columns):
-        per_type["delta"] = (per_type["uncertainty"] - per_type["random"]).round(3)
-    return summary, per_type, gap
+    means = results.groupby(["budget_pct", "arm"])["entity_f1"].mean()
+    gaps: dict[float, dict[str, float]] = {}
+    for budget in results["budget_pct"].unique():
+        at_budget = means.loc[budget]
+        if RANDOM not in at_budget.index:
+            continue
+        baseline = at_budget[RANDOM]
+        gaps[float(budget)] = {
+            arm: round(float(value - baseline), 4)
+            for arm, value in at_budget.items()
+            if arm != RANDOM
+        }
+    return summary, per_type, gaps
 
-
-def plot_arms(results: pd.DataFrame, sizes: dict[str, int], gap: float, out_path: Path) -> None:
-    """Test-set entity F1 per arm: bar = mean over seeds, dots = individual seeds."""
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    arms = list(sizes)
-    fig, ax = plt.subplots(figsize=(5.2, 4))
-    for x, arm in enumerate(arms):
-        seed_scores = results.loc[results["arm"] == arm, "entity_f1"]
-        ax.bar(x, seed_scores.mean(), width=0.55, color=ARM_COLOR.get(arm, "#888"), zorder=2)
-        ax.scatter(
-            [x] * len(seed_scores),
-            seed_scores,
-            color="white",
-            edgecolor="#2b2b2b",
-            linewidth=1.2,
-            s=34,
-            zorder=3,
-        )
-        ax.text(
-            x,
-            seed_scores.mean() / 2,
-            f"{seed_scores.mean():.3f}",
-            ha="center",
-            va="center",
-            color="white",
-            fontsize=11,
-            fontweight="bold",
-            zorder=4,
-        )
-
-    ax.set_xticks(range(len(arms)), [f"{a}\n(n={sizes[a]})" for a in arms])
-    ax.set_ylabel("entity-level micro F1 (test split)")
-    ax.set_title(f"Selection strategy vs. test F1  ({gap:+.3f} for uncertainty)", pad=12)
-    ax.set_ylim(0, max(results["entity_f1"]) * 1.25 or 1.0)
-    ax.grid(axis="y", color="#e6e6e6", zorder=0)
-    ax.set_axisbelow(True)
-    for side in ("top", "right", "left"):
-        ax.spines[side].set_visible(False)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=200)
-    plt.close(fig)
 
 
 def _json_float(value) -> float | None:
@@ -282,33 +275,43 @@ def _json_float(value) -> float | None:
 
 def write_outputs(
     run_dir: Path,
-    arms: dict[str, list[dict]],
+    cells: dict[tuple[float, str], list[dict]],
     results: pd.DataFrame,
     summary: pd.DataFrame,
     per_type: pd.DataFrame,
-    gap: float,
+    gaps: dict,
     meta: dict,
 ) -> None:
-    (run_dir / "selection.json").write_text(
-        json.dumps({arm: [sentence_key(ex) for ex in ex_list] for arm, ex_list in arms.items()},
-                   indent=2)
-    )
+    selection: dict[str, dict[str, list[str]]] = {}
+    for (budget, arm), examples in cells.items():
+        selection.setdefault(f"{budget:g}", {})[arm] = [sentence_key(ex) for ex in examples]
+    (run_dir / "selection.json").write_text(json.dumps(selection, indent=2))
+
     results.drop(columns="per_type_f1").to_csv(run_dir / "results.csv", index=False)
     summary.to_csv(run_dir / "summary.csv")
     per_type.to_csv(run_dir / "per_type_f1.csv")
 
-    means = results.groupby("arm")["entity_f1"].agg(["mean", "std"]).round(4)
+    stats = results.groupby(["budget_pct", "arm"])["entity_f1"].agg(["mean", "std"]).round(4)
+    sizes = results.groupby("budget_pct")["n_train"].first()
+    by_budget = {}
+    for budget in sorted(results["budget_pct"].unique()):
+        by_budget[f"{budget:g}"] = {
+            "n_train": int(sizes.loc[budget]),
+            "entity_f1": {
+                arm: {"mean": _json_float(row["mean"]), "std": _json_float(row["std"])}
+                for arm, row in stats.loc[budget].iterrows()
+            },
+            "gap_vs_random": gaps.get(float(budget), {}),
+        }
+
     (run_dir / "metrics.json").write_text(
         json.dumps(
             {
                 **meta,
-                "gap": _json_float(gap),
-                "n_train": int(results["n_train"].iloc[0]),
+                "budgets": [float(b) for b in sorted(results["budget_pct"].unique())],
+                "arms": list(dict.fromkeys(results["arm"])),
                 "train_seeds": sorted(results["seed"].unique().tolist()),
-                "entity_f1": {
-                    arm: {"mean": _json_float(row["mean"]), "std": _json_float(row["std"])}
-                    for arm, row in means.iterrows()
-                },
+                "by_budget": by_budget,
             },
             indent=2,
         )
@@ -318,6 +321,12 @@ def write_outputs(
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     cfg = load_config(args.config)
+    # Fail on a bad metric name or parameter now, not after the pool has been scored.
+    for arm in cfg.arms:
+        try:
+            validate_arm(arm.strategy, arm.params)
+        except ValueError as e:
+            raise SystemExit(f"{args.config}: {e}") from None
 
     run_dir = make_run_dir(cfg, args.config, args.results_dir, args.run_name)
     setup_logging(run_dir / "run.log", args.verbose)
@@ -335,29 +344,32 @@ def main(argv: list[str] | None = None) -> int:
     records, _sha, meta = stage_score(
         cfg, few_shot, pool_examples, skip=args.skip_scoring, limit=args.limit
     )
-    arms = stage_select(cfg, records, pool_examples)
+    cells = stage_select(cfg, records, pool_examples)
 
     if args.dry_run:
-        for arm, examples in arms.items():
-            print(f"{arm} ({len(examples)}): {[sentence_key(ex) for ex in examples]}")
+        for (budget, arm), examples in cells.items():
+            keys = [sentence_key(ex) for ex in examples]
+            print(f"{budget:g}% {arm} ({len(examples)}): {keys}")
         return 0
 
-    results = stage_train(cfg, arms, test_examples)
-    summary, per_type, gap = summarize(results)
+    results = stage_train(cfg, cells, test_examples)
+    summary, per_type, gaps = summarize(results)
 
-    sizes = {arm: len(examples) for arm, examples in arms.items()}
     if not args.no_plot:
-        plot_arms(results, sizes, gap, run_dir / "figures" / "arm_f1.png")
-    write_outputs(run_dir, arms, results, summary, per_type, gap, meta)
+        plot_results(results, run_dir / "figures" / "arm_f1.png")
+    write_outputs(run_dir, cells, results, summary, per_type, gaps, meta)
 
     print(summary.to_string())
-    means = results.groupby("arm")["entity_f1"].mean()
-    if {"uncertainty", "random"} <= set(means.index):
-        stds = results.groupby("arm")["entity_f1"].std()
+    if gaps:
+        print("\nentity F1 vs. the random control:")
+        for budget in sorted(gaps):
+            n_train = results.loc[results["budget_pct"] == budget, "n_train"].iloc[0]
+            for arm, gap in gaps[budget].items():
+                print(f"  {budget:5.3g}% (n={n_train:3d})  {arm:<28} {gap:+.4f}")
+        stds = results.groupby(["budget_pct", "arm"])["entity_f1"].std()
         print(
-            f"\nentity F1: uncertainty {means['uncertainty']:.4f} vs random "
-            f"{means['random']:.4f}  ->  {gap:+.4f}   "
-            f"(seed std ~{stds.mean():.4f}, n={len(cfg.train_seeds)} seeds)"
+            f"\n(seed std ~{stds.mean():.4f} over {len(cfg.train_seeds)} seeds — "
+            f"a gap smaller than that is noise)"
         )
     print(f"\nWrote {run_dir}")
     return 0

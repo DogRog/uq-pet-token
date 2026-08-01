@@ -3,19 +3,23 @@ import json
 import pandas as pd
 import pytest
 
-from uq_pet.config import ExperimentConfig, load_config
+from uq_pet.config import ArmConfig, ExperimentConfig, load_config
 from uq_pet.main import build_parser, make_run_dir, stage_select, summarize
 
+ANLP = "avg_neg_logprob:filtered"
 
-def make_results(uncertainty_f1, random_f1) -> pd.DataFrame:
+
+def make_results(uncertainty_f1, random_f1, budget: float = 10.0) -> pd.DataFrame:
+    """One budget, two arms, one row per seed."""
     rows = []
-    for arm, scores in (("uncertainty", uncertainty_f1), ("random", random_f1)):
+    for arm, scores in ((ANLP, uncertainty_f1), ("random", random_f1)):
         for seed, f1 in enumerate(scores):
             rows.append(
                 {
+                    "budget_pct": budget,
                     "arm": arm,
                     "seed": seed,
-                    "n_train": 32,
+                    "n_train": int(328 * budget / 100),
                     "entity_f1": f1,
                     "entity_precision": f1,
                     "entity_recall": f1,
@@ -24,6 +28,18 @@ def make_results(uncertainty_f1, random_f1) -> pd.DataFrame:
                 }
             )
     return pd.DataFrame(rows)
+
+
+def uncertainty_arm(tokens: str = "filtered") -> ArmConfig:
+    return ArmConfig(strategy="avg_neg_logprob", params={"tokens": tokens})
+
+
+def scored_records(n: int) -> list[dict]:
+    """n records whose scores strictly decrease with index."""
+    return [
+        {"idx": i, "choices": [{"logprobs": [{"token": "1", "logprob": -float(n - i)}]}]}
+        for i in range(n)
+    ]
 
 
 # --- parser -------------------------------------------------------------------
@@ -53,7 +69,7 @@ def test_parser_flags():
 
 
 def test_make_run_dir_snapshot_round_trips(tmp_path):
-    cfg = ExperimentConfig(budget_pct=7, train_seeds=[4])
+    cfg = ExperimentConfig(budget_pct=[7, 14], train_seeds=[4], arms=[uncertainty_arm("pure")])
     run_dir = make_run_dir(cfg, tmp_path / "myrun.yaml", tmp_path / "results")
 
     assert run_dir.name.startswith("myrun_")
@@ -69,54 +85,100 @@ def test_make_run_dir_honours_run_name(tmp_path):
 # --- selection ----------------------------------------------------------------
 
 
-def test_stage_select_gives_both_arms_the_same_budget(sample_examples, sample_records):
-    cfg = ExperimentConfig(budget_pct=50, train_seeds=[0], score="pure")
-    records = [
-        {"idx": i, "choices": [{"logprobs": [{"token": "1", "logprob": -float(i + 1)}]}]}
-        for i in range(len(sample_examples))
-    ]
-    arms = stage_select(cfg, records, sample_examples)
+def test_stage_select_gives_both_arms_the_same_budget(sample_examples):
+    cfg = ExperimentConfig(
+        budget_pct=[50], train_seeds=[0], arms=[ArmConfig("random"), uncertainty_arm("pure")]
+    )
+    cells = stage_select(cfg, scored_records(len(sample_examples)), sample_examples)
 
-    assert set(arms) == {"uncertainty", "random"}
-    assert len(arms["uncertainty"]) == len(arms["random"]) == 2
+    assert set(cells) == {(50.0, "random"), (50.0, "avg_neg_logprob:pure")}
+    assert len({len(v) for v in cells.values()}) == 1
+
+
+def test_stage_select_produces_a_cell_per_budget_and_arm(sample_examples):
+    cfg = ExperimentConfig(
+        budget_pct=[25, 50, 75],
+        train_seeds=[0],
+        arms=[ArmConfig("random"), uncertainty_arm("pure")],
+    )
+    cells = stage_select(cfg, scored_records(len(sample_examples)), sample_examples)
+
+    assert len(cells) == 3 * 2
+    for budget, expected_n in ((25.0, 1), (50.0, 2), (75.0, 3)):
+        sizes = {len(cells[budget, arm]) for arm in cfg.arm_labels()}
+        assert sizes == {expected_n}, budget
+
+
+def test_stage_select_uncertainty_is_nested_across_budgets(sample_examples):
+    """Top-n of one fixed ranking, so a bigger budget is a superset."""
+    cfg = ExperimentConfig(budget_pct=[25, 75], train_seeds=[0], arms=[uncertainty_arm("pure")])
+    cells = stage_select(cfg, scored_records(len(sample_examples)), sample_examples)
+
+    small = cells[25.0, "avg_neg_logprob:pure"]
+    large = cells[75.0, "avg_neg_logprob:pure"]
+    assert all(ex in large for ex in small)
 
 
 def test_stage_select_raises_when_cache_is_short(sample_examples):
-    cfg = ExperimentConfig(budget_pct=100, train_seeds=[0], score="pure")
+    cfg = ExperimentConfig(budget_pct=[100], train_seeds=[0], arms=[uncertainty_arm("pure")])
     records = [{"idx": 0, "choices": [{"logprobs": [{"token": "1", "logprob": -1.0}]}]}]
     with pytest.raises(ValueError, match="incomplete"):
         stage_select(cfg, records, sample_examples)
 
 
-def test_stage_select_single_arm_needs_no_scores(sample_examples):
-    cfg = ExperimentConfig(budget_pct=50, arms=["random"], train_seeds=[0])
-    arms = stage_select(cfg, [], sample_examples)
-    assert list(arms) == ["random"]
-    assert len(arms["random"]) == 2
+def test_stage_select_single_random_arm_needs_no_scores(sample_examples):
+    """arms: [random] must run with an empty LLM cache — no metric is evaluated."""
+    cfg = ExperimentConfig(budget_pct=[50], arms=[ArmConfig("random")], train_seeds=[0])
+    cells = stage_select(cfg, [], sample_examples)
+    assert list(cells) == [(50.0, "random")]
+    assert len(cells[50.0, "random"]) == 2
 
 
 # --- summarize ----------------------------------------------------------------
 
 
-def test_summarize_computes_the_gap():
+def test_summarize_computes_the_gap_against_random():
     results = make_results([0.6, 0.7], [0.4, 0.5])
-    summary, per_type, gap = summarize(results)
+    summary, _per_type, gaps = summarize(results)
 
-    assert gap == pytest.approx(0.2)
-    assert summary.loc["uncertainty", ("entity_f1", "mean")] == pytest.approx(0.65)
-    assert summary.loc["random", ("entity_f1", "mean")] == pytest.approx(0.45)
-
-
-def test_summarize_per_type_has_a_delta_column():
-    _, per_type, _ = summarize(make_results([0.6, 0.6], [0.4, 0.4]))
-    assert list(per_type.index) == ["Activity", "Actor"]
-    assert per_type.loc["Actor", "delta"] == pytest.approx(0.2)
-    assert per_type.loc["Activity", "delta"] == pytest.approx(0.0)
+    assert gaps == {10.0: {ANLP: pytest.approx(0.2)}}
+    assert summary.loc[(10.0, ANLP), ("entity_f1", "mean")] == pytest.approx(0.65)
+    assert summary.loc[(10.0, "random"), ("entity_f1", "mean")] == pytest.approx(0.45)
 
 
 def test_summarize_negative_gap():
-    _, _, gap = summarize(make_results([0.3], [0.5]))
-    assert gap == pytest.approx(-0.2)
+    _, _, gaps = summarize(make_results([0.3], [0.5]))
+    assert gaps[10.0][ANLP] == pytest.approx(-0.2)
+
+
+def test_summarize_reports_a_gap_per_budget():
+    results = pd.concat(
+        [make_results([0.6], [0.4], budget=5.0), make_results([0.5], [0.55], budget=25.0)]
+    )
+    _, _, gaps = summarize(results)
+    assert set(gaps) == {5.0, 25.0}
+    assert gaps[5.0][ANLP] == pytest.approx(0.2)
+    assert gaps[25.0][ANLP] == pytest.approx(-0.05)
+
+
+def test_summarize_without_a_random_arm_reports_no_gaps():
+    results = make_results([0.6], [0.4])
+    results = results[results["arm"] != "random"]
+    _, _, gaps = summarize(results)
+    assert gaps == {}
+
+
+def test_summarize_handles_several_uncertainty_arms():
+    results = make_results([0.6], [0.4])
+    extra = make_results([0.5], [0.4])
+    extra = extra[extra["arm"] == ANLP].assign(arm="avg_neg_logprob:pure")
+    results = pd.concat([results, extra], ignore_index=True)
+
+    _, _, gaps = summarize(results)
+    assert gaps[10.0] == {
+        ANLP: pytest.approx(0.2),
+        "avg_neg_logprob:pure": pytest.approx(0.1),
+    }
 
 
 # --- outputs ------------------------------------------------------------------
@@ -128,21 +190,53 @@ def test_write_outputs_creates_every_artifact(tmp_path, sample_examples):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     results = make_results([0.6, 0.7], [0.4, 0.5])
-    summary, per_type, gap = summarize(results)
-    arms = {"uncertainty": sample_examples[:2], "random": sample_examples[2:]}
+    summary, per_type, gaps = summarize(results)
+    cells = {(10.0, ANLP): sample_examples[:2], (10.0, "random"): sample_examples[2:]}
 
-    write_outputs(run_dir, arms, results, summary, per_type, gap, {"n_cached": 328})
+    write_outputs(run_dir, cells, results, summary, per_type, gaps, {"n_cached": 328})
 
     for name in ("selection.json", "results.csv", "summary.csv", "per_type_f1.csv", "metrics.json"):
         assert (run_dir / name).exists(), name
 
     selection = json.loads((run_dir / "selection.json").read_text())
-    assert selection["uncertainty"] == ["doc-1::3", "doc-2::3"]
+    assert selection["10"][ANLP] == ["doc-1::3", "doc-2::3"]
 
     metrics = json.loads((run_dir / "metrics.json").read_text())
-    assert metrics["gap"] == pytest.approx(0.2)
     assert metrics["n_cached"] == 328
-    assert metrics["entity_f1"]["uncertainty"]["mean"] == pytest.approx(0.65)
+    assert metrics["budgets"] == [10.0]
+    assert metrics["by_budget"]["10"]["gap_vs_random"][ANLP] == pytest.approx(0.2)
+    assert metrics["by_budget"]["10"]["entity_f1"][ANLP]["mean"] == pytest.approx(0.65)
+
+    # per_type_f1 is a dict column and must not land in the flat CSV
+    columns = pd.read_csv(run_dir / "results.csv").columns
+    assert "per_type_f1" not in columns
+    assert "budget_pct" in columns
+
+
+def test_write_outputs_nests_selection_by_budget(tmp_path, sample_examples):
+    from uq_pet.main import write_outputs
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    results = pd.concat(
+        [make_results([0.6], [0.4], budget=5.0), make_results([0.5], [0.55], budget=25.0)]
+    )
+    summary, per_type, gaps = summarize(results)
+    cells = {
+        (5.0, ANLP): sample_examples[:1],
+        (5.0, "random"): sample_examples[1:2],
+        (25.0, ANLP): sample_examples[:3],
+        (25.0, "random"): sample_examples[1:],
+    }
+    write_outputs(run_dir, cells, results, summary, per_type, gaps, {})
+
+    selection = json.loads((run_dir / "selection.json").read_text())
+    assert set(selection) == {"5", "25"}
+    assert set(selection["5"]) == {ANLP, "random"}
+
+    metrics = json.loads((run_dir / "metrics.json").read_text())
+    assert metrics["budgets"] == [5.0, 25.0]
+    assert metrics["by_budget"]["25"]["gap_vs_random"][ANLP] == pytest.approx(-0.05)
 
 
 def test_metrics_json_is_strictly_valid_with_a_single_seed(tmp_path, sample_examples):
@@ -152,13 +246,12 @@ def test_metrics_json_is_strictly_valid_with_a_single_seed(tmp_path, sample_exam
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     results = make_results([0.6], [0.4])
-    summary, per_type, gap = summarize(results)
-    write_outputs(run_dir, {"uncertainty": sample_examples[:1]}, results, summary, per_type, gap, {})
+    summary, per_type, gaps = summarize(results)
+    write_outputs(run_dir, {(10.0, ANLP): sample_examples[:1]}, results, summary, per_type, gaps, {})
 
     raw = (run_dir / "metrics.json").read_text()
     assert "NaN" not in raw
     metrics = json.loads(raw)  # would raise on NaN with parse_constant left default
-    assert metrics["entity_f1"]["uncertainty"]["std"] is None
+    assert metrics["by_budget"]["10"]["entity_f1"][ANLP]["std"] is None
 
-    # per_type_f1 is a dict column and must not land in the flat CSV
-    assert "per_type_f1" not in pd.read_csv(run_dir / "results.csv").columns
+

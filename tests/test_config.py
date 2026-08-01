@@ -3,11 +3,14 @@ import yaml
 
 from uq_pet.config import (
     CONFIGS_DIR,
+    ArmConfig,
     ExperimentConfig,
     LLMConfig,
     TrainConfig,
+    arm_to_dict,
     config_to_yaml,
     load_config,
+    parse_arm,
     project_root,
 )
 
@@ -62,7 +65,23 @@ def _write(tmp_path, data) -> str:
 
 
 def test_load_config_round_trip(tmp_path):
-    cfg = ExperimentConfig(budget_pct=25, train_seeds=[7])
+    cfg = ExperimentConfig(budget_pct=[25], train_seeds=[7])
+    path = tmp_path / "rt.yaml"
+    path.write_text(config_to_yaml(cfg))
+    assert load_config(path) == cfg
+
+
+def test_config_to_yaml_round_trips_arms_with_params(tmp_path):
+    """asdict() would emit the nested {strategy, params, label} shape, which
+    load_config rejects — that would silently break every run's config snapshot."""
+    cfg = ExperimentConfig(
+        budget_pct=[5, 10],
+        arms=[
+            ArmConfig(strategy="random"),
+            ArmConfig(strategy="avg_neg_logprob", params={"tokens": "pure"}),
+            ArmConfig(strategy="avg_neg_logprob", params={"tokens": "filtered"}, label="anlp"),
+        ],
+    )
     path = tmp_path / "rt.yaml"
     path.write_text(config_to_yaml(cfg))
     assert load_config(path) == cfg
@@ -71,10 +90,88 @@ def test_load_config_round_trip(tmp_path):
 def test_load_config_nested_partial_override(tmp_path):
     path = _write(tmp_path, {"budget_pct": 5, "train": {"epochs": 2}})
     cfg = load_config(path)
-    assert cfg.budget_pct == 5
+    assert cfg.budget_pct == [5.0]
     assert cfg.train.epochs == 2
     assert cfg.train.checkpoint == TrainConfig().checkpoint  # untouched fields keep defaults
     assert cfg.llm == LLMConfig()
+
+
+# --- arms ---------------------------------------------------------------------
+
+
+def test_parse_arm_puts_leftover_keys_into_params():
+    arm = parse_arm({"strategy": "avg_neg_logprob", "tokens": "pure"})
+    assert arm.strategy == "avg_neg_logprob"
+    assert arm.params == {"tokens": "pure"}
+    assert arm.label is None
+
+
+def test_parse_arm_accepts_a_bare_strategy_name():
+    assert parse_arm("random") == ArmConfig(strategy="random")
+
+
+def test_parse_arm_requires_a_strategy():
+    with pytest.raises(ValueError, match="missing the required 'strategy'"):
+        parse_arm({"tokens": "pure"})
+
+
+@pytest.mark.parametrize(
+    ("arm", "expected"),
+    [
+        (ArmConfig("random"), "random"),
+        (ArmConfig("avg_neg_logprob", {"tokens": "pure"}), "avg_neg_logprob:pure"),
+        (ArmConfig("avg_neg_logprob", {"tokens": "pure"}, "custom"), "custom"),
+    ],
+)
+def test_resolved_label(arm, expected):
+    assert arm.resolved_label() == expected
+
+
+def test_arm_to_dict_emits_the_flat_form():
+    arm = ArmConfig("avg_neg_logprob", {"tokens": "pure"}, "anlp")
+    assert arm_to_dict(arm) == {"strategy": "avg_neg_logprob", "tokens": "pure", "label": "anlp"}
+    assert "label" not in arm_to_dict(ArmConfig("random"))
+
+
+def test_load_config_parses_the_arm_list(tmp_path):
+    path = _write(
+        tmp_path,
+        {
+            "arms": [
+                {"strategy": "random"},
+                {"strategy": "avg_neg_logprob", "tokens": "pure"},
+            ]
+        },
+    )
+    cfg = load_config(path)
+    assert cfg.arm_labels() == ["random", "avg_neg_logprob:pure"]
+
+
+def test_duplicate_arm_labels_raise():
+    with pytest.raises(ValueError, match="arm labels must be unique"):
+        ExperimentConfig(arms=[ArmConfig("random"), ArmConfig("random")])
+
+
+def test_two_variants_of_one_metric_coexist():
+    cfg = ExperimentConfig(
+        arms=[
+            ArmConfig("avg_neg_logprob", {"tokens": "pure"}),
+            ArmConfig("avg_neg_logprob", {"tokens": "filtered"}),
+        ]
+    )
+    assert cfg.arm_labels() == ["avg_neg_logprob:pure", "avg_neg_logprob:filtered"]
+
+
+# --- budgets ------------------------------------------------------------------
+
+
+def test_budget_scalar_is_coerced_to_a_list():
+    assert ExperimentConfig(budget_pct=10).budget_pct == [10.0]
+
+
+def test_budgets_are_sorted_ascending():
+    """A learning curve's x axis should be monotone whatever order the file used."""
+    assert ExperimentConfig(budget_pct=[25, 5, 10]).budget_pct == [5.0, 10.0, 25.0]
 
 
 def test_load_config_unknown_key_raises(tmp_path):
@@ -116,10 +213,10 @@ def test_llm_config_validation(kwargs):
     [
         {"budget_pct": 0},
         {"budget_pct": 101},
-        {"score": "entropy"},
+        {"budget_pct": []},
+        {"budget_pct": [10, 10]},
+        {"budget_pct": [10, 200]},
         {"arms": []},
-        {"arms": ["uncertainty", "uncertainty"]},
-        {"arms": ["magic"]},
         {"train_seeds": []},
         {"train_seeds": [0, 0]},
     ],

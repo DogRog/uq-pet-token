@@ -61,8 +61,64 @@ NER_TAGS = [
     "I-AND Gateway",
 ]
 
-ARMS = ("uncertainty", "random")
-SCORE_VARIANTS = ("pure", "filtered")
+@dataclass
+class ArmConfig:
+    """One arm of the comparison: a selection strategy plus that strategy's parameters.
+
+    In YAML an arm is a flat mapping — `strategy` names the metric (or "random" for the
+    control), an optional `label` renames it, and every remaining key is a parameter of
+    that metric:
+
+        arms:
+          - strategy: random
+          - strategy: avg_neg_logprob
+            tokens: filtered
+
+    Which parameters a strategy accepts is defined by the metric function itself, so
+    that validation lives in `uncertainty.validate_arm` and this module stays free of
+    package imports. `main()` calls it before any work begins.
+    """
+
+    strategy: str
+    params: dict[str, Any] = field(default_factory=dict)
+    label: str | None = None
+
+    def resolved_label(self) -> str:
+        """Display name: explicit label, else strategy plus its parameter values."""
+        if self.label:
+            return self.label
+        if not self.params:
+            return self.strategy
+        values = ",".join(str(self.params[k]) for k in sorted(self.params))
+        return f"{self.strategy}:{values}"
+
+
+def arm_to_dict(arm: ArmConfig) -> dict[str, Any]:
+    """Serialize back to the flat YAML form that `load_config` accepts.
+
+    dataclasses.asdict would emit the nested {strategy, params, label} shape instead,
+    which load_config rejects — that would silently break every run's config.yaml
+    snapshot and the round-trip it is meant to support.
+    """
+    data: dict[str, Any] = {"strategy": arm.strategy, **arm.params}
+    if arm.label:
+        data["label"] = arm.label
+    return data
+
+
+def parse_arm(raw: dict | str) -> ArmConfig:
+    """Build an ArmConfig from one flat YAML mapping (or a bare strategy name)."""
+    if isinstance(raw, str):
+        return ArmConfig(strategy=raw)
+    if not isinstance(raw, dict):
+        raise TypeError(f"each arm must be a mapping or a strategy name, got {raw!r}")
+
+    params = dict(raw)
+    strategy = params.pop("strategy", None)
+    if not strategy:
+        raise ValueError(f"arm {raw!r} is missing the required 'strategy' key")
+    label = params.pop("label", None)
+    return ArmConfig(strategy=strategy, params=params, label=label)
 
 
 @dataclass
@@ -159,16 +215,23 @@ class TrainConfig:
 
 @dataclass
 class ExperimentConfig:
-    """One budget, two arms, N training seeds.
+    """A budget sweep x arms x training seeds.
 
-    Every arm gets the same number of sentences (`budget_pct` of the pool); the only
+    Every arm gets the same number of sentences at a given budget; the only
     experimental variable is *which* sentences. `train_seeds` exists because a
     ~32-sentence fine-tune is noisy enough that a single-seed gap is not a result.
+
+    Note the seeds vary training, not selection: all seeds share one selected set per
+    (budget, arm), so the error bars cover training noise but not selection noise.
     """
 
-    budget_pct: float = 10.0
-    arms: list[str] = field(default_factory=lambda: list(ARMS))
-    score: str = "filtered"
+    budget_pct: list[float] = field(default_factory=lambda: [10.0])
+    arms: list[ArmConfig] = field(
+        default_factory=lambda: [
+            ArmConfig(strategy="random"),
+            ArmConfig(strategy="avg_neg_logprob", params={"tokens": "filtered"}),
+        ]
+    )
     selection_seed: int = 42
     tie_seed: int = 0
     train_seeds: list[int] = field(default_factory=lambda: [0, 1, 2])
@@ -176,21 +239,33 @@ class ExperimentConfig:
     train: TrainConfig = field(default_factory=TrainConfig)
 
     def __post_init__(self) -> None:
-        if not 0 < self.budget_pct <= 100:
-            raise ValueError(f"budget_pct must be in (0, 100], got {self.budget_pct}")
-        if self.score not in SCORE_VARIANTS:
-            raise ValueError(f"Unknown score '{self.score}' (expected one of {SCORE_VARIANTS})")
+        # A bare scalar is a natural way to write a single budget; accept it.
+        if isinstance(self.budget_pct, (int, float)):
+            self.budget_pct = [float(self.budget_pct)]
+        if not self.budget_pct:
+            raise ValueError("budget_pct must not be empty")
+        bad = [b for b in self.budget_pct if not 0 < b <= 100]
+        if bad:
+            raise ValueError(f"every budget_pct must be in (0, 100], got {bad}")
+        if len(set(self.budget_pct)) != len(self.budget_pct):
+            raise ValueError(f"budget_pct must be unique, got {self.budget_pct}")
+        # Sorted so a learning curve's x axis is monotone whatever the file's order.
+        self.budget_pct = sorted(float(b) for b in self.budget_pct)
+
+        self.arms = [a if isinstance(a, ArmConfig) else parse_arm(a) for a in self.arms]
         if not self.arms:
             raise ValueError("arms must not be empty")
-        unknown = [a for a in self.arms if a not in ARMS]
-        if unknown:
-            raise ValueError(f"Unknown arms {unknown} (expected a subset of {list(ARMS)})")
-        if len(set(self.arms)) != len(self.arms):
-            raise ValueError(f"arms must be unique, got {self.arms}")
+        labels = [a.resolved_label() for a in self.arms]
+        if len(set(labels)) != len(labels):
+            raise ValueError(f"arm labels must be unique, got {labels} — set an explicit label")
+
         if not self.train_seeds:
             raise ValueError("train_seeds must not be empty")
         if len(set(self.train_seeds)) != len(self.train_seeds):
             raise ValueError(f"train_seeds must be unique, got {self.train_seeds}")
+
+    def arm_labels(self) -> list[str]:
+        return [a.resolved_label() for a in self.arms]
 
 
 def load_config(path: str | Path) -> ExperimentConfig:
@@ -199,8 +274,13 @@ def load_config(path: str | Path) -> ExperimentConfig:
         raw = yaml.safe_load(f) or {}
     llm = LLMConfig(**(raw.pop("llm", None) or {}))
     train = TrainConfig(**(raw.pop("train", None) or {}))
+    arms = [parse_arm(a) for a in raw.pop("arms", None) or []] or None
+    if arms is not None:
+        raw["arms"] = arms
     return ExperimentConfig(llm=llm, train=train, **raw)
 
 
 def config_to_yaml(cfg: ExperimentConfig) -> str:
-    return yaml.safe_dump(asdict(cfg), sort_keys=False)
+    data = asdict(cfg)
+    data["arms"] = [arm_to_dict(a) for a in cfg.arms]  # asdict would emit the nested form
+    return yaml.safe_dump(data, sort_keys=False)
