@@ -105,7 +105,7 @@ def stage_score(
     prompt_sha = prompt_fingerprint(system_prompt)
     user_prompts = build_user_prompts(pool_examples)
     keys = [sentence_key(ex) for ex in pool_examples]
-    cache_path = cfg.llm.cache_path("pool")
+    cache_path = cfg.llm.cache_path("pool", tag=cfg.few_shot_tag())
     load_kwargs = {
         "model": cfg.llm.model,
         "params": cfg.llm.sampling_params(),
@@ -334,11 +334,17 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("Run directory: %s", run_dir)
 
     download_pet_ner(force=args.force_download)
-    few_shot, pool, test = split_dataset()
+    few_shot, pool, test = split_dataset(
+        n_few_shot=cfg.n_few_shot, few_shot_seed=cfg.few_shot_seed
+    )
     pool_examples = to_examples(pool)
     test_examples = to_examples(test)
     logger.info(
-        "Split: %d few-shot, %d pool, %d test", len(few_shot), len(pool_examples), len(test_examples)
+        "Split: %d few-shot (seed %d), %d pool, %d test",
+        len(few_shot),
+        cfg.few_shot_seed,
+        len(pool_examples),
+        len(test_examples),
     )
 
     records, _sha, meta = stage_score(

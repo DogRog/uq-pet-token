@@ -6,7 +6,7 @@ Is **LLM uncertainty quantification a good criterion for choosing training data*
 
 ```text
 PET NER dataset (417 sentences)
-├── 5 few-shot examples (fixed, used in every prompt)
+├── 5 few-shot examples (`n_few_shot`, used in every prompt)
 ├── 328 experiment pool
 │     │  LLM repeated sampling (K=5, temp 1.0, with token logprobs)
 │     │  → one uncertainty score per sentence, per metric
@@ -53,6 +53,12 @@ enough that a single-seed gap between arms would not be a result.
     entropy of the votes over log K, so 0–1) or `disagreement` (the fraction of samples
     off the plurality tag). Because it needs no logprobs, it also works against a
     gateway that doesn't return them.
+- **Few-shot prompt**: `n_few_shot` (default 5) and `few_shot_seed` (default 42) choose
+  the demonstrations shown to the LLM. They also decide which sentences are held out of
+  the pool, so changing either changes both the prompt and the size of the pool
+  (`n_few_shot: 10` gives 10 / 323 / 84). A non-default pair scores into its own cache
+  file — `nhr_gemma_pool_fs10s42_dist.jsonl` — so it costs a fresh pass over the pool
+  and cannot corrupt the default one.
 - **Trained model**: `distilbert-base-cased` token classifier, manual torch loop.
 - **Evaluation**: entity-level micro F1 (seqeval), per-type F1, token accuracy.
 

@@ -80,11 +80,18 @@ gateway generations. It is gitignored and not backed up anywhere.
 
 1. **Records are keyed by `idx` = position in the `pool` split.** So `SEED`,
    `TEST_SIZE`, `N_FEW_SHOT_EXAMPLES`, `FEW_SHOT_SPLIT_SEED` in `config.py` and the
-   exact `datasets==2.19.2` pin *define* the cache. They are module constants rather
-   than YAML knobs on purpose — changing one silently repoints every record at a
-   different sentence. `tests/test_dataset.py::test_split_sizes_and_first_key` is the
-   canary; `llm.verify_cache_alignment()` gates every run and must stay above 0.80
-   (measured 0.957 when aligned, <0.05 under any shift).
+   exact `datasets==2.19.2` pin *define* the cache. `SEED` and `TEST_SIZE` are module
+   constants rather than YAML knobs on purpose — changing one silently repoints every
+   record at a different sentence. `tests/test_dataset.py::test_split_sizes_and_first_key`
+   is the canary; `llm.verify_cache_alignment()` gates every run and must stay above
+   0.80 (measured 0.957 when aligned, <0.05 under any shift).
+
+   The two few-shot values are the defaults of the YAML knobs
+   `ExperimentConfig.n_few_shot` / `few_shot_seed`. Overriding either is safe *only*
+   because `few_shot_tag()` then appends `_fs<n>s<seed>` to the cache filename, giving
+   that split its own file. Anything that reads the pool cache must pass
+   `tag=cfg.few_shot_tag()` to `cache_path`, or a non-default run will append records
+   into the 328-record cache under indices that mean something else.
 2. **`LLMConfig()`'s defaults must keep producing `nhr_gemma_pool_dist.jsonl` and the
    cached `params` dict.** `tests/test_config.py` locks both. `smoke.yaml` deliberately
    omits every sampling field so it inherits those defaults and hits the same cache.

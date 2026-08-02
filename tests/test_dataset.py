@@ -57,6 +57,27 @@ def test_split_sizes_and_first_key():
 
 
 @needs_raw_data
+def test_n_few_shot_moves_sentences_out_of_the_pool():
+    """The test split is untouched, so only the few-shot/pool boundary moves."""
+    few_shot, pool, test = split_dataset(n_few_shot=10)
+    assert (len(few_shot), len(pool), len(test)) == (10, 323, 84)
+
+
+@needs_raw_data
+def test_few_shot_seed_changes_which_sentences_are_held_out():
+    default, _, _ = split_dataset()
+    other, other_pool, _ = split_dataset(few_shot_seed=7)
+
+    default_keys = {sentence_key(e) for e in to_examples(default)}
+    other_keys = {sentence_key(e) for e in to_examples(other)}
+    pool_keys = {sentence_key(e) for e in to_examples(other_pool)}
+
+    assert len(other) == len(default)
+    assert other_keys != default_keys
+    assert not other_keys & pool_keys
+
+
+@needs_raw_data
 def test_split_is_deterministic_and_disjoint():
     few_shot, pool, test = split_dataset()
     again = split_dataset()

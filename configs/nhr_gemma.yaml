@@ -23,8 +23,14 @@ arms:
     measure: disagreement   # the same, as a plain off-the-plurality fraction
 
 selection_seed: 42
-tie_seed: 0              # used in rank_by_uncertainty() to prevent order bias for equal scores   
+tie_seed: 0              # used in rank_by_uncertainty() to prevent order bias for equal scores
 train_seeds: [0, 1]
+
+# Few-shot demonstrations in the LLM prompt. These also decide which sentences are held
+# out of the pool, so a non-default pair scores into its own cache file
+# (nhr_gemma_pool_fs<n>s<seed>_dist.jsonl) — i.e. a full re-scoring pass.
+n_few_shot: 5
+few_shot_seed: 42
 
 llm:
   model: RedHatAI/gemma-4-31B-it-FP8-block

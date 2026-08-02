@@ -15,9 +15,16 @@ import yaml
 # --- Cache-identity constants -------------------------------------------------
 # The LLM score cache is keyed by `idx` = position in the *pool* split. That position
 # is a function of these four values, the raw PET file, and the exact `datasets` pin
-# in pyproject.toml. They are deliberately NOT YAML knobs: changing one silently
+# in pyproject.toml.
+#
+# SEED and TEST_SIZE are deliberately NOT YAML knobs: changing one silently
 # invalidates every cached record without changing the cache filename. If you must
 # change one, delete data/processed/llm_scores/*.jsonl in the same commit.
+#
+# The two few-shot values *are* overridable — they are the defaults of
+# `ExperimentConfig.n_few_shot` / `few_shot_seed`. That is safe only because a
+# non-default pair adds a tag to the cache filename (see `few_shot_tag`), so a run
+# with different few-shot examples gets its own cache instead of poisoning this one.
 SEED = 3407
 TEST_SIZE = 0.2
 FEW_SHOT_SPLIT_SEED = 42
@@ -185,8 +192,13 @@ class LLMConfig:
             params["top_logprobs"] = self.top_logprobs
         return params
 
-    def cache_path(self, split: str = "pool") -> Path:
-        return LLM_SCORES_DIR / f"{self.cache_prefix}_{split}_{self.cache_suffix}.jsonl"
+    def cache_path(self, split: str = "pool", tag: str = "") -> Path:
+        """Cache file for one split. `tag` separates caches whose split differs.
+
+        It is empty for the default few-shot settings, so the existing cache keeps its
+        name; see `ExperimentConfig.few_shot_tag`.
+        """
+        return LLM_SCORES_DIR / f"{self.cache_prefix}_{split}{tag}_{self.cache_suffix}.jsonl"
 
 
 @dataclass
@@ -223,6 +235,11 @@ class ExperimentConfig:
 
     Note the seeds vary training, not selection: all seeds share one selected set per
     (budget, arm), so the error bars cover training noise but not selection noise.
+
+    `n_few_shot` / `few_shot_seed` choose the demonstrations in the LLM prompt. They
+    also decide which sentences are held out of the pool, so changing either changes
+    both the prompt and the meaning of every cache index — which is why a non-default
+    pair writes to its own cache file (`few_shot_tag`).
     """
 
     budget_pct: list[float] = field(default_factory=lambda: [10.0])
@@ -234,6 +251,8 @@ class ExperimentConfig:
     )
     selection_seed: int = 42
     tie_seed: int = 0
+    n_few_shot: int = N_FEW_SHOT_EXAMPLES
+    few_shot_seed: int = FEW_SHOT_SPLIT_SEED
     train_seeds: list[int] = field(default_factory=lambda: [0, 1, 2])
     llm: LLMConfig = field(default_factory=LLMConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
@@ -264,8 +283,21 @@ class ExperimentConfig:
         if len(set(self.train_seeds)) != len(self.train_seeds):
             raise ValueError(f"train_seeds must be unique, got {self.train_seeds}")
 
+
     def arm_labels(self) -> list[str]:
         return [a.resolved_label() for a in self.arms]
+
+    def few_shot_tag(self) -> str:
+        """Cache-filename tag for a non-default few-shot split, "" for the default.
+
+        The score cache is keyed by position in the pool, and the pool is whatever the
+        few-shot split leaves behind — so two runs with different `n_few_shot` or
+        `few_shot_seed` must not share a file. Returning "" for the defaults is what
+        keeps the existing nhr_gemma_pool_dist.jsonl reachable.
+        """
+        if (self.n_few_shot, self.few_shot_seed) == (N_FEW_SHOT_EXAMPLES, FEW_SHOT_SPLIT_SEED):
+            return ""
+        return f"_fs{self.n_few_shot}s{self.few_shot_seed}"
 
 
 def load_config(path: str | Path) -> ExperimentConfig:

@@ -3,6 +3,8 @@ import yaml
 
 from uq_pet.config import (
     CONFIGS_DIR,
+    FEW_SHOT_SPLIT_SEED,
+    N_FEW_SHOT_EXAMPLES,
     ArmConfig,
     ExperimentConfig,
     LLMConfig,
@@ -45,9 +47,28 @@ def test_default_sampling_params_match_cached_params():
     }
 
 
+def test_default_few_shot_settings_keep_the_existing_cache_name():
+    """The default few-shot split must not tag the filename, or the 328-record cache
+    at nhr_gemma_pool_dist.jsonl becomes unreachable."""
+    cfg = ExperimentConfig()
+    assert (cfg.n_few_shot, cfg.few_shot_seed) == (N_FEW_SHOT_EXAMPLES, FEW_SHOT_SPLIT_SEED)
+    assert cfg.few_shot_tag() == ""
+    assert cfg.llm.cache_path("pool", tag=cfg.few_shot_tag()).name == "nhr_gemma_pool_dist.jsonl"
+
+
+@pytest.mark.parametrize("kwargs", [{"n_few_shot": 10}, {"few_shot_seed": 7}])
+def test_non_default_few_shot_settings_get_their_own_cache(kwargs):
+    """A different few-shot split means a different pool, so idx means something else."""
+    cfg = ExperimentConfig(**kwargs)
+    tag = cfg.few_shot_tag()
+    assert tag and tag != ""
+    assert cfg.llm.cache_path("pool", tag=tag).name != "nhr_gemma_pool_dist.jsonl"
+
+
 def test_cache_path_varies_by_split_and_suffix():
     cfg = LLMConfig(cache_prefix="x", cache_suffix="vote")
     assert cfg.cache_path("test").name == "x_test_vote.jsonl"
+    assert cfg.cache_path("test", tag="_fs10s7").name == "x_test_fs10s7_vote.jsonl"
 
 
 def test_top_logprobs_appears_only_when_set():
@@ -94,6 +115,12 @@ def test_load_config_nested_partial_override(tmp_path):
     assert cfg.train.epochs == 2
     assert cfg.train.checkpoint == TrainConfig().checkpoint  # untouched fields keep defaults
     assert cfg.llm == LLMConfig()
+
+
+def test_load_config_reads_the_few_shot_knobs(tmp_path):
+    cfg = load_config(_write(tmp_path, {"n_few_shot": 10, "few_shot_seed": 7}))
+    assert (cfg.n_few_shot, cfg.few_shot_seed) == (10, 7)
+    assert cfg.few_shot_tag() == "_fs10s7"
 
 
 # --- arms ---------------------------------------------------------------------
@@ -219,6 +246,7 @@ def test_llm_config_validation(kwargs):
         {"arms": []},
         {"train_seeds": []},
         {"train_seeds": [0, 0]},
+        {"n_few_shot": 0},
     ],
 )
 def test_experiment_config_validation(kwargs):
