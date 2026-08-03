@@ -110,8 +110,7 @@ def plot_arms(results: pd.DataFrame, out_path: Path) -> None:
     ax.set_xticks(range(len(arms)), [_wrap_label(a) for a in arms], color=INK_PRIMARY)
     ax.set_ylabel("entity-level micro F1 (test split)", color=INK_SECONDARY)
     ax.set_title(
-        f"Selection strategy vs. test F1 — {budget:.3g}% budget "
-        f"({int(sizes.iloc[0])} sentences)",
+        f"Selection strategy vs. test F1 — {budget:.3g}% budget ({int(sizes.iloc[0])} sentences)",
         pad=14,
         color=INK_PRIMARY,
     )
@@ -155,22 +154,18 @@ def plot_learning_curve(results: pd.DataFrame, out_path: Path) -> None:
         # over selections. Every seed trains on the same selected sentences, so this is
         # training noise alone. The band makes overlap between arms readable at a glance;
         # the caps keep each condition's own interval legible where the bands collide.
-        ax.fill_between(x, 
-                        mean - std, 
-                        mean + std, 
-                        color=colors[arm], 
-                        alpha=0.18, 
-                        linewidth=0, 
-                        zorder=2)
+        ax.fill_between(
+            x, mean - std, mean + std, color=colors[arm], alpha=0.18, linewidth=0, zorder=2
+        )
         ax.errorbar(
-            x, 
-            mean, 
+            x,
+            mean,
             yerr=std,
-            color=colors[arm], 
-            linewidth=2, 
-            elinewidth=1.5, 
-            capsize=4, 
-            capthick=1.5, 
+            color=colors[arm],
+            linewidth=2,
+            elinewidth=1.5,
+            capsize=4,
+            capthick=1.5,
             zorder=3,
             label=arm,
         )
@@ -186,8 +181,12 @@ def plot_learning_curve(results: pd.DataFrame, out_path: Path) -> None:
         label_x = x[-1] + span * 0.03
         for arm, y in declutter(ends, min_gap).items():
             ax.annotate(
-                arm, (label_x, y), va="center", fontsize=9,
-                color=INK_PRIMARY, annotation_clip=False,
+                arm,
+                (label_x, y),
+                va="center",
+                fontsize=9,
+                color=INK_PRIMARY,
+                annotation_clip=False,
             )
         right_pad = 0.34
     else:

@@ -160,7 +160,9 @@ def stage_score(
 
 
 def stage_select(
-    cfg: ExperimentConfig, records: list[dict], pool_examples: list[dict]
+    cfg: ExperimentConfig,
+    records: list[dict],
+    pool_examples: list[dict],
 ) -> dict[tuple[float, str], list[dict]]:
     """Select one set of sentences per (budget, arm).
 
@@ -268,7 +270,6 @@ def summarize(results: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     return summary, per_type, gaps
 
 
-
 def _json_float(value) -> float | None:
     """None for NaN — a single-seed run has no std, and bare NaN is not valid JSON."""
     value = float(value)
@@ -336,9 +337,7 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("Run directory: %s", run_dir)
 
     download_pet_ner(force=args.force_download)
-    few_shot, pool, test = split_dataset(
-        n_few_shot=cfg.n_few_shot, few_shot_seed=cfg.few_shot_seed
-    )
+    few_shot, pool, test = split_dataset(n_few_shot=cfg.n_few_shot, few_shot_seed=cfg.few_shot_seed)
     pool_examples = to_examples(pool)
     test_examples = to_examples(test)
     logger.info(

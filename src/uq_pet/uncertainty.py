@@ -60,9 +60,7 @@ def metric_params(strategy: str) -> list[str]:
     """The keyword-only parameter names a metric accepts, i.e. its YAML knobs."""
     signature = inspect.signature(METRICS[strategy])
     return [
-        name
-        for name, p in signature.parameters.items()
-        if p.kind is inspect.Parameter.KEYWORD_ONLY
+        name for name, p in signature.parameters.items() if p.kind is inspect.Parameter.KEYWORD_ONLY
     ]
 
 

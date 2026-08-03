@@ -58,9 +58,7 @@ def test_load_cache_drops_mismatched_params(cache_file, sample_records):
 
 def test_load_cache_keeps_matching_model_and_params(cache_file, sample_records, llm_config):
     write_jsonl(cache_file, sample_records)
-    kept = load_cache(
-        cache_file, model=llm_config.model, params=llm_config.sampling_params()
-    )
+    kept = load_cache(cache_file, model=llm_config.model, params=llm_config.sampling_params())
     assert sorted(kept) == [0, 1, 2]
 
 
@@ -137,8 +135,10 @@ def test_score_split_respects_limit(monkeypatch, cache_file, sample_records, llm
 
 
 def test_score_split_scores_only_the_uncached(monkeypatch, cache_file, sample_records, llm_config):
-    """A partial cache means exactly the missing indices are requested, and the new
-    records are appended so the next run finds a complete cache."""
+    """A partial cache means exactly the missing indices are requested.
+
+    The new records are appended, so the next run finds a complete cache.
+    """
     write_jsonl(cache_file, sample_records[:1])
     requested = []
 
@@ -178,8 +178,9 @@ def test_score_split_does_not_cache_failures(monkeypatch, cache_file, llm_config
         },
     )
 
-    records = score_split(llm_config, "system", ["a"], ["doc-1::3"], cache_file, "sha",
-                          progress=False)
+    records = score_split(
+        llm_config, "system", ["a"], ["doc-1::3"], cache_file, "sha", progress=False
+    )
     assert failed_indices(records) == [0]
     assert load_cache(cache_file) == {}
 

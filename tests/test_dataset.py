@@ -85,8 +85,10 @@ def test_split_is_deterministic_and_disjoint():
         sentence_key(e) for e in to_examples(again[1])
     ]
 
-    keys = {name: {sentence_key(e) for e in to_examples(ds)} for name, ds in
-            (("few_shot", few_shot), ("pool", pool), ("test", test))}
+    keys = {
+        name: {sentence_key(e) for e in to_examples(ds)}
+        for name, ds in (("few_shot", few_shot), ("pool", pool), ("test", test))
+    }
     assert not keys["few_shot"] & keys["pool"]
     assert not keys["pool"] & keys["test"]
     assert not keys["few_shot"] & keys["test"]

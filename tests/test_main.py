@@ -255,11 +255,11 @@ def test_metrics_json_is_strictly_valid_with_a_single_seed(tmp_path, sample_exam
     run_dir.mkdir()
     results = make_results([0.6], [0.4])
     summary, per_type, gaps = summarize(results)
-    write_outputs(run_dir, {(10.0, ANLP): sample_examples[:1]}, results, summary, per_type, gaps, {})
+    write_outputs(
+        run_dir, {(10.0, ANLP): sample_examples[:1]}, results, summary, per_type, gaps, {}
+    )
 
     raw = (run_dir / "metrics.json").read_text()
     assert "NaN" not in raw
     metrics = json.loads(raw)  # would raise on NaN with parse_constant left default
     assert metrics["by_budget"]["10"]["entity_f1"][ANLP]["std"] is None
-
-

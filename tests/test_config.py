@@ -48,8 +48,11 @@ def test_default_sampling_params_match_cached_params():
 
 
 def test_default_few_shot_settings_keep_the_existing_cache_name():
-    """The default few-shot split must not tag the filename, or the 328-record cache
-    at nhr_gemma_pool_dist.jsonl becomes unreachable."""
+    """The default few-shot split must not tag the cache filename.
+
+    A tag would put the split in its own file, leaving the 328-record cache at
+    nhr_gemma_pool_dist.jsonl unreachable.
+    """
     cfg = ExperimentConfig()
     assert (cfg.n_few_shot, cfg.few_shot_seed) == (N_FEW_SHOT_EXAMPLES, FEW_SHOT_SPLIT_SEED)
     assert cfg.few_shot_tag() == ""
@@ -93,8 +96,11 @@ def test_load_config_round_trip(tmp_path):
 
 
 def test_config_to_yaml_round_trips_arms_with_params(tmp_path):
-    """asdict() would emit the nested {strategy, params, label} shape, which
-    load_config rejects — that would silently break every run's config snapshot."""
+    """asdict() would emit the nested {strategy, params, label} shape.
+
+    load_config rejects that shape, so emitting it would silently break every run's
+    config snapshot.
+    """
     cfg = ExperimentConfig(
         budget_pct=[5, 10],
         arms=[
@@ -177,7 +183,9 @@ def test_duplicate_arm_labels_raise():
 
 
 def test_two_variants_of_one_metric_coexist():
-    cfg = ExperimentConfig(arms=[ArmConfig("random", {"seed": 1}), ArmConfig("random", {"seed": 2})])
+    cfg = ExperimentConfig(
+        arms=[ArmConfig("random", {"seed": 1}), ArmConfig("random", {"seed": 2})]
+    )
     assert cfg.arm_labels() == ["random:1", "random:2"]
 
 

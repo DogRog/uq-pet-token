@@ -89,7 +89,9 @@ def encode_batch(
         seq_labels = []
         previous_word = None
         for word_id in encoding.word_ids(batch_index=i):
-            seq_labels.append(-100 if word_id is None or word_id == previous_word else tags[word_id])
+            seq_labels.append(
+                -100 if word_id is None or word_id == previous_word else tags[word_id]
+            )
             previous_word = word_id
         labels.append(seq_labels)
     return encoding, torch.tensor(labels)

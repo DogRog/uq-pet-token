@@ -46,9 +46,7 @@ def tag_records():
             {
                 "idx": idx,
                 "key": f"doc::{idx}",
-                "choices": [
-                    make_text_choice(s if isinstance(s, str) else str(s)) for s in samples
-                ],
+                "choices": [make_text_choice(s if isinstance(s, str) else str(s)) for s in samples],
             }
             for idx, samples in samples_by_idx.items()
         ]

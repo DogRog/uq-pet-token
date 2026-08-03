@@ -17,6 +17,7 @@ uv run pytest                          # offline: no network, no API key, no mod
 uv run pytest tests/test_uncertainty.py
 uv run pytest -m slow                  # the one test that downloads a checkpoint
 uv run ruff check .
+uv run ruff format .                   # style is ruff's; see [tool.ruff.format] in pyproject.toml
 
 # Sanity run: hits the existing score cache, makes no API calls, ~10s
 uv run python -m uq_pet.main --config configs/smoke.yaml --skip-scoring

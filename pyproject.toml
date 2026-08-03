@@ -43,8 +43,32 @@ packages = ["src/uq_pet"]
 line-length = 100
 src = ["src", "tests"]
 
+[tool.ruff.format]
+# Pinned to today's defaults so `ruff format` can't restyle the tree on a ruff upgrade.
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+# The knob behind the one-argument-per-line signature style: a trailing comma after the
+# last element ("magic trailing comma") keeps a signature or call exploded, and dropping
+# that comma lets the formatter collapse it onto one line when it fits in line-length.
+# So the comma is the author's switch — leave this false or the switch stops working.
+skip-magic-trailing-comma = false
+docstring-code-format = true
+
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F", "I", "UP", "B", "SIM"]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "SIM", "D"]
+# D1xx ("missing docstring") is off: this repo documents what needs explaining and leaves
+# self-evident helpers and the test suite bare. The rest of D still governs the shape of
+# the docstrings that do exist.
+ignore = [
+    "D1",
+    # D403 wants the first word capitalized, but docstrings here open with the identifier
+    # under discussion (`asdict() would emit...`) and capitalizing it would misname it.
+    "D403",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
 # Notebooks legitimately import mid-cell and rely on names from earlier cells.

@@ -68,6 +68,7 @@ NER_TAGS = [
     "I-AND Gateway",
 ]
 
+
 @dataclass
 class ArmConfig:
     """One arm of the comparison: a selection strategy plus that strategy's parameters.
@@ -230,9 +231,7 @@ class TrainConfig:
         if self.batch_size < 1:
             raise ValueError(f"train.batch_size must be >= 1, got {self.batch_size}")
         if not 0.0 <= self.warmup_fraction <= 1.0:
-            raise ValueError(
-                f"train.warmup_fraction must be in [0, 1], got {self.warmup_fraction}"
-            )
+            raise ValueError(f"train.warmup_fraction must be in [0, 1], got {self.warmup_fraction}")
 
 
 @dataclass
@@ -291,7 +290,6 @@ class ExperimentConfig:
             raise ValueError("train_seeds must not be empty")
         if len(set(self.train_seeds)) != len(self.train_seeds):
             raise ValueError(f"train_seeds must be unique, got {self.train_seeds}")
-
 
     def arm_labels(self) -> list[str]:
         return [a.resolved_label() for a in self.arms]

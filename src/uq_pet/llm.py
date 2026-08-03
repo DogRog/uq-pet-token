@@ -217,7 +217,15 @@ def score_split(
     ):
         futures = [
             pool.submit(
-                score_one, client, cfg, system_prompt, user_prompts[i], i, keys[i], prompt_sha, split
+                score_one,
+                client,
+                cfg,
+                system_prompt,
+                user_prompts[i],
+                i,
+                keys[i],
+                prompt_sha,
+                split,
             )
             for i in todo
         ]
