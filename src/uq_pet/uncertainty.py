@@ -1,4 +1,4 @@
-"""Uncertainty metrics, and the selection strategies they are compared against.
+"""The uncertainty metrics and the selection they drive.
 
 Each sentence was sampled K times with token logprobs. A *metric* turns those cached
 samples into one score per sentence, where higher means the model was less confident —
@@ -14,8 +14,10 @@ That is the whole contract — the config, the CLI and the reporting all pick me
 from the registry by name, and a metric's keyword-only parameters automatically become
 the parameters its arm accepts in YAML. Nothing else needs to change to add one.
 
-Selection: `random_sample_sentences` is the control arm. It lives here so both kinds of
-arm sit side by side and share one notion of "a budget of n sentences".
+The `random` control is a metric like any other: it scores each sentence with a uniform
+random number, so ranking by it and taking the top n *is* a uniform random sample of n.
+That leaves exactly one selection rule — `select` takes the top n of a metric's ranking
+— rather than one rule plus a special case for the control.
 
 Scores are always recomputed from the cache, never stored, so metrics, their parameters
 and the budget can all be swept without new LLM calls.
@@ -30,6 +32,8 @@ from statistics import fmean
 
 from uq_pet.prompt import parse_tag_ids
 
+# The control arm's name. Selection does not treat it specially; `main` and `plotting`
+# use it to find the baseline the other arms are reported against.
 RANDOM = "random"
 
 METRICS: dict[str, Callable[..., dict[int, float]]] = {}
@@ -41,8 +45,6 @@ def register(name: str) -> Callable:
     def decorator(fn: Callable[..., dict[int, float]]) -> Callable[..., dict[int, float]]:
         if name in METRICS:
             raise ValueError(f"metric '{name}' is already registered")
-        if name == RANDOM:
-            raise ValueError(f"'{RANDOM}' is reserved for the control arm")
         METRICS[name] = fn
         return fn
 
@@ -55,8 +57,6 @@ def metric_names() -> list[str]:
 
 def metric_params(strategy: str) -> list[str]:
     """The keyword-only parameter names a metric accepts, i.e. its YAML knobs."""
-    if strategy == RANDOM:
-        return []
     signature = inspect.signature(METRICS[strategy])
     return [
         name
@@ -67,10 +67,8 @@ def metric_params(strategy: str) -> list[str]:
 
 def validate_arm(strategy: str, params: dict) -> None:
     """Raise if the strategy is unknown or carries parameters it does not accept."""
-    if strategy != RANDOM and strategy not in METRICS:
-        raise ValueError(
-            f"Unknown strategy '{strategy}' (expected '{RANDOM}' or one of {metric_names()})"
-        )
+    if strategy not in METRICS:
+        raise ValueError(f"Unknown strategy '{strategy}' (expected one of {metric_names()})")
     allowed = metric_params(strategy)
     unknown = sorted(set(params) - set(allowed))
     if unknown:
@@ -78,15 +76,29 @@ def validate_arm(strategy: str, params: dict) -> None:
         raise ValueError(f"Strategy '{strategy}' {expected}, got unknown {unknown}")
 
 
-def score_arm(strategy: str, records: Iterable[dict], **params) -> dict[int, float] | None:
-    """Scores for one arm's metric; None for the random control, which needs none."""
-    if strategy == RANDOM:
-        return None
+def score_arm(strategy: str, records: Iterable[dict], **params) -> dict[int, float]:
+    """Scores for one arm, from the metric its strategy names."""
     validate_arm(strategy, params)
     return METRICS[strategy](records, **params)
 
 
 # --- metrics ------------------------------------------------------------------
+
+
+@register(RANDOM)
+def random_scores(records: Iterable[dict], *, seed: int = 42) -> dict[int, float]:
+    """A uniform random score per sentence — the control arm.
+
+    Ranking by iid uniform scores and taking the top n is a uniform random sample of n,
+    so the control needs no selection rule of its own. It reads nothing from a record
+    but its index, so the control never inherits the LLM's blind spots: a sentence whose
+    samples all failed is exactly as selectable as any other.
+
+    The indices are sorted first, so the draw depends on `seed` alone and not on the
+    order the records happen to arrive in.
+    """
+    rng = random.Random(seed)
+    return {idx: rng.random() for idx in sorted(rec["idx"] for rec in records)}
 
 
 def is_tag_token(token: str) -> bool:
@@ -246,56 +258,27 @@ def rank_by_uncertainty(scores: dict[int, float], *, tie_seed: int = 0) -> list[
     return sorted(indices, key=lambda idx: scores[idx], reverse=True)
 
 
-def n_from_percent(total: int, pct: float) -> int:
+def n_from_percent(total: int, percentage: float) -> int:
     """Budget in sentences from a percentage of the pool; at least 1."""
-    return max(1, int(total * pct / 100))
+    return max(1, int(total * percentage / 100))
 
 
-def prepare_uncertain_sentences(
+def select(
     scores: dict[int, float], examples: list[dict], n: int, *, tie_seed: int = 0
 ) -> list[dict]:
-    """The n most uncertain sentences, most uncertain first."""
+    """The n sentences an arm trains on: the top n of its metric's ranking.
+
+    The one selection rule, control arm included — under `random`'s uniform scores the
+    top n is a uniform random sample of n.
+    """
     if n > len(examples):
         raise ValueError(f"budget of {n} exceeds the {len(examples)} available sentences")
     if len(scores) < n:
         # Sentences whose samples all failed have no score. Selecting anyway would
-        # hand this arm fewer sentences than the random arm and invalidate the
+        # hand this arm fewer sentences than the others and invalidate the
         # comparison, so refuse rather than quietly shrink the budget.
         raise ValueError(
             f"budget of {n} exceeds the {len(scores)} scored sentences — the LLM cache is "
             f"incomplete for this split"
         )
     return [examples[idx] for idx in rank_by_uncertainty(scores, tie_seed=tie_seed)[:n]]
-
-
-def random_sample_sentences(examples: list[dict], n: int, *, seed: int = 42) -> list[dict]:
-    """A uniform random sample of n sentences — the control arm.
-
-    Drawn fresh at each budget, so the 25% sample is not a superset of the 10% one.
-    Uses a local Random so that selecting does not perturb the global RNG that
-    model_training.set_seed relies on for training determinism.
-    """
-    if n > len(examples):
-        raise ValueError(f"budget of {n} exceeds the {len(examples)} available sentences")
-    return random.Random(seed).sample(examples, n)
-
-
-def select(
-    strategy: str,
-    examples: list[dict],
-    n: int,
-    *,
-    scores: dict[int, float] | None = None,
-    seed: int = 42,
-    tie_seed: int = 0,
-) -> list[dict]:
-    """Dispatch to a selection strategy: the control, or top-n by a named metric."""
-    if strategy == RANDOM:
-        return random_sample_sentences(examples, n, seed=seed)
-    if strategy in METRICS:
-        if scores is None:
-            raise ValueError(f"the '{strategy}' strategy needs scores")
-        return prepare_uncertain_sentences(scores, examples, n, tie_seed=tie_seed)
-    raise ValueError(
-        f"Unknown strategy '{strategy}' (expected '{RANDOM}' or one of {metric_names()})"
-    )

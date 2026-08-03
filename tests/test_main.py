@@ -126,12 +126,19 @@ def test_stage_select_raises_when_cache_is_short(sample_examples):
         stage_select(cfg, records, sample_examples)
 
 
-def test_stage_select_single_random_arm_needs_no_scores(sample_examples):
-    """arms: [random] must run with an empty LLM cache — no metric is evaluated."""
+def test_stage_select_single_random_arm_needs_no_records(sample_examples):
+    """arms: [random] must run with an empty LLM cache — the control scores the pool."""
     cfg = ExperimentConfig(budget_pct=[50], arms=[ArmConfig("random")], train_seeds=[0])
     cells = stage_select(cfg, [], sample_examples)
     assert list(cells) == [(50.0, "random")]
     assert len(cells[50.0, "random"]) == 2
+
+
+def test_stage_select_random_draws_from_the_pool_not_from_the_cache(sample_examples):
+    """A short cache limits the metric arms, never the control it is compared against."""
+    cfg = ExperimentConfig(budget_pct=[100], arms=[ArmConfig("random")], train_seeds=[0])
+    cells = stage_select(cfg, scored_records(1), sample_examples)
+    assert sorted(cells[100.0, "random"], key=sample_examples.index) == sample_examples
 
 
 # --- summarize ----------------------------------------------------------------

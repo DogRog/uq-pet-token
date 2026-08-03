@@ -8,9 +8,10 @@
 
 budget_pct: [5, 10, 25, 30]
 
-# One arm per line. `strategy` is "random" (the control) or a metric registered in
-# uncertainty.py; every other key is a parameter of that metric. Add `label:` to
-# rename an arm in the results. Cost is budgets x arms x train_seeds trainings.
+# One arm per line. `strategy` names a metric registered in uncertainty.py — "random"
+# is the control and is one of them; every other key is a parameter of that metric
+# (`random` takes a `seed`). Add `label:` to rename an arm in the results. Cost is
+# budgets x arms x train_seeds trainings.
 arms:
   - strategy: random
   - strategy: avg_neg_logprob
@@ -22,7 +23,6 @@ arms:
   - strategy: output_disagreement
     measure: disagreement   # the same, as a plain off-the-plurality fraction
 
-selection_seed: 42
 tie_seed: 0              # used in rank_by_uncertainty() to prevent order bias for equal scores
 train_seeds: [0, 1]
 

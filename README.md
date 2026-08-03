@@ -22,8 +22,8 @@ recipe and the same seeds — *which* sentences were selected is the only variab
 grid is `budgets × arms × train_seeds`, because a ~32-sentence fine-tune is noisy
 enough that a single-seed gap between arms would not be a result.
 
-- **Arms** are declared in the config. `strategy` names either `random` (the control)
-  or an uncertainty metric; every other key is a parameter of that metric:
+- **Arms** are declared in the config. `strategy` names a metric — `random`, the
+  control, is one of them — and every other key is a parameter of that metric:
 
   ```yaml
   budget_pct: [5, 10, 25]
@@ -38,8 +38,13 @@ enough that a single-seed gap between arms would not be a result.
 
   Arms are labelled `strategy:params` (`avg_neg_logprob:pure`) unless you set an
   explicit `label:`.
-- **Metrics** live in `src/uq_pet/uncertainty.py`. Today there are two, and they read
-  different halves of a cached sample:
+- **Metrics** live in `src/uq_pet/uncertainty.py`. The two real ones read different
+  halves of a cached sample; the control is registered alongside them, so selection has
+  exactly one rule — take the top n of a metric's ranking — and no special case:
+  - `random` — a uniform random score per sentence, whose `seed` parameter (default 42)
+    picks the draw. Ranking by iid uniform scores and taking the top n *is* a uniform
+    random sample of n. It scores the whole pool rather than the cache, so the control
+    never inherits the LLM's blind spots.
   - `avg_neg_logprob` — the mean over the K samples of the average negative token
     logprob, higher meaning less confident. Its `tokens` parameter takes `filtered`
     (tag-ID tokens only, so brackets and commas don't dilute the signal) or `pure`
@@ -143,7 +148,7 @@ Modules are listed in dependency order. Every one is import-side-effect-free: im
 | `src/uq_pet/dataset.py` | PET download/loading, the few-shot/pool/test split, sentence keys |
 | `src/uq_pet/prompt.py` | prompt templates and the parser for the format they ask for |
 | `src/uq_pet/llm.py` | repeated sampling through an OpenAI-compatible gateway, JSONL cache |
-| `src/uq_pet/uncertainty.py` | the uncertainty-metric registry **and** the selection strategies |
+| `src/uq_pet/uncertainty.py` | the metric registry (the `random` control included) **and** the one selection rule |
 | `src/uq_pet/model_training.py` | fine-tuning, prediction, seqeval metrics |
 | `src/uq_pet/plotting.py` | the figures — presentation only, nothing here feeds back into a number |
 | `src/uq_pet/main.py` | the whole pipeline and its CLI — nothing imports from here |
@@ -170,7 +175,11 @@ Three caveats the numbers won't show you:
 - **The random baseline is a single draw.** All `train_seeds` share one selected set per
   (budget, arm) — the seeds vary training, not selection. So the error bars cover
   training noise but not selection noise, and part of any gap could be luck of that one
-  draw.
+  draw. Since `random` is an ordinary metric, a second control arm
+  (`- strategy: random` / `seed: 7` / `label: random-7`) costs nothing but training time
+  and shows you how wide that luck is.
+- **Every arm is nested across budgets**, the control included: each is the top n of one
+  fixed ranking, so the 25% set contains the 10% set.
 - The score is an unnormalized average negative logprob, so it mildly favors sentences
   the model finds hard *anywhere* in the response. Longer sentences buy more tokens per
   budget — a known confound; `per_type_f1.csv` helps show whether a gap is concentrated

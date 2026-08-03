@@ -14,7 +14,6 @@ arms:
     tokens: filtered
   - strategy: output_disagreement
     measure: vote_entropy
-selection_seed: 42
 train_seeds: [0]
 
 llm:

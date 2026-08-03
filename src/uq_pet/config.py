@@ -72,12 +72,12 @@ NER_TAGS = [
 class ArmConfig:
     """One arm of the comparison: a selection strategy plus that strategy's parameters.
 
-    In YAML an arm is a flat mapping — `strategy` names the metric (or "random" for the
-    control), an optional `label` renames it, and every remaining key is a parameter of
-    that metric:
+    In YAML an arm is a flat mapping — `strategy` names a metric registered in
+    `uncertainty` ("random" is the control, and is one of them), an optional `label`
+    renames it, and every remaining key is a parameter of that metric:
 
         arms:
-          - strategy: random
+          - strategy: random       # takes a `seed`, like any other metric's parameter
           - strategy: avg_neg_logprob
             tokens: filtered
 
@@ -249,7 +249,6 @@ class ExperimentConfig:
             ArmConfig(strategy="avg_neg_logprob", params={"tokens": "filtered"}),
         ]
     )
-    selection_seed: int = 42
     tie_seed: int = 0
     n_few_shot: int = N_FEW_SHOT_EXAMPLES
     few_shot_seed: int = FEW_SHOT_SPLIT_SEED

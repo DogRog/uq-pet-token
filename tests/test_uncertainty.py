@@ -17,8 +17,7 @@ from uq_pet.uncertainty import (
     normalized_vote_entropy,
     output_disagreement_scores,
     plurality_disagreement,
-    prepare_uncertain_sentences,
-    random_sample_sentences,
+    random_scores,
     rank_by_uncertainty,
     score_arm,
     select,
@@ -161,10 +160,16 @@ def test_output_disagreement_is_registered():
     assert "output_disagreement" in metric_names()
 
 
+def test_random_is_a_metric_like_any_other():
+    """The control is in the registry, so nothing downstream needs a special case."""
+    assert RANDOM in METRICS
+    assert RANDOM in metric_names()
+
+
 def test_metric_params_are_derived_from_the_signature():
     assert metric_params("avg_neg_logprob") == ["tokens"]
     assert metric_params("output_disagreement") == ["measure"]
-    assert metric_params(RANDOM) == []
+    assert metric_params(RANDOM) == ["seed"]
 
 
 def test_avg_neg_logprob_scores_end_to_end(sample_records):
@@ -188,6 +193,7 @@ def test_avg_neg_logprob_rejects_an_unknown_tokens_value(sample_records):
 
 def test_validate_arm_accepts_good_arms():
     validate_arm(RANDOM, {})
+    validate_arm(RANDOM, {"seed": 7})
     validate_arm("avg_neg_logprob", {"tokens": "pure"})
     validate_arm("avg_neg_logprob", {})
     validate_arm("output_disagreement", {"measure": "disagreement"})
@@ -210,13 +216,13 @@ def test_validate_arm_rejects_unknown_param():
         validate_arm("avg_neg_logprob", {"token": "pure"})
 
 
-def test_validate_arm_rejects_params_on_random():
-    with pytest.raises(ValueError, match="accepts no parameters"):
+def test_validate_arm_rejects_an_unknown_param_on_random():
+    with pytest.raises(ValueError, match="unknown"):
         validate_arm(RANDOM, {"tokens": "pure"})
 
 
-def test_score_arm_returns_none_for_random(sample_records):
-    assert score_arm(RANDOM, sample_records) is None
+def test_score_arm_dispatches_to_random(sample_records):
+    assert score_arm(RANDOM, sample_records, seed=7) == random_scores(sample_records, seed=7)
 
 
 def test_score_arm_dispatches_to_the_metric(sample_records):
@@ -257,69 +263,79 @@ def test_n_from_percent(total, pct, expected):
     assert n_from_percent(total, pct) == expected
 
 
-# --- selection ----------------------------------------------------------------
+# --- the random control -------------------------------------------------------
 
 
-def test_prepare_uncertain_sentences_picks_the_highest_scores(sample_examples):
-    scores = {0: 0.1, 1: 5.0, 2: 3.0, 3: 0.2}
-    picked = prepare_uncertain_sentences(scores, sample_examples, 2)
-    assert picked == [sample_examples[1], sample_examples[2]]
+def pool_records(n: int) -> list[dict]:
+    """What `main` hands the control: one bare record per pool sentence."""
+    return [{"idx": idx} for idx in range(n)]
 
 
-def test_prepare_uncertain_sentences_raises_when_scores_incomplete(sample_examples):
-    """An incomplete cache must fail loudly, not shrink one arm's budget."""
-    with pytest.raises(ValueError, match="incomplete"):
-        prepare_uncertain_sentences({0: 1.0, 1: 2.0}, sample_examples, 3)
+def test_random_scores_every_record_it_is_given(sample_records):
+    """Including the errored one — the control must not inherit the LLM's blind spots."""
+    assert set(random_scores(sample_records)) == {0, 1, 2}
 
 
-def test_prepare_uncertain_sentences_raises_when_budget_exceeds_pool(sample_examples):
-    scores = dict.fromkeys(range(4), 1.0)
-    with pytest.raises(ValueError, match="available"):
-        prepare_uncertain_sentences(scores, sample_examples, 5)
+def test_random_scores_are_deterministic_per_seed(sample_records):
+    assert random_scores(sample_records, seed=7) == random_scores(sample_records, seed=7)
 
 
-def test_random_sample_sentences_is_deterministic_per_seed(sample_examples):
-    assert random_sample_sentences(sample_examples, 2, seed=7) == random_sample_sentences(
-        sample_examples, 2, seed=7
-    )
+def test_random_scores_do_not_depend_on_record_order(sample_records):
+    """The draw follows the seed, not the order records happened to be cached in."""
+    assert random_scores(sample_records[::-1]) == random_scores(sample_records)
 
 
-def test_random_sample_sentences_varies_with_seed(sample_examples):
-    picks = {
-        tuple(ex["document name"] for ex in random_sample_sentences(sample_examples, 2, seed=s))
-        for s in range(20)
-    }
-    assert len(picks) > 1
-
-
-def test_random_sample_sentences_does_not_touch_the_global_rng(sample_examples):
+def test_random_scores_do_not_touch_the_global_rng(sample_records):
     """Selection must not perturb the RNG that training determinism relies on."""
     random.seed(1)
     expected = random.random()
 
     random.seed(1)
-    random_sample_sentences(sample_examples, 2, seed=99)
+    random_scores(sample_records, seed=99)
     assert random.random() == expected
 
 
-def test_random_sample_sentences_raises_when_budget_exceeds_pool(sample_examples):
-    with pytest.raises(ValueError, match="available"):
-        random_sample_sentences(sample_examples, 99)
+# --- selection ----------------------------------------------------------------
 
 
-def test_select_dispatches_by_metric_name_and_arms_have_equal_size(sample_examples):
+def test_select_picks_the_highest_scores(sample_examples):
     scores = {0: 0.1, 1: 5.0, 2: 3.0, 3: 0.2}
-    uncertain = select("avg_neg_logprob", sample_examples, 2, scores=scores)
-    control = select(RANDOM, sample_examples, 2, seed=42)
+    assert select(scores, sample_examples, 2) == [sample_examples[1], sample_examples[2]]
+
+
+def test_select_raises_when_scores_incomplete(sample_examples):
+    """An incomplete cache must fail loudly, not shrink one arm's budget."""
+    with pytest.raises(ValueError, match="incomplete"):
+        select({0: 1.0, 1: 2.0}, sample_examples, 3)
+
+
+def test_select_raises_when_budget_exceeds_pool(sample_examples):
+    scores = dict.fromkeys(range(4), 1.0)
+    with pytest.raises(ValueError, match="available"):
+        select(scores, sample_examples, 5)
+
+
+def test_the_control_and_a_metric_share_one_selection_rule(sample_examples):
+    scores = {0: 0.1, 1: 5.0, 2: 3.0, 3: 0.2}
+    uncertain = select(scores, sample_examples, 2)
+    control = select(random_scores(pool_records(len(sample_examples))), sample_examples, 2)
     assert len(uncertain) == len(control) == 2
     assert uncertain == [sample_examples[1], sample_examples[2]]
 
 
-def test_select_by_metric_requires_scores(sample_examples):
-    with pytest.raises(ValueError, match="needs scores"):
-        select("avg_neg_logprob", sample_examples, 1)
+def test_random_selection_is_deterministic_per_seed(sample_examples):
+    records = pool_records(len(sample_examples))
+    assert select(random_scores(records, seed=7), sample_examples, 2) == select(
+        random_scores(records, seed=7), sample_examples, 2
+    )
 
 
-def test_select_rejects_unknown_strategy(sample_examples):
-    with pytest.raises(ValueError, match="Unknown strategy"):
-        select("sequence_variance", sample_examples, 1)
+def test_random_selection_varies_with_seed(sample_examples):
+    records = pool_records(len(sample_examples))
+    picks = {
+        tuple(
+            ex["document name"] for ex in select(random_scores(records, seed=s), sample_examples, 2)
+        )
+        for s in range(20)
+    }
+    assert len(picks) > 1

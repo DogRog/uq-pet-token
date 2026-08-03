@@ -40,12 +40,18 @@ Eight modules in `src/uq_pet/`, in dependency order:
    owns both halves of the contract).
 4. **`llm.py`** — repeated sampling through an OpenAI-compatible gateway into a
    resumable JSONL cache. Nothing else does network or cache I/O.
-5. **`uncertainty.py`** — the `METRICS` registry, **and** both selection strategies
-   (top-n by a named metric, and its `random` control).
+5. **`uncertainty.py`** — the `METRICS` registry **and** the one selection rule,
+   `select` = top-n of a metric's ranking.
    **To add a metric: write one function and `@register` it — nothing else changes.**
    Its keyword-only parameters automatically become the parameters its arm accepts in
    YAML, and `validate_arm` derives them from the signature, so a typo in a config
    fails at start-up rather than being silently ignored.
+   The `random` control is a registered metric like the rest — uniform scores, so
+   top-n of them is a uniform sample of n — which is why nothing downstream branches on
+   it. The single exception is in `stage_select`: `random` is scored over one bare
+   record per pool sentence instead of over the cache, so the control draws from the
+   whole pool and `arms: [random]` runs without a cache at all. `main` and `plotting`
+   still use the `RANDOM` name, but only to find the baseline for reporting.
 6. **`model_training.py`** — the fixed distilbert recipe, prediction, seqeval metrics.
 7. **`plotting.py`** — the palette and the two figures, reading the results DataFrame.
    Presentation only: nothing here is imported by a stage that produces a number, so a

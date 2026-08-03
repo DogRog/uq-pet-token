@@ -167,8 +167,17 @@ def stage_select(
     Metric scores don't depend on the budget, so each metric is evaluated once and
     reused across the sweep.
     """
+    # The control draws from the whole pool, not just the sentences the LLM managed to
+    # score, so it never inherits the cache's coverage: `random` needs an index and
+    # nothing else, so it gets one bare record per pool sentence.
+    pool_records = [{"idx": idx} for idx in range(len(pool_examples))]
     scores = {
-        arm.resolved_label(): score_arm(arm.strategy, records, **arm.params) for arm in cfg.arms
+        arm.resolved_label(): score_arm(
+            arm.strategy,
+            pool_records if arm.strategy == RANDOM else records,
+            **arm.params,
+        )
+        for arm in cfg.arms
     }
 
     cells: dict[tuple[float, str], list[dict]] = {}
@@ -177,14 +186,7 @@ def stage_select(
         logger.info("Budget %.3g%%: %d of %d pool sentences", budget, n, len(pool_examples))
         for arm in cfg.arms:
             label = arm.resolved_label()
-            cells[budget, label] = select(
-                arm.strategy,
-                pool_examples,
-                n,
-                scores=scores[label],
-                seed=cfg.selection_seed,
-                tie_seed=cfg.tie_seed,
-            )
+            cells[budget, label] = select(scores[label], pool_examples, n, tie_seed=cfg.tie_seed)
 
         sizes = {label: len(cells[budget, label]) for label in cfg.arm_labels()}
         if len(set(sizes.values())) != 1:
