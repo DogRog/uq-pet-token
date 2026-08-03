@@ -2,7 +2,8 @@ import pandas as pd
 
 from uq_pet.plotting import arm_colors, plot_results
 
-ANLP = "avg_neg_logprob:filtered"
+ANLP = "avg_neg_logprob_filtered"
+PURE = "avg_neg_logprob_pure"
 
 
 def make_results(uncertainty_f1, random_f1, budget: float = 10.0) -> pd.DataFrame:
@@ -26,14 +27,14 @@ def make_results(uncertainty_f1, random_f1, budget: float = 10.0) -> pd.DataFram
 
 
 def test_arm_colors_pin_random_and_are_distinct():
-    colors = arm_colors(["random", ANLP, "avg_neg_logprob:pure"])
+    colors = arm_colors(["random", ANLP, PURE])
     assert colors["random"] == "#eb6834"
     assert len(set(colors.values())) == 3
 
 
 def test_arm_colors_follow_the_arm_not_its_position():
     """Dropping an arm must not repaint the survivors."""
-    full = arm_colors(["random", ANLP, "avg_neg_logprob:pure"])
+    full = arm_colors(["random", ANLP, PURE])
     fewer = arm_colors(["random", ANLP])
     assert fewer[ANLP] == full[ANLP]
 

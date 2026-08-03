@@ -9,11 +9,9 @@
 
 budget_pct: [3]        # -> max(1, int(328 * 0.03)) = 9 sentences per arm
 arms:
-  - strategy: random
-  - strategy: avg_neg_logprob
-    tokens: filtered
-  - strategy: output_disagreement
-    measure: vote_entropy
+  - random
+  - avg_neg_logprob_filtered
+  - vote_entropy
 train_seeds: [0]
 
 llm:

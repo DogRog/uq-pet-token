@@ -99,8 +99,8 @@ def test_config_to_yaml_round_trips_arms_with_params(tmp_path):
         budget_pct=[5, 10],
         arms=[
             ArmConfig(strategy="random"),
-            ArmConfig(strategy="avg_neg_logprob", params={"tokens": "pure"}),
-            ArmConfig(strategy="avg_neg_logprob", params={"tokens": "filtered"}, label="anlp"),
+            ArmConfig(strategy="random", params={"seed": 7}),
+            ArmConfig(strategy="avg_neg_logprob_pure", label="anlp"),
         ],
     )
     path = tmp_path / "rt.yaml"
@@ -127,9 +127,9 @@ def test_load_config_reads_the_few_shot_knobs(tmp_path):
 
 
 def test_parse_arm_puts_leftover_keys_into_params():
-    arm = parse_arm({"strategy": "avg_neg_logprob", "tokens": "pure"})
-    assert arm.strategy == "avg_neg_logprob"
-    assert arm.params == {"tokens": "pure"}
+    arm = parse_arm({"strategy": "random", "seed": 7})
+    assert arm.strategy == "random"
+    assert arm.params == {"seed": 7}
     assert arm.label is None
 
 
@@ -139,15 +139,16 @@ def test_parse_arm_accepts_a_bare_strategy_name():
 
 def test_parse_arm_requires_a_strategy():
     with pytest.raises(ValueError, match="missing the required 'strategy'"):
-        parse_arm({"tokens": "pure"})
+        parse_arm({"seed": 7})
 
 
 @pytest.mark.parametrize(
     ("arm", "expected"),
     [
         (ArmConfig("random"), "random"),
-        (ArmConfig("avg_neg_logprob", {"tokens": "pure"}), "avg_neg_logprob:pure"),
-        (ArmConfig("avg_neg_logprob", {"tokens": "pure"}, "custom"), "custom"),
+        (ArmConfig("avg_neg_logprob_pure"), "avg_neg_logprob_pure"),
+        (ArmConfig("random", {"seed": 7}), "random:7"),
+        (ArmConfig("random", {"seed": 7}, "custom"), "custom"),
     ],
 )
 def test_resolved_label(arm, expected):
@@ -155,23 +156,19 @@ def test_resolved_label(arm, expected):
 
 
 def test_arm_to_dict_emits_the_flat_form():
-    arm = ArmConfig("avg_neg_logprob", {"tokens": "pure"}, "anlp")
-    assert arm_to_dict(arm) == {"strategy": "avg_neg_logprob", "tokens": "pure", "label": "anlp"}
+    arm = ArmConfig("random", {"seed": 7}, "control7")
+    assert arm_to_dict(arm) == {"strategy": "random", "seed": 7, "label": "control7"}
     assert "label" not in arm_to_dict(ArmConfig("random"))
 
 
 def test_load_config_parses_the_arm_list(tmp_path):
+    """Both forms in one list: a bare metric name and the mapping that carries params."""
     path = _write(
         tmp_path,
-        {
-            "arms": [
-                {"strategy": "random"},
-                {"strategy": "avg_neg_logprob", "tokens": "pure"},
-            ]
-        },
+        {"arms": ["avg_neg_logprob_pure", {"strategy": "random", "seed": 7}]},
     )
     cfg = load_config(path)
-    assert cfg.arm_labels() == ["random", "avg_neg_logprob:pure"]
+    assert cfg.arm_labels() == ["avg_neg_logprob_pure", "random:7"]
 
 
 def test_duplicate_arm_labels_raise():
@@ -180,13 +177,8 @@ def test_duplicate_arm_labels_raise():
 
 
 def test_two_variants_of_one_metric_coexist():
-    cfg = ExperimentConfig(
-        arms=[
-            ArmConfig("avg_neg_logprob", {"tokens": "pure"}),
-            ArmConfig("avg_neg_logprob", {"tokens": "filtered"}),
-        ]
-    )
-    assert cfg.arm_labels() == ["avg_neg_logprob:pure", "avg_neg_logprob:filtered"]
+    cfg = ExperimentConfig(arms=[ArmConfig("random", {"seed": 1}), ArmConfig("random", {"seed": 2})])
+    assert cfg.arm_labels() == ["random:1", "random:2"]
 
 
 # --- budgets ------------------------------------------------------------------

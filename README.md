@@ -22,42 +22,42 @@ recipe and the same seeds — *which* sentences were selected is the only variab
 grid is `budgets × arms × train_seeds`, because a ~32-sentence fine-tune is noisy
 enough that a single-seed gap between arms would not be a result.
 
-- **Arms** are declared in the config. `strategy` names a metric — `random`, the
-  control, is one of them — and every other key is a parameter of that metric:
+- **Arms** are declared in the config as a list of metric names — `random`, the control,
+  is one of them:
 
   ```yaml
   budget_pct: [5, 10, 25]
 
   arms:
-    - strategy: random
-    - strategy: avg_neg_logprob
-      tokens: filtered
-    - strategy: avg_neg_logprob      # the same metric, different parameter
-      tokens: pure
+    - random
+    - avg_neg_logprob_filtered
+    - avg_neg_logprob_pure
   ```
 
-  Arms are labelled `strategy:params` (`avg_neg_logprob:pure`) unless you set an
-  explicit `label:`.
-- **Metrics** live in `src/uq_pet/uncertainty.py`. The two real ones read different
-  halves of a cached sample; the control is registered alongside them, so selection has
-  exactly one rule — take the top n of a metric's ranking — and no special case:
+  An arm is labelled by its metric name unless you set an explicit `label:`, which needs
+  the mapping form (`- strategy: avg_neg_logprob_pure` plus `label:`) — the same form
+  passes a metric parameter, e.g. `random`'s `seed`.
+- **Metrics** live in `src/uq_pet/uncertainty.py`, one registry entry per variant. They
+  read different halves of a cached sample; the control is registered alongside them, so
+  selection has exactly one rule — take the top n of a metric's ranking — and no special
+  case:
   - `random` — a uniform random score per sentence, whose `seed` parameter (default 42)
     picks the draw. Ranking by iid uniform scores and taking the top n *is* a uniform
     random sample of n. It scores the whole pool rather than the cache, so the control
     never inherits the LLM's blind spots.
-  - `avg_neg_logprob` — the mean over the K samples of the average negative token
-    logprob, higher meaning less confident. Its `tokens` parameter takes `filtered`
-    (tag-ID tokens only, so brackets and commas don't dilute the signal) or `pure`
-    (every token in the response).
-  - `output_disagreement` — **outputs only, no logprobs**: parse the K sampled tag
-    arrays and average, over token positions, how much the K votes disagree. The
-    samples are a committee; the more they vary, the less settled the model is.
-    Samples that disagree about the token count count as disagreeing (a sample that has
-    ended votes a distinct "missing" tag), so a truncated response reads as uncertain
-    rather than being dropped. Its `measure` parameter takes `vote_entropy` (Shannon
-    entropy of the votes over log K, so 0–1) or `disagreement` (the fraction of samples
-    off the plurality tag). Because it needs no logprobs, it also works against a
-    gateway that doesn't return them.
+  - `avg_neg_logprob_filtered` — the mean over the K samples of the average negative
+    logprob of the tag-ID tokens, higher meaning less confident. Restricting to tag IDs
+    keeps brackets and commas from diluting the signal.
+  - `avg_neg_logprob_pure` — the same over every token in the response.
+  - `vote_entropy` — **outputs only, no logprobs**: parse the K sampled tag arrays and
+    average, over token positions, the Shannon entropy of the K votes over log K (so
+    0–1). The samples are a committee; the more they vary, the less settled the model
+    is. Samples that disagree about the token count count as disagreeing (a sample that
+    has ended votes a distinct "missing" tag), so a truncated response reads as
+    uncertain rather than being dropped. Because it needs no logprobs, it also works
+    against a gateway that doesn't return them.
+  - `disagreement` — the same committee reading, scored as the fraction of samples off
+    the plurality tag instead of the entropy.
 - **Few-shot prompt**: `n_few_shot` (default 5) and `few_shot_seed` (default 42) choose
   the demonstrations shown to the LLM. They also decide which sentences are held out of
   the pool, so changing either changes both the prompt and the size of the pool

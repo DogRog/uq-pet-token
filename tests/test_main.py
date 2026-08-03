@@ -6,7 +6,8 @@ import pytest
 from uq_pet.config import ArmConfig, ExperimentConfig, load_config
 from uq_pet.main import build_parser, make_run_dir, stage_select, summarize
 
-ANLP = "avg_neg_logprob:filtered"
+ANLP = "avg_neg_logprob_filtered"
+PURE = "avg_neg_logprob_pure"
 
 
 def make_results(uncertainty_f1, random_f1, budget: float = 10.0) -> pd.DataFrame:
@@ -30,8 +31,8 @@ def make_results(uncertainty_f1, random_f1, budget: float = 10.0) -> pd.DataFram
     return pd.DataFrame(rows)
 
 
-def uncertainty_arm(tokens: str = "filtered") -> ArmConfig:
-    return ArmConfig(strategy="avg_neg_logprob", params={"tokens": tokens})
+def uncertainty_arm(strategy: str = ANLP) -> ArmConfig:
+    return ArmConfig(strategy=strategy)
 
 
 def scored_records(n: int) -> list[dict]:
@@ -69,7 +70,7 @@ def test_parser_flags():
 
 
 def test_make_run_dir_snapshot_round_trips(tmp_path):
-    cfg = ExperimentConfig(budget_pct=[7, 14], train_seeds=[4], arms=[uncertainty_arm("pure")])
+    cfg = ExperimentConfig(budget_pct=[7, 14], train_seeds=[4], arms=[uncertainty_arm(PURE)])
     run_dir = make_run_dir(cfg, tmp_path / "myrun.yaml", tmp_path / "results")
 
     assert run_dir.name.startswith("myrun_")
@@ -87,11 +88,11 @@ def test_make_run_dir_honours_run_name(tmp_path):
 
 def test_stage_select_gives_both_arms_the_same_budget(sample_examples):
     cfg = ExperimentConfig(
-        budget_pct=[50], train_seeds=[0], arms=[ArmConfig("random"), uncertainty_arm("pure")]
+        budget_pct=[50], train_seeds=[0], arms=[ArmConfig("random"), uncertainty_arm(PURE)]
     )
     cells = stage_select(cfg, scored_records(len(sample_examples)), sample_examples)
 
-    assert set(cells) == {(50.0, "random"), (50.0, "avg_neg_logprob:pure")}
+    assert set(cells) == {(50.0, "random"), (50.0, PURE)}
     assert len({len(v) for v in cells.values()}) == 1
 
 
@@ -99,7 +100,7 @@ def test_stage_select_produces_a_cell_per_budget_and_arm(sample_examples):
     cfg = ExperimentConfig(
         budget_pct=[25, 50, 75],
         train_seeds=[0],
-        arms=[ArmConfig("random"), uncertainty_arm("pure")],
+        arms=[ArmConfig("random"), uncertainty_arm(PURE)],
     )
     cells = stage_select(cfg, scored_records(len(sample_examples)), sample_examples)
 
@@ -111,16 +112,16 @@ def test_stage_select_produces_a_cell_per_budget_and_arm(sample_examples):
 
 def test_stage_select_uncertainty_is_nested_across_budgets(sample_examples):
     """Top-n of one fixed ranking, so a bigger budget is a superset."""
-    cfg = ExperimentConfig(budget_pct=[25, 75], train_seeds=[0], arms=[uncertainty_arm("pure")])
+    cfg = ExperimentConfig(budget_pct=[25, 75], train_seeds=[0], arms=[uncertainty_arm(PURE)])
     cells = stage_select(cfg, scored_records(len(sample_examples)), sample_examples)
 
-    small = cells[25.0, "avg_neg_logprob:pure"]
-    large = cells[75.0, "avg_neg_logprob:pure"]
+    small = cells[25.0, PURE]
+    large = cells[75.0, PURE]
     assert all(ex in large for ex in small)
 
 
 def test_stage_select_raises_when_cache_is_short(sample_examples):
-    cfg = ExperimentConfig(budget_pct=[100], train_seeds=[0], arms=[uncertainty_arm("pure")])
+    cfg = ExperimentConfig(budget_pct=[100], train_seeds=[0], arms=[uncertainty_arm(PURE)])
     records = [{"idx": 0, "choices": [{"logprobs": [{"token": "1", "logprob": -1.0}]}]}]
     with pytest.raises(ValueError, match="incomplete"):
         stage_select(cfg, records, sample_examples)
@@ -178,13 +179,13 @@ def test_summarize_without_a_random_arm_reports_no_gaps():
 def test_summarize_handles_several_uncertainty_arms():
     results = make_results([0.6], [0.4])
     extra = make_results([0.5], [0.4])
-    extra = extra[extra["arm"] == ANLP].assign(arm="avg_neg_logprob:pure")
+    extra = extra[extra["arm"] == ANLP].assign(arm=PURE)
     results = pd.concat([results, extra], ignore_index=True)
 
     _, _, gaps = summarize(results)
     assert gaps[10.0] == {
         ANLP: pytest.approx(0.2),
-        "avg_neg_logprob:pure": pytest.approx(0.1),
+        PURE: pytest.approx(0.1),
     }
 
 

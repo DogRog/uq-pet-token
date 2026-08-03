@@ -8,20 +8,16 @@
 
 budget_pct: [5, 10, 25, 30]
 
-# One arm per line. `strategy` names a metric registered in uncertainty.py — "random"
-# is the control and is one of them; every other key is a parameter of that metric
-# (`random` takes a `seed`). Add `label:` to rename an arm in the results. Cost is
+# One arm per line, named after a metric registered in uncertainty.py — "random" is the
+# control and is one of them. Use the mapping form (`strategy:` plus keys) only to pass
+# a metric parameter or a `label:` that renames the arm in the results. Cost is
 # budgets x arms x train_seeds trainings.
 arms:
-  - strategy: random
-  - strategy: avg_neg_logprob
-    tokens: filtered     # tag-id tokens only
-  - strategy: avg_neg_logprob
-    tokens: pure         # every token in the response
-  - strategy: output_disagreement
-    measure: vote_entropy   # how much the 5 sampled tag arrays disagree; no logprobs
-  - strategy: output_disagreement
-    measure: disagreement   # the same, as a plain off-the-plurality fraction
+  - random
+  - avg_neg_logprob_filtered   # mean -logprob over the tag-id tokens only
+  - avg_neg_logprob_pure       # the same over every token in the response
+  - vote_entropy               # how much the 5 sampled tag arrays disagree; no logprobs
+  - disagreement               # the same, as a plain off-the-plurality fraction
 
 tie_seed: 0              # used in rank_by_uncertainty() to prevent order bias for equal scores
 train_seeds: [0, 1]

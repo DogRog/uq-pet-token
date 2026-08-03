@@ -7,7 +7,9 @@ from uq_pet.uncertainty import (
     METRICS,
     RANDOM,
     avg_neg_logprob,
-    avg_neg_logprob_scores,
+    avg_neg_logprob_filtered_scores,
+    avg_neg_logprob_pure_scores,
+    disagreement_scores,
     extract_logprobs,
     extract_tag_ids,
     is_tag_token,
@@ -15,7 +17,6 @@ from uq_pet.uncertainty import (
     metric_params,
     n_from_percent,
     normalized_vote_entropy,
-    output_disagreement_scores,
     plurality_disagreement,
     random_scores,
     rank_by_uncertainty,
@@ -23,6 +24,7 @@ from uq_pet.uncertainty import (
     select,
     sentence_scores,
     validate_arm,
+    vote_entropy_scores,
     votes_by_position,
 )
 
@@ -102,62 +104,59 @@ def test_plurality_disagreement_counts_the_minority():
     assert plurality_disagreement([3, 4, 3]) == pytest.approx(1 / 3)
 
 
-@pytest.mark.parametrize("measure", ["vote_entropy", "disagreement"])
-def test_identical_samples_score_zero(tag_records, measure):
+@pytest.mark.parametrize("scores", [vote_entropy_scores, disagreement_scores])
+def test_identical_samples_score_zero(tag_records, scores):
     records = tag_records({0: [[0, 3, 4], [0, 3, 4], [0, 3, 4]]})
-    assert output_disagreement_scores(records, measure=measure) == {0: 0.0}
+    assert scores(records) == {0: 0.0}
 
 
 def test_total_disagreement_hits_the_ceiling(tag_records):
     records = tag_records({0: [[0, 1], [1, 2], [2, 0]]})  # every position all-distinct
-    assert output_disagreement_scores(records, measure="vote_entropy")[0] == pytest.approx(1.0)
-    assert output_disagreement_scores(records, measure="disagreement")[0] == pytest.approx(2 / 3)
+    assert vote_entropy_scores(records)[0] == pytest.approx(1.0)
+    assert disagreement_scores(records)[0] == pytest.approx(2 / 3)
 
 
 def test_partial_disagreement_is_averaged_over_positions(tag_records):
     # position 0 unanimous, position 1 splits 2-1.
     records = tag_records({0: [[0, 3], [0, 4], [0, 3]]})
-    assert output_disagreement_scores(records)[0] == pytest.approx(SPLIT_2_1_ENTROPY / 2, abs=1e-6)
-    assert output_disagreement_scores(records, measure="disagreement")[0] == pytest.approx(1 / 6)
+    assert vote_entropy_scores(records)[0] == pytest.approx(SPLIT_2_1_ENTROPY / 2, abs=1e-6)
+    assert disagreement_scores(records)[0] == pytest.approx(1 / 6)
 
 
 def test_a_shorter_sample_counts_as_disagreement(tag_records):
     """Samples disagreeing about the token count is variation, so it must raise the score."""
-    ragged = output_disagreement_scores(tag_records({0: [[0, 3, 4], [0, 3, 4], [0, 3]]}))
-    equal = output_disagreement_scores(tag_records({0: [[0, 3], [0, 3], [0, 3]]}))
+    ragged = vote_entropy_scores(tag_records({0: [[0, 3, 4], [0, 3, 4], [0, 3]]}))
+    equal = vote_entropy_scores(tag_records({0: [[0, 3], [0, 3], [0, 3]]}))
     assert ragged[0] > equal[0] == 0.0
     assert ragged[0] == pytest.approx(SPLIT_2_1_ENTROPY / 3, abs=1e-6)
 
 
-def test_sentences_with_fewer_than_two_usable_samples_are_omitted(tag_records):
+@pytest.mark.parametrize("scores", [vote_entropy_scores, disagreement_scores])
+def test_sentences_with_fewer_than_two_usable_samples_are_omitted(tag_records, scores):
     """A sentence nothing can disagree about must be absent, not scored 0."""
     records = tag_records({0: [[0, 3], "no array here"], 1: ["nope", "nope"], 2: [[0], [3]]})
-    assert set(output_disagreement_scores(records)) == {2}
+    assert set(scores(records)) == {2}
 
 
-def test_output_disagreement_needs_no_logprobs(tag_records):
+@pytest.mark.parametrize("scores", [vote_entropy_scores, disagreement_scores])
+def test_output_disagreement_needs_no_logprobs(tag_records, scores):
     """The whole point: it scores a cache from a gateway that returns no logprobs."""
     records = tag_records({0: [[0, 3], [0, 4]]})
     assert all("logprobs" not in choice for rec in records for choice in rec["choices"])
-    assert output_disagreement_scores(records)[0] > 0
-
-
-def test_output_disagreement_rejects_an_unknown_measure(tag_records):
-    with pytest.raises(ValueError, match="measure must be one of"):
-        output_disagreement_scores(tag_records({0: [[0], [0]]}), measure="entropy")
+    assert scores(records)[0] > 0
 
 
 # --- the metric registry ------------------------------------------------------
 
 
-def test_avg_neg_logprob_is_registered():
-    assert "avg_neg_logprob" in METRICS
-    assert "avg_neg_logprob" in metric_names()
-
-
-def test_output_disagreement_is_registered():
-    assert "output_disagreement" in METRICS
-    assert "output_disagreement" in metric_names()
+@pytest.mark.parametrize(
+    "name",
+    ["avg_neg_logprob_filtered", "avg_neg_logprob_pure", "vote_entropy", "disagreement"],
+)
+def test_every_metric_variant_is_registered_under_its_own_name(name):
+    """Each variant is its own entry, so an arm is just a name."""
+    assert name in METRICS
+    assert name in metric_names()
 
 
 def test_random_is_a_metric_like_any_other():
@@ -166,43 +165,42 @@ def test_random_is_a_metric_like_any_other():
     assert RANDOM in metric_names()
 
 
+@pytest.mark.parametrize(
+    "name",
+    ["avg_neg_logprob_filtered", "avg_neg_logprob_pure", "vote_entropy", "disagreement"],
+)
+def test_metric_variants_take_no_parameters(name):
+    assert metric_params(name) == []
+
+
 def test_metric_params_are_derived_from_the_signature():
-    assert metric_params("avg_neg_logprob") == ["tokens"]
-    assert metric_params("output_disagreement") == ["measure"]
     assert metric_params(RANDOM) == ["seed"]
 
 
-def test_avg_neg_logprob_scores_end_to_end(sample_records):
-    scores = avg_neg_logprob_scores(sample_records, tokens="filtered")
+def test_avg_neg_logprob_filtered_scores_end_to_end(sample_records):
+    scores = avg_neg_logprob_filtered_scores(sample_records)
     assert set(scores) == {0}  # idx 1 has empty logprobs, idx 2 errored
     assert scores[0] == pytest.approx(2.0)
 
 
-def test_tokens_filtered_and_pure_differ(sample_records):
-    filtered = avg_neg_logprob_scores(sample_records, tokens="filtered")
-    pure = avg_neg_logprob_scores(sample_records, tokens="pure")
+def test_filtered_and_pure_differ(sample_records):
+    filtered = avg_neg_logprob_filtered_scores(sample_records)
+    pure = avg_neg_logprob_pure_scores(sample_records)
     assert filtered != pure
     # "pure" keeps the '[' and ',' logprobs that "filtered" drops
     assert pure[0] == pytest.approx(((0.1 + 1.0 + 0.1 + 3.0 + 2.0) / 5 + 2.0) / 2)
 
 
-def test_avg_neg_logprob_rejects_an_unknown_tokens_value(sample_records):
-    with pytest.raises(ValueError, match="tokens must be one of"):
-        avg_neg_logprob_scores(sample_records, tokens="digits")
-
-
 def test_validate_arm_accepts_good_arms():
     validate_arm(RANDOM, {})
     validate_arm(RANDOM, {"seed": 7})
-    validate_arm("avg_neg_logprob", {"tokens": "pure"})
-    validate_arm("avg_neg_logprob", {})
-    validate_arm("output_disagreement", {"measure": "disagreement"})
-    validate_arm("output_disagreement", {})
+    validate_arm("avg_neg_logprob_pure", {})
+    validate_arm("vote_entropy", {})
 
 
-def test_validate_arm_rejects_an_unknown_param_on_output_disagreement():
-    with pytest.raises(ValueError, match="unknown"):
-        validate_arm("output_disagreement", {"measures": "vote_entropy"})
+def test_validate_arm_rejects_a_param_on_a_parameterless_metric():
+    with pytest.raises(ValueError, match="accepts no parameters"):
+        validate_arm("vote_entropy", {"measure": "vote_entropy"})
 
 
 def test_validate_arm_rejects_unknown_strategy():
@@ -210,15 +208,16 @@ def test_validate_arm_rejects_unknown_strategy():
         validate_arm("sequence_variance", {})
 
 
-def test_validate_arm_rejects_unknown_param():
-    """A typo in a metric param must fail loudly, not be silently ignored."""
-    with pytest.raises(ValueError, match="unknown"):
-        validate_arm("avg_neg_logprob", {"token": "pure"})
+def test_validate_arm_rejects_the_old_parameterized_form():
+    """`avg_neg_logprob` is now two metrics; the old name must fail loudly."""
+    with pytest.raises(ValueError, match="Unknown strategy"):
+        validate_arm("avg_neg_logprob", {"tokens": "pure"})
 
 
 def test_validate_arm_rejects_an_unknown_param_on_random():
+    """A typo in a metric param must fail loudly, not be silently ignored."""
     with pytest.raises(ValueError, match="unknown"):
-        validate_arm(RANDOM, {"tokens": "pure"})
+        validate_arm(RANDOM, {"seeds": 7})
 
 
 def test_score_arm_dispatches_to_random(sample_records):
@@ -226,16 +225,14 @@ def test_score_arm_dispatches_to_random(sample_records):
 
 
 def test_score_arm_dispatches_to_the_metric(sample_records):
-    assert score_arm("avg_neg_logprob", sample_records, tokens="filtered") == (
-        avg_neg_logprob_scores(sample_records, tokens="filtered")
+    assert score_arm("avg_neg_logprob_filtered", sample_records) == (
+        avg_neg_logprob_filtered_scores(sample_records)
     )
 
 
-def test_score_arm_dispatches_to_output_disagreement(tag_records):
+def test_score_arm_dispatches_to_disagreement(tag_records):
     records = tag_records({0: [[0, 3], [0, 4]]})
-    assert score_arm("output_disagreement", records, measure="disagreement") == (
-        output_disagreement_scores(records, measure="disagreement")
-    )
+    assert score_arm("disagreement", records) == disagreement_scores(records)
 
 
 # --- ranking and budgets ------------------------------------------------------

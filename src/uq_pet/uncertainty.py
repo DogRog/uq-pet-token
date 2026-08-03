@@ -2,9 +2,10 @@
 
 Each sentence was sampled K times with token logprobs. A *metric* turns those cached
 samples into one score per sentence, where higher means the model was less confident —
-from the logprobs (`avg_neg_logprob`), from the response text alone
-(`output_disagreement`), or from anything else a record holds. Metrics live in the
-`METRICS` registry:
+from the logprobs (`avg_neg_logprob_filtered`, `avg_neg_logprob_pure`), from the
+response text alone (`vote_entropy`, `disagreement`), or from anything else a record
+holds. Each variant is its own registry entry rather than a parameter of a shared one,
+so an arm is just a name. Metrics live in the `METRICS` registry:
 
     @register("my_metric")
     def my_metric_scores(records, *, some_param: int = 3) -> dict[int, float]:
@@ -143,24 +144,21 @@ def sentence_scores(logprobs: dict[int, list[list[float]]]) -> dict[int, float]:
     return scores
 
 
-TOKEN_SELECTIONS = ("filtered", "pure")
+@register("avg_neg_logprob_filtered")
+def avg_neg_logprob_filtered_scores(records: Iterable[dict]) -> dict[int, float]:
+    """Mean over the K samples of the average negative logprob of the tag-ID tokens.
 
-
-@register("avg_neg_logprob")
-def avg_neg_logprob_scores(
-    records: Iterable[dict], *, tokens: str = "filtered"
-) -> dict[int, float]:
-    """Mean over the K samples of the average negative token logprob.
-
-    `tokens` picks which tokens count:
-      "filtered" — only the tag-ID tokens, so brackets and commas (which the model is
-                   always confident about, and which there are more of in long
-                   sentences) don't dilute the signal;
-      "pure"     — every token in the response.
+    Only the tag-ID tokens count, so brackets and commas — which the model is always
+    confident about, and which there are more of in long sentences — don't dilute the
+    signal.
     """
-    if tokens not in TOKEN_SELECTIONS:
-        raise ValueError(f"tokens must be one of {TOKEN_SELECTIONS}, got '{tokens}'")
-    return sentence_scores(extract_logprobs(records, digits_only=(tokens == "filtered")))
+    return sentence_scores(extract_logprobs(records, digits_only=True))
+
+
+@register("avg_neg_logprob_pure")
+def avg_neg_logprob_pure_scores(records: Iterable[dict]) -> dict[int, float]:
+    """The same, over every token in the response rather than the tag-ID tokens alone."""
+    return sentence_scores(extract_logprobs(records, digits_only=False))
 
 
 def extract_tag_ids(records: Iterable[dict]) -> dict[int, list[list[int]]]:
@@ -209,35 +207,35 @@ def plurality_disagreement(votes: list[int | None]) -> float:
     return 1 - max(Counter(votes).values()) / len(votes)
 
 
-MEASURES: dict[str, Callable[[list[int | None]], float]] = {
-    "vote_entropy": normalized_vote_entropy,
-    "disagreement": plurality_disagreement,
-}
-
-
-@register("output_disagreement")
-def output_disagreement_scores(
-    records: Iterable[dict], *, measure: str = "vote_entropy"
-) -> dict[int, float]:
-    """How much the K sampled tag arrays disagree, averaged over token positions.
+@register("vote_entropy")
+def vote_entropy_scores(records: Iterable[dict]) -> dict[int, float]:
+    """Disagreement among the K sampled tag arrays, averaged over token positions.
 
     Reads only the generated text — no logprobs — so it also works for a gateway that
     does not return them. The K temperature samples act as a committee: the more they
-    vary, the less settled the model is about the sentence.
-
-    `measure` picks the per-position disagreement:
-      "vote_entropy"  — normalized Shannon entropy of the votes (0..1);
-      "disagreement"  — the fraction of samples off the plurality tag (0..1-1/k),
-                        coarser but easier to state.
+    vary, the less settled the model is about the sentence. Here that variation is the
+    normalized Shannon entropy of each position's votes (0..1).
 
     A sentence with fewer than two parsable samples has nothing to disagree with and is
     omitted rather than scored 0, so it can never be mistaken for a confident sentence.
     """
-    if measure not in MEASURES:
-        raise ValueError(f"measure must be one of {tuple(MEASURES)}, got '{measure}'")
-    disagreement = MEASURES[measure]
     return {
-        idx: fmean(disagreement(votes) for votes in votes_by_position(samples))
+        idx: fmean(normalized_vote_entropy(votes) for votes in votes_by_position(samples))
+        for idx, samples in extract_tag_ids(records).items()
+        if len(samples) > 1
+    }
+
+
+@register("disagreement")
+def disagreement_scores(records: Iterable[dict]) -> dict[int, float]:
+    """The same committee reading as `vote_entropy`, scored off the plurality instead.
+
+    Each position contributes the fraction of samples that did not vote for the most
+    popular tag (0..1-1/k) — coarser than the entropy, but easier to state. Sentences
+    with fewer than two parsable samples are omitted for the same reason.
+    """
+    return {
+        idx: fmean(plurality_disagreement(votes) for votes in votes_by_position(samples))
         for idx, samples in extract_tag_ids(records).items()
         if len(samples) > 1
     }

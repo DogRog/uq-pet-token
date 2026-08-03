@@ -72,14 +72,24 @@ NER_TAGS = [
 class ArmConfig:
     """One arm of the comparison: a selection strategy plus that strategy's parameters.
 
-    In YAML an arm is a flat mapping — `strategy` names a metric registered in
-    `uncertainty` ("random" is the control, and is one of them), an optional `label`
-    renames it, and every remaining key is a parameter of that metric:
+    Every metric variant is registered under its own name, so an arm is usually just
+    that name:
 
         arms:
-          - strategy: random       # takes a `seed`, like any other metric's parameter
-          - strategy: avg_neg_logprob
-            tokens: filtered
+          - random
+          - avg_neg_logprob_filtered
+          - vote_entropy
+
+    The long form is a flat mapping, for when a metric takes parameters or the arm
+    needs a display name — `strategy` names a metric registered in `uncertainty`
+    ("random" is the control, and is one of them), an optional `label` renames it, and
+    every remaining key is a parameter of that metric:
+
+        arms:
+          - strategy: random
+            seed: 7
+          - strategy: avg_neg_logprob_pure
+            label: anlp
 
     Which parameters a strategy accepts is defined by the metric function itself, so
     that validation lives in `uncertainty.validate_arm` and this module stays free of
@@ -246,7 +256,7 @@ class ExperimentConfig:
     arms: list[ArmConfig] = field(
         default_factory=lambda: [
             ArmConfig(strategy="random"),
-            ArmConfig(strategy="avg_neg_logprob", params={"tokens": "filtered"}),
+            ArmConfig(strategy="avg_neg_logprob_filtered"),
         ]
     )
     tie_seed: int = 0

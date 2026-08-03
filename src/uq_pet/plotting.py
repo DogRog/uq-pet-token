@@ -219,4 +219,8 @@ def plot_results(results: pd.DataFrame, out_path: Path) -> None:
 
 
 def _wrap_label(label: str) -> str:
-    return label.replace(":", ":\n", 1)
+    """Break a long arm name over two lines so neighbouring x-ticks don't collide."""
+    if ":" in label:
+        return label.replace(":", ":\n", 1)
+    head, sep, tail = label.rpartition("_")
+    return f"{head}\n{tail}" if sep and len(label) > 16 else label
