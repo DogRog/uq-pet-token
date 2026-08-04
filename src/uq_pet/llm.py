@@ -74,7 +74,7 @@ def answer_tokens(content: list[Any]) -> list[Any]:
 
     Only the last channel counts, and only if it is the answer channel: a sample cut
     off mid-reasoning never opened one, and returns no tokens rather than its
-    reasoning. That is the honest answer — `sentence_scores` then omits it, which is
+    reasoning. That is the honest answer — `logprob_scores` then omits it, which is
     what a sample carrying no answer deserves.
 
     A stream with no channel markers is passed through untouched, so this changes

@@ -18,6 +18,7 @@ from uq_pet.uncertainty import (
     is_tag_token,
     least_confident_scores,
     length_scores,
+    logprob_scores,
     metric_names,
     metric_params,
     n_from_percent,
@@ -28,7 +29,6 @@ from uq_pet.uncertainty import (
     rank_by_uncertainty,
     score_arm,
     select,
-    sentence_scores,
     span_f1,
     tag_spans,
     validate_arm,
@@ -72,17 +72,17 @@ def test_extract_logprobs_skips_error_records(sample_records):
     assert 2 not in extract_logprobs(sample_records)
 
 
-def test_sentence_scores_averages_over_samples():
+def test_logprob_scores_averages_over_samples():
     # sample means: 2.0 and 4.0 -> 3.0
-    assert sentence_scores({0: [[-1.0, -3.0], [-4.0, -4.0]]}) == {0: 3.0}
+    assert logprob_scores({0: [[-1.0, -3.0], [-4.0, -4.0]]}) == {0: 3.0}
 
 
-def test_sentence_scores_drops_sentences_with_no_usable_samples():
-    assert sentence_scores({0: [[], []], 1: [[-2.0]]}) == {1: 2.0}
+def test_logprob_scores_drops_sentences_with_no_usable_samples():
+    assert logprob_scores({0: [[], []], 1: [[-2.0]]}) == {1: 2.0}
 
 
-def test_sentence_scores_reduce_replaces_the_per_sample_score():
-    assert sentence_scores({0: [[-1.0, -3.0]]}, reduce=max) == {0: -1.0}
+def test_logprob_scores_reduce_replaces_the_per_sample_score():
+    assert logprob_scores({0: [[-1.0, -3.0]]}, reduce=max) == {0: -1.0}
 
 
 # --- least confidence ---------------------------------------------------------
