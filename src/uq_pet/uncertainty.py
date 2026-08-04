@@ -90,7 +90,7 @@ def score_arm(strategy: str, records: Iterable[dict], **params) -> dict[int, flo
 
 
 @register(RANDOM)
-def random_scores(records: Iterable[dict], *, seed: int = 42) -> dict[int, float]:
+def random_scores(records: Iterable[dict], *, seed: int = 0) -> dict[int, float]:
     """A uniform random score per sentence — the control arm.
 
     Reads nothing from a record but its index, so the control never inherits the LLM's

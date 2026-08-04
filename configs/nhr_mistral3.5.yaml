@@ -1,9 +1,7 @@
 budget_pct: [10, 20, 30]
 
 arms:
-  - strategy: random
-    seed: 13
-    label: random
+  - random
   - avg_neg_logprob_filtered
   - vote_entropy
   - pairwise_f1_disagreement
@@ -19,11 +17,9 @@ n_few_shot: 1
 few_shot_seed: 13
 
 llm:
-  model: moonshotai/Kimi-K2.6
+  model: mistralai/Mistral-Medium-3.5-128B
   base_url: https://hub.nhr.fau.de/api/llmgw/v1
   api_key_env: NHR_FAU_API_KEY
-  cache_prefix: nhr_kimi
-  cache_suffix: topk
   n_samples: 10
   temperature: 1.0
   seed: 0
