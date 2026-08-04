@@ -13,7 +13,7 @@ arms:
 
 train_seeds: [0, 1, 2, 3, 4]
 
-n_few_shot: 1
+n_few_shot: 5
 few_shot_seed: 13
 
 llm:

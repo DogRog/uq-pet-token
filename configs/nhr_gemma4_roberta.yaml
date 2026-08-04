@@ -1,0 +1,54 @@
+# roberta-base instead of the distilbert-base-cased baseline: different pretraining
+# corpus and objective, byte-level BPE instead of WordPiece.
+#
+# Shares nhr_gemma4_1shot's score cache (same LLM, few-shot split and sampling recipe),
+# so this run costs no API calls once that cache exists.
+#
+# NOTE the recipe is not the baseline's: RoBERTa-base is unstable at 5e-5 on a
+# ~30-sentence fine-tune and collapses to all-O often enough to waste a run, so the
+# learning rate is the usual 3e-5. That confounds checkpoint with learning rate *across*
+# configs; it does not touch the comparison this experiment actually makes, which is
+# arm vs. random *within* one config, where every arm shares this recipe.
+
+budget_pct: [10, 20, 30]
+
+arms:
+  - random
+  - avg_neg_logprob_filtered
+  - vote_entropy
+  - pairwise_f1_disagreement
+  - entity_count_std
+  - least_confident
+  - length
+  - strategy: confident
+    metric: avg_neg_logprob_filtered
+
+train_seeds: [0, 1, 2]
+
+n_few_shot: 1
+few_shot_seed: 13
+
+llm:
+  model: RedHatAI/gemma-4-31B-it-FP8-block
+  base_url: https://hub.nhr.fau.de/api/llmgw/v1
+  api_key_env: NHR_FAU_API_KEY
+  cache_prefix: nhr_gemma4
+  n_samples: 10
+  temperature: 1.0
+  seed: 0
+  max_tokens: 256
+  logprobs: true
+  top_logprobs: 5
+  workers: 8
+  timeout: 120.0
+  max_retries: 5
+
+train:
+  checkpoint: roberta-base
+  epochs: 20
+  batch_size: 8
+  learning_rate: 3.0e-5
+  weight_decay: 0.01
+  warmup_fraction: 0.1
+  max_length: 256
+  eval_batch_size: 32

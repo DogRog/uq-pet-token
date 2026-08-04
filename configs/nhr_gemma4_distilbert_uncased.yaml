@@ -1,4 +1,13 @@
-budget_pct: [5, 10, 15, 20, 25, 30]
+# Casing ablation: distilbert-base-uncased against the cased baseline in
+# nhr_gemma4_1shot.yaml. Same size and speed, so this is the cheap control for the
+# other three checkpoint configs — PET sentences are lowercase-heavy process
+# descriptions, and how much the cased vocabulary is worth here is not obvious.
+#
+# Shares nhr_gemma4_1shot's score cache (same LLM, few-shot split and sampling recipe),
+# so this run costs no API calls once that cache exists. Recipe is the baseline's
+# unchanged, so `checkpoint` is the only difference.
+
+budget_pct: [10, 20, 30]
 
 arms:
   - random
@@ -11,7 +20,7 @@ arms:
   - strategy: confident
     metric: avg_neg_logprob_filtered
 
-train_seeds: [0, 1, 2, 3, 4]
+train_seeds: [0, 1, 2]
 
 n_few_shot: 1
 few_shot_seed: 13
@@ -32,7 +41,7 @@ llm:
   max_retries: 5
 
 train:
-  checkpoint: distilbert-base-cased
+  checkpoint: distilbert-base-uncased
   epochs: 20
   batch_size: 8
   learning_rate: 5.0e-5

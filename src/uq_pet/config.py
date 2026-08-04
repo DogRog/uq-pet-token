@@ -214,7 +214,16 @@ class LLMConfig:
 
 @dataclass
 class TrainConfig:
-    """Fixed fine-tuning recipe — identical for both arms and every seed."""
+    """Fixed fine-tuning recipe — identical for both arms and every seed.
+
+    `epochs` is a *fixed* budget by default, which is the cheap and reproducible
+    choice but bakes one stopping point into every cell. Set
+    `early_stopping_patience` (with `val_fraction`) to let each cell stop on its own
+    instead; `epochs` then becomes the ceiling. The validation split comes out of the
+    selected sentences, not out of the test set and not out of the unselected pool —
+    an active-learning run only ever has its own budget to spend, and the test split
+    has to stay untouched to keep the reported numbers honest.
+    """
 
     checkpoint: str = "distilbert-base-cased"
     epochs: int = 20
@@ -224,6 +233,9 @@ class TrainConfig:
     warmup_fraction: float = 0.1
     max_length: int = 256
     eval_batch_size: int = 32
+    early_stopping_patience: int = 0
+    val_fraction: float = 0.0
+    early_stopping_min_delta: float = 0.0
 
     def __post_init__(self) -> None:
         if self.epochs < 1:
@@ -232,6 +244,24 @@ class TrainConfig:
             raise ValueError(f"train.batch_size must be >= 1, got {self.batch_size}")
         if not 0.0 <= self.warmup_fraction <= 1.0:
             raise ValueError(f"train.warmup_fraction must be in [0, 1], got {self.warmup_fraction}")
+        if self.early_stopping_patience < 0:
+            raise ValueError(
+                f"train.early_stopping_patience must be >= 0, got {self.early_stopping_patience}"
+            )
+        if not 0.0 <= self.val_fraction < 0.5:
+            raise ValueError(f"train.val_fraction must be in [0, 0.5), got {self.val_fraction}")
+        # Either knob alone is a silent no-op: a validation split nothing reads, or a
+        # patience with no signal to be patient about.
+        if bool(self.early_stopping_patience) != bool(self.val_fraction):
+            raise ValueError(
+                "train.early_stopping_patience and train.val_fraction must be set "
+                f"together, got patience={self.early_stopping_patience} and "
+                f"val_fraction={self.val_fraction}"
+            )
+
+    @property
+    def early_stopping(self) -> bool:
+        return self.early_stopping_patience > 0 and self.val_fraction > 0
 
 
 @dataclass
@@ -286,6 +316,8 @@ class ExperimentConfig:
         if len(set(labels)) != len(labels):
             raise ValueError(f"arm labels must be unique, got {labels} — set an explicit label")
 
+        if self.n_few_shot < 1:
+            raise ValueError(f"n_few_shot must be >= 1, got {self.n_few_shot}")
         if not self.train_seeds:
             raise ValueError("train_seeds must not be empty")
         if len(set(self.train_seeds)) != len(self.train_seeds):

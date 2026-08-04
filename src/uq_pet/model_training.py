@@ -97,6 +97,43 @@ def encode_batch(
     return encoding, torch.tensor(labels)
 
 
+def split_off_validation(
+    examples: list[dict], val_fraction: float, seed: int
+) -> tuple[list[dict], list[dict]]:
+    """Carve a validation set out of the selected sentences.
+
+    Seeded per training seed, and a local Random so it cannot perturb the global RNG
+    that drives batch order and initialisation. Returns (fit, val); `val` is empty
+    when the fraction rounds down to nothing, which is the caller's cue to train the
+    full epoch budget instead.
+    """
+    n_val = int(len(examples) * val_fraction)
+    if n_val < 1 or n_val >= len(examples):
+        return list(examples), []
+    order = list(range(len(examples)))
+    random.Random(seed).shuffle(order)
+    val_idx = set(order[:n_val])
+    return (
+        [ex for i, ex in enumerate(examples) if i not in val_idx],
+        [examples[i] for i in sorted(val_idx)],
+    )
+
+
+@torch.no_grad()
+def validation_loss(model, loader, device: torch.device) -> float:
+    """Mean per-batch cross-entropy over the validation split, in eval mode."""
+    was_training = model.training
+    model.eval()
+    total, batches = 0.0, 0
+    for encoding, labels in loader:
+        encoding = {k: v.to(device) for k, v in encoding.items()}
+        total += float(model(**encoding, labels=labels.to(device)).loss)
+        batches += 1
+    if was_training:
+        model.train()
+    return total / batches if batches else float("nan")
+
+
 def train_token_classifier(
     examples: list[dict],
     seed: int,
@@ -105,7 +142,10 @@ def train_token_classifier(
 ):
     """Fine-tune on `examples` (dicts with 'tokens' and integer 'ner-tags').
 
-    Returns (model, tokenizer); the model is left on the training device in eval mode.
+    Returns (model, tokenizer, info); the model is left on the training device in eval
+    mode. `info` records how long training actually ran — with a fixed epoch budget
+    that is just `cfg.epochs`, but under early stopping it is the evidence for whether
+    one fixed budget was ever the right one.
     """
     set_seed(seed)
     device = device or get_device()
@@ -126,17 +166,45 @@ def train_token_classifier(
             cfg.max_length,
         )
 
+    fit_examples, val_examples = (
+        split_off_validation(examples, cfg.val_fraction, seed)
+        if cfg.early_stopping
+        else (list(examples), [])
+    )
+    if cfg.early_stopping and not val_examples:
+        # A 3-sentence budget cannot spare a validation sentence. Say so rather than
+        # reporting an early-stopping run that quietly used the fixed schedule.
+        logger.warning(
+            "val_fraction %.2g of %d sentences rounds to nothing: training the full "
+            "%d epochs without early stopping",
+            cfg.val_fraction,
+            len(examples),
+            cfg.epochs,
+        )
+
     loader = DataLoader(
-        dataset=list(examples),
+        dataset=fit_examples,
         batch_size=cfg.batch_size,
         shuffle=True,
         generator=torch.Generator().manual_seed(seed),
         collate_fn=collate,
     )
+    val_loader = (
+        DataLoader(
+            dataset=val_examples,
+            batch_size=cfg.eval_batch_size,
+            shuffle=False,
+            collate_fn=collate,
+        )
+        if val_examples
+        else None
+    )
 
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay
     )
+    # The schedule spans the full budget even when early stopping cuts it short: the
+    # decay a step sees must not depend on when training happens to end.
     total_steps = len(loader) * cfg.epochs
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
@@ -144,8 +212,11 @@ def train_token_classifier(
         num_training_steps=total_steps,
     )
 
+    best_loss, best_epoch, best_state, since_best = float("inf"), None, None, 0
+    epochs_run = 0
+
     model.train()
-    for _epoch in range(cfg.epochs):
+    for epoch in range(1, cfg.epochs + 1):
         for encoding, labels in loader:
             encoding = {k: v.to(device) for k, v in encoding.items()}
             outputs = model(**encoding, labels=labels.to(device))
@@ -153,9 +224,36 @@ def train_token_classifier(
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
+        epochs_run = epoch
+
+        if val_loader is None:
+            continue
+
+        loss = validation_loss(model, val_loader, device)
+        if loss < best_loss - cfg.early_stopping_min_delta:
+            best_loss, best_epoch, since_best = loss, epoch, 0
+            # On CPU: the restore below has to survive whatever the next epochs do to
+            # the live weights, and a device-side copy per improvement is wasteful.
+            best_state = {k: v.detach().to("cpu", copy=True) for k, v in model.state_dict().items()}
+        else:
+            since_best += 1
+            if since_best >= cfg.early_stopping_patience:
+                break
+
+    # Early stopping without restoring the best weights would only be a slower way of
+    # picking a different arbitrary epoch.
+    if best_state is not None:
+        model.load_state_dict(best_state)
 
     model.eval()
-    return model, tokenizer
+    info = {
+        "n_fit": len(fit_examples),
+        "n_val": len(val_examples),
+        "epochs_run": epochs_run,
+        "best_epoch": best_epoch,
+        "best_val_loss": round(best_loss, 4) if best_epoch is not None else None,
+    }
+    return model, tokenizer, info
 
 
 @torch.no_grad()
@@ -256,9 +354,9 @@ def train_and_evaluate(
     device: torch.device | None = None,
 ) -> dict:
     """One (arm, seed) cell: fine-tune, score on the held-out split, free the model."""
-    model, tokenizer = train_token_classifier(train_examples, seed, cfg, device=device)
+    model, tokenizer, info = train_token_classifier(train_examples, seed, cfg, device=device)
     try:
-        return evaluate_model_on(
+        metrics = evaluate_model_on(
             model,
             tokenizer,
             test_examples,
@@ -266,5 +364,6 @@ def train_and_evaluate(
             batch_size=cfg.eval_batch_size,
             device=device,
         )
+        return {**metrics, **info}
     finally:
         free_model(model, tokenizer)

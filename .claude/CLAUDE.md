@@ -23,9 +23,17 @@ uv run ruff format .                   # style is ruff's; see [tool.ruff.format]
 uv run python -m uq_pet.main --config configs/smoke.yaml --skip-scoring
 # Real run
 uv run python -m uq_pet.main --config configs/nhr_gemma.yaml
+
+# Every config, back to back, unattended (DRY_RUN=1 for the preflight alone)
+scripts/run_all.sh
+SKIP_DONE=1 scripts/run_all.sh          # resume: skip configs that already have results/
 ```
 
 There is no console script and no subcommands — `main.py` is the single entry point.
+`scripts/run_all.sh` is a loop over it, plus a preflight that loads every config, checks
+the API keys, and refuses to start when two configs with *different* sampling recipes
+resolve to one cache file (see the cache invariants below) — the only cross-config check
+anywhere, since `main` sees one config at a time.
 
 ## Architecture
 
@@ -53,7 +61,14 @@ Eight modules in `src/uq_pet/`, in dependency order:
    record per pool sentence instead of over the cache, so the control draws from the
    whole pool and `arms: [random]` runs without a cache at all. `main` and `plotting`
    still use the `RANDOM` name, but only to find the baseline for reporting.
-6. **`model_training.py`** — the fixed distilbert recipe, prediction, seqeval metrics.
+6. **`model_training.py`** — the distilbert recipe, prediction, seqeval metrics. The
+   recipe is fixed per run, not per repo: `train.checkpoint` takes any
+   `AutoModelForTokenClassification`, and `train.early_stopping_patience` +
+   `train.val_fraction` turn `epochs` into a ceiling. The validation split is carved
+   out of the *selected* sentences (`split_off_validation`) — taking it from the test
+   split would leak, and taking it from the unselected pool would hand the run labels
+   an active-learning setting does not have. Both knobs default to off, so every
+   existing config still trains the fixed schedule.
 7. **`plotting.py`** — the palette and the two figures, reading the results DataFrame.
    Presentation only: nothing here is imported by a stage that produces a number, so a
    layout or color change cannot move a reported score. Figures are built with

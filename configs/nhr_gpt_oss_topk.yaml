@@ -15,12 +15,18 @@ arms:
 
 train_seeds: [0, 1, 2]
 
+n_few_shot: 1
 few_shot_seed: 13
 
 llm:
   model: gpt-oss-120b
   base_url: https://hub.nhr.fau.de/api/llmgw/v1
   api_key_env: NHR_FAU_API_KEY
+  # gpt-oss is a reasoning model: max_tokens 2048 covers its analysis channel. The
+  # suffix is `topk2` because that sampling recipe differs from the default one, and
+  # the filename is the only thing that separates the two caches.
+  cache_prefix: nhr_oss
+  cache_suffix: topk2
   n_samples: 10
   temperature: 1.0
   seed: 0

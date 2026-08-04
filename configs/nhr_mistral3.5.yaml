@@ -20,6 +20,7 @@ llm:
   model: mistralai/Mistral-Medium-3.5-128B
   base_url: https://hub.nhr.fau.de/api/llmgw/v1
   api_key_env: NHR_FAU_API_KEY
+  cache_prefix: nhr_mistral
   n_samples: 10
   temperature: 1.0
   seed: 0

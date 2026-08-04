@@ -3,9 +3,6 @@ budget_pct: [5, 10, 15, 20, 25, 30]
 arms:
   - random
   - avg_neg_logprob_filtered
-  - vote_entropy
-  - pairwise_f1_disagreement
-  - entity_count_std
   - least_confident
   - length
   - strategy: confident
@@ -21,7 +18,11 @@ llm:
   base_url: https://hub.nhr.fau.de/api/llmgw/v1
   api_key_env: NHR_FAU_API_KEY
   cache_prefix: nhr_gemma4
-  n_samples: 10
+  # A single sample is a different sampling recipe, and the filename does not encode
+  # the recipe — without this suffix these records land in the 10-sample config's
+  # cache, where each run evicts the other's and re-scores the whole pool.
+  cache_suffix: n1
+  n_samples: 1
   temperature: 1.0
   seed: 0
   max_tokens: 256

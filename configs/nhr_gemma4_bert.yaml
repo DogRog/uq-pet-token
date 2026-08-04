@@ -1,0 +1,53 @@
+# Does the selection effect survive a bigger encoder? bert-base-cased vs. the
+# distilbert-base-cased baseline in nhr_gemma4_1shot.yaml.
+#
+# Same LLM, same few-shot split and same sampling recipe as nhr_gemma4_1shot, so this
+# config *shares* that run's score cache (nhr_gemma4_pool_fs1s13_dist.jsonl) and makes
+# no API calls once it exists. The arms, budgets and train_seeds are a subset of that
+# run's, so every cell here has a distilbert counterpart to compare against.
+#
+# The learning rate is the baseline's 5e-5: BERT-base tolerates it, so `checkpoint` is
+# the only thing that differs from nhr_gemma4_1shot.
+
+budget_pct: [10, 20, 30]
+
+arms:
+  - random
+  - avg_neg_logprob_filtered
+  - vote_entropy
+  - pairwise_f1_disagreement
+  - entity_count_std
+  - least_confident
+  - length
+  - strategy: confident
+    metric: avg_neg_logprob_filtered
+
+train_seeds: [0, 1, 2]
+
+n_few_shot: 1
+few_shot_seed: 13
+
+llm:
+  model: RedHatAI/gemma-4-31B-it-FP8-block
+  base_url: https://hub.nhr.fau.de/api/llmgw/v1
+  api_key_env: NHR_FAU_API_KEY
+  cache_prefix: nhr_gemma4
+  n_samples: 10
+  temperature: 1.0
+  seed: 0
+  max_tokens: 256
+  logprobs: true
+  top_logprobs: 5
+  workers: 8
+  timeout: 120.0
+  max_retries: 5
+
+train:
+  checkpoint: bert-base-cased
+  epochs: 20
+  batch_size: 8
+  learning_rate: 5.0e-5
+  weight_decay: 0.01
+  warmup_fraction: 0.1
+  max_length: 256
+  eval_batch_size: 32

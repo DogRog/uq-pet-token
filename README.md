@@ -85,7 +85,21 @@ enough that a single-seed gap between arms would not be a result.
   (`n_few_shot: 10` gives 10 / 323 / 84). A non-default pair scores into its own cache
   file — `nhr_gemma_pool_fs10s42_dist.jsonl` — so it costs a fresh pass over the pool
   and cannot corrupt the default one.
-- **Trained model**: `distilbert-base-cased` token classifier, manual torch loop.
+- **Trained model**: `distilbert-base-cased` token classifier, manual torch loop. Any
+  `AutoModelForTokenClassification` checkpoint works — `train.checkpoint` is a YAML
+  knob, and the `nhr_gemma4_{bert,roberta,deberta,distilbert_uncased}` configs use it
+  to ask whether a result survives a different encoder.
+- **Stopping**: a fixed `train.epochs` for every cell by default — cheap and
+  reproducible, but one arbitrary stopping point imposed on training sets that differ
+  in size and content. Setting `train.early_stopping_patience` with
+  `train.val_fraction` (see `configs/nhr_gemma4_early_stopping.yaml`) lets each cell
+  stop on its own instead: the fraction is held out of *that cell's own budget* — never
+  the test split, which would leak, and never the unselected pool, which a real
+  active-learning run would not have labelled — training stops after N epochs without
+  an improvement in validation loss, and the best epoch's weights are restored.
+  `epochs` becomes the ceiling, and `results.csv` gains `n_fit`, `n_val`,
+  `epochs_run`, `best_epoch` and `best_val_loss` so the fixed budget can be judged
+  against where the cells actually wanted to stop.
 - **Evaluation**: entity-level micro F1 (seqeval), per-type F1, token accuracy.
 
 Scores are recomputed from the cached samples on every run and never stored, so
@@ -116,7 +130,18 @@ uv run python -m uq_pet.main --config configs/smoke.yaml --skip-scoring
 
 # The real run.
 uv run python -m uq_pet.main --config configs/nhr_gemma.yaml
+
+# Every config in configs/, back to back, unattended. DRY_RUN=1 runs the preflight
+# alone; SKIP_DONE=1 skips configs that already produced a run directory.
+scripts/run_all.sh
 ```
+
+`scripts/run_all.sh` is a loop over the entry point plus a preflight that no single
+run can do: it loads every config, validates the arms, checks the API keys, pings each
+gateway model once, and refuses to start when two configs with different sampling
+recipes resolve to the same cache file — where each run would evict the other's records
+and re-score the pool from scratch. A failing config doesn't stop the sweep; its log and
+the closing summary land in `results/_sweeps/<timestamp>/`.
 
 The raw PET jsonl is downloaded on the first run. `NHR_FAU_API_KEY` in `.env` is
 needed **only** when the score cache doesn't already cover the pool — a complete cache
@@ -124,7 +149,7 @@ means no client is ever constructed.
 
 Useful flags: `--skip-scoring` (never call the API; fail if the cache is short),
 `--limit N` (score only the first N pool sentences), `--dry-run` (stop after selection
-and print both arms), `--no-plot`, `-v`.
+and print both arms), `--run-name NAME` (name the run directory), `--no-plot`, `-v`.
 
 ### Conda instead of uv
 
@@ -173,7 +198,8 @@ Modules are listed in dependency order. Every one is import-side-effect-free: im
 | `src/uq_pet/model_training.py` | fine-tuning, prediction, seqeval metrics |
 | `src/uq_pet/plotting.py` | the figures — presentation only, nothing here feeds back into a number |
 | `src/uq_pet/main.py` | the whole pipeline and its CLI — nothing imports from here |
-| `results/<config stem>/` | one directory per config, replaced on each run (gitignored) |
+| `results/<config stem>_<timestamp>/` | one directory per *run*, never overwritten (gitignored) |
+| `results/_sweeps/<timestamp>/` | one log per config from a `scripts/run_all.sh` sweep, plus its summary |
 | `tests/` | offline unit tests |
 
 Each run directory holds a `config.yaml` snapshot (written before any work),

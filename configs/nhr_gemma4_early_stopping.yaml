@@ -1,0 +1,63 @@
+# Is the fixed training recipe doing some of the choosing?
+#
+# Every other config trains exactly 20 epochs on every cell, which is one arbitrary
+# stopping point applied to sets that differ in size (33 to 98 sentences) and in
+# content. If 20 epochs happens to suit the sentences one arm picks and overfit the
+# ones another picks, the reported gap is partly a property of the recipe.
+#
+# So: a 100-epoch ceiling, and each cell stops on its own — 20% of its *own* budget is
+# held out for validation, training stops after 10 epochs with no improvement in
+# validation loss, and the best epoch's weights are restored. The validation split
+# comes out of the selected sentences (never the test split, which would leak, and
+# never the unselected pool, which an active-learning run would not have labelled), so
+# every arm here trains on 20% fewer sentences than the same budget elsewhere. Compare
+# arm-to-arm *within* this run, and read `best_epoch` in results.csv against the fixed
+# 20 to see whether the fixed recipe was ever near the right answer.
+#
+# Budgets, seeds, arms and LLM match nhr_gemma4_1shot.yaml, and the score cache is
+# shared with it, so this costs no API calls once that cache exists.
+
+budget_pct: [10, 20, 30]
+
+arms:
+  - random
+  - avg_neg_logprob_filtered
+  - vote_entropy
+  - pairwise_f1_disagreement
+  - entity_count_std
+  - least_confident
+  - length
+  - strategy: confident
+    metric: avg_neg_logprob_filtered
+
+train_seeds: [0, 1, 2]
+
+n_few_shot: 1
+few_shot_seed: 13
+
+llm:
+  model: RedHatAI/gemma-4-31B-it-FP8-block
+  base_url: https://hub.nhr.fau.de/api/llmgw/v1
+  api_key_env: NHR_FAU_API_KEY
+  cache_prefix: nhr_gemma4
+  n_samples: 10
+  temperature: 1.0
+  seed: 0
+  max_tokens: 256
+  logprobs: true
+  top_logprobs: 5
+  workers: 8
+  timeout: 120.0
+  max_retries: 5
+
+train:
+  checkpoint: distilbert-base-cased
+  epochs: 100
+  batch_size: 8
+  learning_rate: 5.0e-5
+  weight_decay: 0.01
+  warmup_fraction: 0.1
+  max_length: 256
+  eval_batch_size: 32
+  val_fraction: 0.2
+  early_stopping_patience: 10

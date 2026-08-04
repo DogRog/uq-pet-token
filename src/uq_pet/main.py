@@ -12,6 +12,7 @@ import json
 import logging
 import math
 import shutil
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -47,6 +48,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", required=True, type=Path, help="YAML run config")
     parser.add_argument("--results-dir", type=Path, default=RESULTS_DIR)
     parser.add_argument(
+        "--run-name",
+        help="name the run directory instead of using the config stem (a timestamp is "
+        "appended either way)",
+    )
+    parser.add_argument(
         "--skip-scoring",
         action="store_true",
         help="never call the API; fail if the cache does not cover the budget",
@@ -81,15 +87,19 @@ def make_run_dir(
     cfg: ExperimentConfig,
     config_path: Path,
     results_dir: Path = RESULTS_DIR,
+    run_name: str | None = None,
 ) -> Path:
-    """Create results/<config stem>/ and snapshot the config before any work.
+    """Create results/<config stem>_<timestamp>/ and snapshot the config before work.
 
-    An existing directory for this config is cleared, not merged into, so a shorter
-    re-run cannot leave a previous run's figures and CSVs behind.
+    Every run gets its own directory: re-running a config after an edit is the normal
+    way to work here, and a run that overwrote the last one would take the numbers
+    being compared against with it. `run_name` replaces the config stem when the stem
+    is not what distinguishes this run.
     """
-    run_dir = results_dir / config_path.stem
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = results_dir / f"{run_name or config_path.stem}_{stamp}"
     if run_dir.exists():
-        print(f"Overwriting {run_dir}")
+        # Same config, same second: a re-run, not a distinct one worth keeping.
         shutil.rmtree(run_dir)
     (run_dir / "figures").mkdir(parents=True)
     (run_dir / "config.yaml").write_text(config_to_yaml(cfg))
@@ -232,12 +242,18 @@ def stage_train(
                     **metrics,
                 }
             )
+            stopped = (
+                f"  epochs={metrics['epochs_run']} (best {metrics['best_epoch']})"
+                if metrics.get("best_epoch") is not None
+                else ""
+            )
             logger.info(
-                "  %5.3g%%  %-24s seed=%d  entity_F1=%.4f",
+                "  %5.3g%%  %-24s seed=%d  entity_F1=%.4f%s",
                 budget,
                 arm,
                 seed,
                 metrics["entity_f1"],
+                stopped,
             )
     return pd.DataFrame(rows)
 
@@ -335,7 +351,7 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as e:
             raise SystemExit(f"{args.config}: {e}") from None
 
-    run_dir = make_run_dir(cfg, args.config, args.results_dir)
+    run_dir = make_run_dir(cfg, args.config, args.results_dir, run_name=args.run_name)
     setup_logging(run_dir / "run.log", args.verbose)
     configure_hf_logging(quiet=not args.verbose)
     logger.info("Run directory: %s", run_dir)
@@ -388,6 +404,14 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"\n(seed std ~{stds.mean():.4f} over {len(cfg.train_seeds)} seeds — "
             f"a gap smaller than that is noise)"
+        )
+    if cfg.train.early_stopping and results["best_epoch"].notna().any():
+        best = results["best_epoch"].dropna()
+        print(
+            f"\nEarly stopping: best epoch {best.min():.0f}-{best.max():.0f} "
+            f"(mean {best.mean():.1f}) of a {cfg.train.epochs}-epoch ceiling — "
+            f"a fixed budget near that mean costs little; far from it, the fixed "
+            f"recipe was doing the choosing."
         )
     print(f"\nWrote {run_dir}")
     return 0

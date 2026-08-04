@@ -1,0 +1,54 @@
+# Does it matter *which* single demonstration the prompt gets? Same 1-shot setup as
+# nhr_gemma4_1shot.yaml, a different draw: few_shot_seed 1 instead of 13.
+#
+# Read the gap vs. random, not the absolute F1. The few-shot seed decides which
+# sentences leave the pool, so this run's pool and its cache indices are not the other
+# run's — a different prompt *and* a slightly different training pool. The arm-vs-random
+# comparison inside each run survives that; "1-shot seed 1 scores higher than seed 13"
+# would not mean much.
+#
+# Its own cache (nhr_gemma4_pool_fs1s13 -> ..._fs1s1_...), so this config scores the
+# pool from scratch — budget the API time.
+
+budget_pct: [10, 20, 30]
+
+arms:
+  - random
+  - avg_neg_logprob_filtered
+  - vote_entropy
+  - pairwise_f1_disagreement
+  - entity_count_std
+  - least_confident
+  - length
+  - strategy: confident
+    metric: avg_neg_logprob_filtered
+
+train_seeds: [0, 1, 2]
+
+n_few_shot: 1
+few_shot_seed: 1
+
+llm:
+  model: RedHatAI/gemma-4-31B-it-FP8-block
+  base_url: https://hub.nhr.fau.de/api/llmgw/v1
+  api_key_env: NHR_FAU_API_KEY
+  cache_prefix: nhr_gemma4
+  n_samples: 10
+  temperature: 1.0
+  seed: 0
+  max_tokens: 256
+  logprobs: true
+  top_logprobs: 5
+  workers: 8
+  timeout: 120.0
+  max_retries: 5
+
+train:
+  checkpoint: distilbert-base-cased
+  epochs: 20
+  batch_size: 8
+  learning_rate: 5.0e-5
+  weight_decay: 0.01
+  warmup_fraction: 0.1
+  max_length: 256
+  eval_batch_size: 32
