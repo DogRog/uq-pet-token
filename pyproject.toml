@@ -20,6 +20,7 @@ dependencies = [
     "pyyaml>=6.0",
     "scipy>=1.14",
     "seqeval>=1.2.2",
+    "tiktoken>=0.13.0",
     "torch>=2.12.1",
     "tqdm>=4.66",
     "transformers>=5.12.1",

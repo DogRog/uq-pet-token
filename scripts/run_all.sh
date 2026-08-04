@@ -77,15 +77,26 @@ from uq_pet.uncertainty import RANDOM, validate_arm
 load_dotenv(PROJECT_ROOT / ".env")
 
 
-def is_downloaded(checkpoint: str) -> bool:
-    """True if the checkpoint is already in the HF cache, so the run needs no network."""
-    from transformers import AutoConfig
+def checkpoint_status(checkpoint: str) -> tuple[bool, Exception | None]:
+    """(already in the HF cache, why the tokenizer cannot be built).
+
+    Building the tokenizer is the part that fails for reasons a config file cannot
+    show: DeBERTa-v3's needs `tiktoken` to convert its vocabulary, and a missing
+    converter raises here rather than at `from_pretrained` of the config. A few
+    seconds of downloading now beats finding out an hour into a sweep.
+    """
+    from transformers import AutoConfig, AutoTokenizer
 
     try:
         AutoConfig.from_pretrained(checkpoint, local_files_only=True)
-        return True
+        cached = True
     except Exception:
-        return False
+        cached = False
+    try:
+        AutoTokenizer.from_pretrained(checkpoint)
+    except Exception as e:
+        return cached, e
+    return cached, None
 
 
 groups_path = Path(sys.argv[1])
@@ -143,9 +154,15 @@ for cache, users in caches.items():
     elif len(users) > 1:
         print(f"{'':34s}           ^ shared by {len(users)} configs, same recipe: scored once")
 
-missing = [c for c in checkpoints if not is_downloaded(c)]
-for checkpoint in missing:
-    print(f"note: {checkpoint} is not in the HF cache yet — it downloads on first use")
+for checkpoint, users in checkpoints.items():
+    cached, error = checkpoint_status(checkpoint)
+    if error is not None:
+        problems.append(
+            f"{checkpoint} ({', '.join(users)}): the tokenizer will not load — "
+            f"{type(error).__name__}: {str(error)[:200]}"
+        )
+    elif not cached:
+        print(f"note: {checkpoint} is not in the HF cache yet — it downloads on first use")
 
 # One 1-token generation per distinct model. A wrong model name is a 404 on every
 # sentence of an uncached config, which is hours of the night spent failing.
@@ -242,7 +259,10 @@ for checkpoint in dict.fromkeys(load_config(Path(p)).train.checkpoint for p in s
     AutoModelForTokenClassification.from_pretrained(checkpoint)
     print(f"  {checkpoint}")
 PY
-    [ $? -ne 0 ] && { echo "Aborting: a checkpoint could not be fetched."; exit 1; }
+    # Not fatal: one unfetchable checkpoint costs its own configs, and taking the
+    # whole night down with it would be the more expensive failure. The preflight
+    # already refused the checkpoints that are broken rather than merely missing.
+    [ $? -ne 0 ] && echo "  WARN: a checkpoint could not be prefetched — its configs will fail"
 fi
 
 # Kill the whole process group, not just the config in front: with JOBS>1 there are
