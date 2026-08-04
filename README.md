@@ -87,7 +87,7 @@ enough that a single-seed gap between arms would not be a result.
   and cannot corrupt the default one.
 - **Trained model**: `distilbert-base-cased` token classifier, manual torch loop. Any
   `AutoModelForTokenClassification` checkpoint works — `train.checkpoint` is a YAML
-  knob, and the `nhr_gemma4_{bert,roberta,deberta,distilbert_uncased}` configs use it
+  knob, and the `nhr_gemma4_{bert,roberta,distilbert_uncased}` configs use it
   to ask whether a result survives a different encoder.
 - **Stopping**: a fixed `train.epochs` for every cell by default — cheap and
   reproducible, but one arbitrary stopping point imposed on training sets that differ
