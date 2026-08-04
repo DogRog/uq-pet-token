@@ -124,7 +124,7 @@ means no client is ever constructed.
 
 Useful flags: `--skip-scoring` (never call the API; fail if the cache is short),
 `--limit N` (score only the first N pool sentences), `--dry-run` (stop after selection
-and print both arms), `--run-name`, `--no-plot`, `-v`.
+and print both arms), `--no-plot`, `-v`.
 
 ### Conda instead of uv
 
@@ -173,7 +173,7 @@ Modules are listed in dependency order. Every one is import-side-effect-free: im
 | `src/uq_pet/model_training.py` | fine-tuning, prediction, seqeval metrics |
 | `src/uq_pet/plotting.py` | the figures — presentation only, nothing here feeds back into a number |
 | `src/uq_pet/main.py` | the whole pipeline and its CLI — nothing imports from here |
-| `results/<run_id>/` | one directory per run (gitignored) |
+| `results/<config stem>/` | one directory per config, replaced on each run (gitignored) |
 | `tests/` | offline unit tests |
 
 Each run directory holds a `config.yaml` snapshot (written before any work),

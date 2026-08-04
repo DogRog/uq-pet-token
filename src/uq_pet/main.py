@@ -11,7 +11,7 @@ import argparse
 import json
 import logging
 import math
-from datetime import datetime
+import shutil
 from pathlib import Path
 
 import pandas as pd
@@ -45,7 +45,6 @@ def build_parser() -> argparse.ArgumentParser:
         description="Compare uncertainty-based vs. random training-data selection on PET.",
     )
     parser.add_argument("--config", required=True, type=Path, help="YAML run config")
-    parser.add_argument("--run-name", help="run directory stem (default: the config's stem)")
     parser.add_argument("--results-dir", type=Path, default=RESULTS_DIR)
     parser.add_argument(
         "--skip-scoring",
@@ -82,12 +81,17 @@ def make_run_dir(
     cfg: ExperimentConfig,
     config_path: Path,
     results_dir: Path = RESULTS_DIR,
-    run_name: str | None = None,
 ) -> Path:
-    """Create results/<name>_<timestamp>/ and snapshot the config before any work."""
-    stem = run_name or config_path.stem
-    run_dir = results_dir / f"{stem}_{datetime.now():%Y%m%d_%H%M%S}"
-    (run_dir / "figures").mkdir(parents=True, exist_ok=True)
+    """Create results/<config stem>/ and snapshot the config before any work.
+
+    An existing directory for this config is cleared, not merged into, so a shorter
+    re-run cannot leave a previous run's figures and CSVs behind.
+    """
+    run_dir = results_dir / config_path.stem
+    if run_dir.exists():
+        print(f"Overwriting {run_dir}")
+        shutil.rmtree(run_dir)
+    (run_dir / "figures").mkdir(parents=True)
     (run_dir / "config.yaml").write_text(config_to_yaml(cfg))
     return run_dir
 
@@ -331,7 +335,7 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as e:
             raise SystemExit(f"{args.config}: {e}") from None
 
-    run_dir = make_run_dir(cfg, args.config, args.results_dir, args.run_name)
+    run_dir = make_run_dir(cfg, args.config, args.results_dir)
     setup_logging(run_dir / "run.log", args.verbose)
     configure_hf_logging(quiet=not args.verbose)
     logger.info("Run directory: %s", run_dir)

@@ -46,8 +46,6 @@ llm:
   model: gpt-oss-120b
   base_url: https://hub.nhr.fau.de/api/llmgw/v1
   api_key_env: NHR_FAU_API_KEY
-  cache_prefix: nhr_oss
-  cache_suffix: topk2
   n_samples: 10
   temperature: 1.0
   seed: 0

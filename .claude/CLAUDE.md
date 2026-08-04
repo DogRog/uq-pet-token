@@ -56,8 +56,12 @@ Eight modules in `src/uq_pet/`, in dependency order:
 6. **`model_training.py`** — the fixed distilbert recipe, prediction, seqeval metrics.
 7. **`plotting.py`** — the palette and the two figures, reading the results DataFrame.
    Presentation only: nothing here is imported by a stage that produces a number, so a
-   layout or color change cannot move a reported score. matplotlib is imported *inside*
-   the plotting functions because `matplotlib.use("Agg")` is a global side effect.
+   layout or color change cannot move a reported score. Figures are built with
+   `matplotlib.figure.Figure`, **never `pyplot`** — pyplot would mean selecting a
+   backend (`matplotlib.use("Agg")`) and leaving figures in a global registry, and a
+   notebook that calls `plot_results` would find its own `plt.show()` dead for the rest
+   of the kernel. `savefig` selects the Agg writer from the file extension by itself,
+   so headless runs need no backend call at all.
 8. **`main.py`** — the pipeline and its argparse CLI. **Nothing imports from `main`.**
 
 `config.py` imports nothing from the package and must stay that way, so `ArmConfig`
