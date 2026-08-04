@@ -142,7 +142,19 @@ def plot_learning_curve(results: pd.DataFrame, out_path: Path, show: bool = Fals
     stats["std"] = stats["std"].fillna(0.0)
 
     top = max((stats["mean"] + stats["std"]).max() * 1.2, 0.05)
-    fig, ax = plt.subplots(figsize=(7.6, 4.6))
+    # The legend gets its own panel rather than a corner of the axes. Inside the axes it
+    # has to sit somewhere, and wherever that is, a run with enough arms eventually draws
+    # a line through it — arms fan out at the smallest budget, which is exactly where an
+    # "upper left" legend lives. The panel is sized from the longest arm name so a config
+    # with `confident:avg_neg_logprob_filtered` in it doesn't get its labels clipped.
+    legend_width = 0.55 + 0.058 * max(len(arm) for arm in arms)
+    fig, (ax, legend_ax) = plt.subplots(
+        1,
+        2,
+        figsize=(7.6 + legend_width, 4.6),
+        gridspec_kw={"width_ratios": [7.6, legend_width]},
+    )
+    legend_ax.axis("off")
     ends = {}
     for arm in arms:
         at_arm = stats.loc[arm].reindex(budgets)
@@ -200,7 +212,16 @@ def plot_learning_curve(results: pd.DataFrame, out_path: Path, show: bool = Fals
     ax.set_ylim(0, top)
     ax.set_xlim(x[0] - span * 0.04, x[-1] + span * (right_pad + 0.04))
     _style_axes(ax)
-    ax.legend(frameon=False, labelcolor=INK_PRIMARY, fontsize=9, loc="upper left")
+    legend_ax.legend(
+        *ax.get_legend_handles_labels(),
+        frameon=False,
+        labelcolor=INK_PRIMARY,
+        fontsize=9,
+        loc="upper left",
+        bbox_to_anchor=(0.0, 1.0),
+        borderaxespad=0.0,
+        handlelength=1.6,
+    )
     fig.tight_layout()
     if show:
         plt.show()

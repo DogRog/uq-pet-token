@@ -352,9 +352,16 @@ def main(argv: list[str] | None = None) -> int:
         len(test_examples),
     )
 
-    records, _sha, meta = stage_score(
-        cfg, few_shot, pool_examples, skip=args.skip_scoring, limit=args.limit
-    )
+    # `random` scores the pool directly, so a run whose arms are all controls reads no
+    # cache and needs no API key — scoring it anyway would spend the gateway on numbers
+    # no arm looks at, or refuse to start under --skip-scoring for want of a cache.
+    if any(arm.strategy != RANDOM for arm in cfg.arms):
+        records, _sha, meta = stage_score(
+            cfg, few_shot, pool_examples, skip=args.skip_scoring, limit=args.limit
+        )
+    else:
+        logger.info("Every arm is the %s control: skipping the scoring stage", RANDOM)
+        records, meta = [], {"scored": False}
     cells = stage_select(cfg, records, pool_examples)
 
     if args.dry_run:

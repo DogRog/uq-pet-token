@@ -1,0 +1,53 @@
+# How wide is the random control's selection luck?
+#
+# Same split, same recipe, same train_seeds as nhr_gpt_oss_topk — only the arms
+# differ. Eight independent random draws map the selection-noise band that a single
+# draw hides; `random` (seed 13) is the very arm from that run, so its numbers must
+# reproduce, and the uncertainty arms are read off that run's summary.csv (identical
+# split, test set, recipe and train seeds, so the comparison holds across runs).
+#
+# Every arm is `random`, which scores the pool directly, so `main` skips the scoring
+# stage outright: no cache, no API key, and no `llm` block needed here.
+
+budget_pct: [10, 20, 30]
+
+arms:
+  - strategy: random
+    seed: 13
+    label: random
+  - strategy: random
+    seed: 1
+    label: random-1
+  - strategy: random
+    seed: 2
+    label: random-2
+  - strategy: random
+    seed: 3
+    label: random-3
+  - strategy: random
+    seed: 4
+    label: random-4
+  - strategy: random
+    seed: 5
+    label: random-5
+  - strategy: random
+    seed: 6
+    label: random-6
+  - strategy: random
+    seed: 7
+    label: random-7
+
+tie_seed: 0
+n_few_shot: 1
+few_shot_seed: 13
+train_seeds: [0, 1, 2]
+
+train:
+  checkpoint: distilbert-base-cased
+  epochs: 20
+  batch_size: 8
+  learning_rate: 5.0e-5
+  weight_decay: 0.01
+  warmup_fraction: 0.1
+  max_length: 256
+  eval_batch_size: 32
