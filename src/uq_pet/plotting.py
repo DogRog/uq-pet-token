@@ -69,11 +69,8 @@ def _style_axes(ax) -> None:
     ax.spines["bottom"].set_color("#d9d9d4")
 
 
-def plot_arms(results: pd.DataFrame, out_path: Path) -> None:
+def plot_arms(results: pd.DataFrame, out_path: Path, show: bool = False) -> None:
     """Single-budget view — bar = mean over seeds, dots = the individual seeds."""
-    import matplotlib
-
-    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     arms = list(dict.fromkeys(results["arm"]))
@@ -117,15 +114,15 @@ def plot_arms(results: pd.DataFrame, out_path: Path) -> None:
     ax.set_ylim(0, max(results["entity_f1"].max() * 1.3, 0.05))
     _style_axes(ax)
     fig.tight_layout()
+    if show:
+        plt.show()
+        return
     fig.savefig(out_path, dpi=200, facecolor=SURFACE)
     plt.close(fig)
 
 
-def plot_learning_curve(results: pd.DataFrame, out_path: Path) -> None:
+def plot_learning_curve(results: pd.DataFrame, out_path: Path, show: bool = False) -> None:
     """Budget sweep — one line per arm, mean over seeds, +/-1 std as a band and error bar."""
-    import matplotlib
-
-    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import numpy as np
 
@@ -205,14 +202,17 @@ def plot_learning_curve(results: pd.DataFrame, out_path: Path) -> None:
     _style_axes(ax)
     ax.legend(frameon=False, labelcolor=INK_PRIMARY, fontsize=9, loc="upper left")
     fig.tight_layout()
+    if show:
+        plt.show()
+        return
     fig.savefig(out_path, dpi=200, facecolor=SURFACE)
     plt.close(fig)
 
 
-def plot_results(results: pd.DataFrame, out_path: Path) -> None:
+def plot_results(results: pd.DataFrame, out_path: Path, show: bool = False) -> None:
     """Bars for a single budget, a learning curve for a sweep."""
     if results["budget_pct"].nunique() > 1:
-        plot_learning_curve(results, out_path)
+        plot_learning_curve(results, out_path, show)
     else:
         plot_arms(results, out_path)
 
