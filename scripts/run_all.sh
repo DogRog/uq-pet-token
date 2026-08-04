@@ -9,7 +9,9 @@
 #   JOBS=4      scripts/run_all.sh            # up to 4 configs at once
 #
 # A failing config does not stop the sweep — the next one starts and the failure is
-# reported in the closing summary. Exit status is the number of configs that failed.
+# reported in the closing summary. Nor does a config the preflight finds unrunnable
+# (an unloadable checkpoint, say): it is dropped, named, and the others still run.
+# Exit status is the number of configs that failed plus the number skipped.
 #
 # JOBS parallelises *across score caches, never within one*. Configs that share a cache
 # file run in sequence with each other however high JOBS goes: an unscored cache would
@@ -100,7 +102,11 @@ def checkpoint_status(checkpoint: str) -> tuple[bool, Exception | None]:
 
 
 groups_path = Path(sys.argv[1])
+skipped_path = groups_path.with_name("skipped.tsv")
 problems = []
+# Reasons to drop one config but run the rest. A sweep is unattended, so a fault in
+# one config is worth reporting and stepping over, not worth spending the night on.
+unrunnable = {}
 caches = {}
 checkpoints = {}
 # config -> the cache file it writes to, which is what may not be written twice at
@@ -119,7 +125,7 @@ for path in (Path(p) for p in sys.argv[2:]):
         except ValueError as e:
             problems.append(f"{path}: {e}")
 
-    checkpoints.setdefault(cfg.train.checkpoint, []).append(path.name)
+    checkpoints.setdefault(cfg.train.checkpoint, []).append(path)
     cells = len(cfg.budget_pct) * len(cfg.arms) * len(cfg.train_seeds)
 
     needs_llm = any(arm.strategy != RANDOM for arm in cfg.arms)
@@ -157,10 +163,10 @@ for cache, users in caches.items():
 for checkpoint, users in checkpoints.items():
     cached, error = checkpoint_status(checkpoint)
     if error is not None:
-        problems.append(
-            f"{checkpoint} ({', '.join(users)}): the tokenizer will not load — "
-            f"{type(error).__name__}: {str(error)[:200]}"
-        )
+        reason = f"{checkpoint} tokenizer will not load — {type(error).__name__}: {str(error)[:200]}"
+        for path in users:
+            unrunnable[path] = reason
+        print(f"SKIP {', '.join(p.name for p in users)}: {reason}")
     elif not cached:
         print(f"note: {checkpoint} is not in the HF cache yet — it downloads on first use")
 
@@ -208,9 +214,15 @@ if problems:
         print(f"  - {p}", file=sys.stderr)
     sys.exit(1)
 
+skipped_path.write_text("".join(f"{path}\t{why}\n" for path, why in unrunnable.items()))
+
 # In argv order, so the sweep runs the configs in the order it was asked to.
 groups_path.write_text(
-    "".join(f"{path}\t{group_of.get(path, path)}\n" for path in (Path(p) for p in sys.argv[2:]))
+    "".join(
+        f"{path}\t{group_of.get(path, path)}\n"
+        for path in (Path(p) for p in sys.argv[2:])
+        if path not in unrunnable
+    )
 )
 PY
 [ $? -ne 0 ] && { echo "Aborting: nothing was run."; exit 1; }
@@ -241,7 +253,11 @@ if [ "$JOBS" -gt 1 ]; then
     # Warm the HF cache serially first: parallel chains would otherwise race to
     # download the same checkpoint, and a name typo is better found now.
     echo "Prefetching checkpoints..."
-    uv run python - "${CONFIGS[@]}" <<'PY'
+    # Only the configs that survived the preflight: the ones it dropped are dropped
+    # for reasons that would just be re-raised here, noisily.
+    RUNNABLE=()
+    while IFS= read -r line; do RUNNABLE+=("$line"); done < <(cut -f1 "$CACHE_GROUPS")
+    uv run python - "${RUNNABLE[@]:-}" <<'PY'
 import sys
 from pathlib import Path
 
@@ -307,7 +323,8 @@ if [ "$JOBS" -gt 1 ]; then
     echo
 fi
 
-for chain in "${CHAINS[@]}"; do
+for chain in "${CHAINS[@]:-}"; do
+    [ -z "$chain" ] && continue
     if [ "$JOBS" -le 1 ]; then
         for cfg in $chain; do run_one "$cfg"; done
         continue
@@ -320,11 +337,14 @@ done
 wait
 
 # ----------------------------------------------------------------- summary ----
+SKIPPED="$LOG_DIR/skipped.tsv"
 STATUSES=()
 for cfg in "${CONFIGS[@]}"; do
     name="$(basename "$cfg" .yaml)"
     if [ -f "$STATUS_DIR/$name" ]; then
         STATUSES+=("$(cat "$STATUS_DIR/$name")")
+    elif reason="$(grep -m1 -F "$cfg	" "$SKIPPED" 2>/dev/null | cut -f2-)" && [ -n "$reason" ]; then
+        STATUSES+=("SKIPPED     $name — $reason")
     else
         STATUSES+=("NORUN       $name")
     fi
@@ -337,5 +357,7 @@ done
 } | tee "$LOG_DIR/summary.txt"
 
 failed=$(printf '%s\n' "${STATUSES[@]}" | grep -c '^FAIL')
+skipped=$(printf '%s\n' "${STATUSES[@]}" | grep -c '^SKIPPED')
 [ "$failed" -gt 0 ] && echo "  ($failed failed — logs in $LOG_DIR)"
-exit "$failed"
+[ "$skipped" -gt 0 ] && echo "  ($skipped skipped by the preflight and never started)"
+exit $(( failed + skipped ))
