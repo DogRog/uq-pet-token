@@ -193,7 +193,7 @@ def plot_learning_curve(results: pd.DataFrame, out_path: Path) -> None:
         right_pad = 0.04
 
     ax.set_xticks(x, [f"{b:.3g}%" for b in budgets], color=INK_PRIMARY, fontsize=9)
-    ax.set_xlabel("training budget (% of the 328-sentence pool)", color=INK_SECONDARY)
+    ax.set_xlabel("training budget (% of the pool)", color=INK_SECONDARY)
     ax.set_ylabel("entity-level micro F1 (test split)", color=INK_SECONDARY)
     ax.set_title(
         "Selection strategy vs. test F1 across budgets  (mean +/- 1 std over seeds)",

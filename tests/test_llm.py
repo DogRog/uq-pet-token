@@ -103,6 +103,68 @@ def test_pack_choice_without_logprobs_omits_the_field():
     assert "logprobs" not in pack_choice(fake_choice(with_logprobs=False))
 
 
+def harmony_choice(*tokens: str, text: str | None, finish_reason: str = "stop"):
+    """A choice whose logprobs carry a harmony token stream, one token per string."""
+    return SimpleNamespace(
+        message=SimpleNamespace(content=text),
+        finish_reason=finish_reason,
+        logprobs=SimpleNamespace(
+            content=[SimpleNamespace(token=t, logprob=-0.5, top_logprobs=[]) for t in tokens]
+        ),
+    )
+
+
+def packed_tokens(choice) -> list[str]:
+    return [t["token"] for t in pack_choice(choice).get("logprobs", [])]
+
+
+def test_pack_choice_keeps_only_the_final_channel():
+    choice = harmony_choice(
+        "<|channel|>",
+        "analysis",
+        "<|message|>",
+        "So",
+        " 2",
+        " it",
+        " is",
+        ".",
+        "<|end|>",
+        "<|start|>",
+        "assistant",
+        "<|channel|>",
+        "final",
+        "<|message|>",
+        "[1",
+        ",",
+        " 0",
+        "]",
+        "<|return|>",
+        text="[1, 0]",
+    )
+    assert packed_tokens(choice) == ["[1", ",", " 0", "]"]
+
+
+def test_pack_choice_drops_a_sample_truncated_inside_its_reasoning():
+    # The failure mode that emptied a whole run: reasoning digits are not tags.
+    choice = harmony_choice(
+        "<|channel|>",
+        "analysis",
+        "<|message|>",
+        "token",
+        " 2",
+        " is",
+        " I-Actor",
+        text=None,
+        finish_reason="length",
+    )
+    assert packed_tokens(choice) == []
+
+
+def test_pack_choice_leaves_a_stream_without_channels_untouched():
+    choice = harmony_choice("[1", ",", " 0", "]", text="[1, 0]")
+    assert packed_tokens(choice) == ["[1", ",", " 0", "]"]
+
+
 # --- score_split --------------------------------------------------------------
 
 

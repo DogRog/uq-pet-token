@@ -1,0 +1,69 @@
+# nhr_kimi2.6.yaml, re-scored with per-token top-k distributions.
+#
+# Identical to that config in every field that decides *which* sentence an index means
+# (n_few_shot, few_shot_seed) and in the sampling recipe, except for `top_logprobs`.
+# So the two caches are comparable sentence for sentence, and the arms below can be
+# read against the ones that config produced.
+#
+# `top_logprobs: 5` fills the `top` dict on every cached token, which the existing
+# cache has empty. That is what the distribution-based metrics need — predictive
+# entropy and margin score a *single* sample, so this cache can answer whether K=10
+# sampling buys anything a mutual-information split over a distribution cannot.
+#
+# cache_suffix is bumped to `topk2` because the sampling recipe changed: the filename
+# does not encode sampling parameters, so without this the new records would land in
+# nhr_kimi_pool_fs1s13_dist.jsonl and load_cache would drop every old record in it
+# (params mismatch) on the next read. New file -> nhr_oss_pool_fs1s13_topk2.jsonl.
+#
+# max_tokens is 1024, not the 256 the other configs use, because gpt-oss is a harmony
+# reasoning model: it spends 110-250+ tokens in its analysis channel before the answer.
+# At 256 it was truncated mid-reasoning on 3256 of 3320 samples, leaving 18 sentences
+# with a usable answer. `topk` is that dead cache; it is kept only as the record of
+# what a too-small ceiling looks like.
+
+budget_pct: [10, 20, 30]
+
+arms:
+  - strategy: random
+    seed: 13
+    label: random
+  - avg_neg_logprob_filtered
+  - vote_entropy
+  - pairwise_f1_disagreement
+  - entity_count_std
+  - least_confident
+  - length
+  - strategy: confident
+    metric: avg_neg_logprob_filtered
+
+tie_seed: 0
+train_seeds: [0, 1, 2]
+
+n_few_shot: 1
+few_shot_seed: 13
+
+llm:
+  model: gpt-oss-120b
+  base_url: https://hub.nhr.fau.de/api/llmgw/v1
+  api_key_env: NHR_FAU_API_KEY
+  cache_prefix: nhr_oss
+  cache_suffix: topk2
+  n_samples: 10
+  temperature: 1.0
+  seed: 0
+  max_tokens: 2048
+  logprobs: true
+  top_logprobs: 5
+  workers: 8
+  timeout: 120.0
+  max_retries: 5
+
+train:
+  checkpoint: distilbert-base-cased
+  epochs: 20
+  batch_size: 8
+  learning_rate: 5.0e-5
+  weight_decay: 0.01
+  warmup_fraction: 0.1
+  max_length: 256
+  eval_batch_size: 32

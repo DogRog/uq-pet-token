@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import random
+import re
 import threading
 import time
 from collections.abc import Iterable
@@ -55,6 +56,44 @@ def make_client(cfg: LLMConfig) -> OpenAI:
     )
 
 
+CHANNEL_TOKEN = "<|channel|>"
+MESSAGE_TOKEN = "<|message|>"
+ANSWER_CHANNEL = "final"
+SPECIAL_TOKEN = re.compile(r"^<\|.*\|>$")
+
+
+def answer_tokens(content: list[Any]) -> list[Any]:
+    """The tokens of the answer itself, dropping a reasoning model's scratchpad.
+
+    A harmony-format model (gpt-oss) returns its chain of thought in the same token
+    stream as the answer — `<|channel|>analysis<|message|>` ... `<|channel|>final
+    <|message|>[1, 2, 0]<|return|>` — while `message.content` holds the final channel
+    alone. Every metric in `uncertainty` assumes the token stream *is* the answer;
+    `is_tag_token` counts the digits in "so 'MSP' is I-Actor (2)" exactly like a real
+    tag, so keeping the reasoning would score sentences by their scratchpad.
+
+    Only the last channel counts, and only if it is the answer channel: a sample cut
+    off mid-reasoning never opened one, and returns no tokens rather than its
+    reasoning. That is the honest answer — `sentence_scores` then omits it, which is
+    what a sample carrying no answer deserves.
+
+    A stream with no channel markers is passed through untouched, so this changes
+    nothing for the non-reasoning models.
+    """
+    channels = [i for i, t in enumerate(content) if t.token == CHANNEL_TOKEN]
+    if not channels:
+        return list(content)
+
+    start = channels[-1]
+    body = next((i for i, t in enumerate(content[start:], start) if t.token == MESSAGE_TOKEN), None)
+    if body is None:  # truncated before the channel's message began
+        return []
+    name = "".join(t.token for t in content[start + 1 : body]).strip()
+    if name != ANSWER_CHANNEL:
+        return []
+    return [t for t in content[body + 1 :] if not SPECIAL_TOKEN.match(t.token)]
+
+
 def pack_choice(choice: Any) -> dict:
     """Flatten one API choice into a JSON-serializable record fragment."""
     packed: dict[str, Any] = {
@@ -69,7 +108,7 @@ def pack_choice(choice: Any) -> dict:
                 "logprob": t.logprob,
                 "top": {tp.token: tp.logprob for tp in (t.top_logprobs or [])},
             }
-            for t in content
+            for t in answer_tokens(content)
         ]
     return packed
 

@@ -49,6 +49,10 @@ enough that a single-seed gap between arms would not be a result.
     logprob of the tag-ID tokens, higher meaning less confident. Restricting to tag IDs
     keeps brackets and commas from diluting the signal.
   - `avg_neg_logprob_pure` — the same over every token in the response.
+  - `least_confident` — the `n_worst` (default 1) least confident tag-ID tokens per
+    sample, averaged over the K samples. Where the two averages above dilute one hard
+    tag across the whole sentence — the more so the longer it is — this scores a
+    sentence by its hardest decisions and drops the length normalization with it.
   - `vote_entropy` — **outputs only, no logprobs**: parse the K sampled tag arrays and
     average, over token positions, the Shannon entropy of the K votes over log K (so
     0–1). The samples are a committee; the more they vary, the less settled the model
@@ -58,6 +62,23 @@ enough that a single-seed gap between arms would not be a result.
     against a gateway that doesn't return them.
   - `disagreement` — the same committee reading, scored as the fraction of samples off
     the plurality tag instead of the entropy.
+  - `pairwise_f1_disagreement` — **outputs only**: 1 minus the mean entity-level F1 over
+    all K(K-1)/2 pairs of samples, each sample standing in as the other's gold. The same
+    committee, read in entities rather than token positions — the unit the results are
+    actually scored in, so a boundary the samples disagree about counts as a whole
+    entity rather than as one token in ten.
+  - `entity_count_std` — **outputs only**: the standard deviation of how many entities
+    each sample found. Ignores where the entities are and asks only whether the samples
+    agree on how much is going on; the least correlated of the committee metrics.
+  - `length` — the sentence's token count. A **control, not an uncertainty measure**:
+    the budget is in sentences but the task is token-level, so any metric correlating
+    with length quietly buys its arm more labelled tokens. If this arm matches the best
+    metric, the result is about length. (On the Kimi cache `least_confident` and
+    `entity_count_std` correlate with it at ρ≈0.72–0.74, so it is not a hypothetical.)
+  - `confident` — the reverse ranking of the metric its `metric` parameter names
+    (default `avg_neg_logprob_filtered`): most confident sentences first. The sharper
+    control — a real signal should make this arm *lose* to random, and two arms moving
+    in opposite directions show the same effect as twice the gap.
 - **Few-shot prompt**: `n_few_shot` (default 5) and `few_shot_seed` (default 42) choose
   the demonstrations shown to the LLM. They also decide which sentences are held out of
   the pool, so changing either changes both the prompt and the size of the pool
