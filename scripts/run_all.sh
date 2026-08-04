@@ -6,9 +6,16 @@
 #   scripts/run_all.sh configs/a.yaml ...     # just these, in this order
 #   SKIP_DONE=1 scripts/run_all.sh            # skip configs that already have results/
 #   DRY_RUN=1   scripts/run_all.sh            # print the plan and stop
+#   JOBS=4      scripts/run_all.sh            # up to 4 configs at once
 #
 # A failing config does not stop the sweep — the next one starts and the failure is
 # reported in the closing summary. Exit status is the number of configs that failed.
+#
+# JOBS parallelises *across score caches, never within one*. Configs that share a cache
+# file run in sequence with each other however high JOBS goes: an unscored cache would
+# otherwise be filled by several runs at once, which is N times the API bill and, since
+# a record is ~85KB and appends that large interleave, a corrupt file at the end of it.
+# So the unit of parallelism is a chain of configs sharing one cache, not a config.
 #
 # The preflight below is the point of the script: it loads and validates every config,
 # checks the API keys, and refuses to start when two configs would share one score
@@ -56,7 +63,8 @@ echo
 # ---------------------------------------------------------------- preflight ----
 # Reuses the package's own loader and arm validation, so a typo'd metric name or an
 # unknown YAML key fails here rather than after hours of training.
-uv run python - "${CONFIGS[@]}" <<'PY'
+CACHE_GROUPS="$LOG_DIR/cache_groups.tsv"
+uv run python - "$CACHE_GROUPS" "${CONFIGS[@]}" <<'PY'
 import os
 import sys
 from pathlib import Path
@@ -80,10 +88,14 @@ def is_downloaded(checkpoint: str) -> bool:
         return False
 
 
+groups_path = Path(sys.argv[1])
 problems = []
 caches = {}
 checkpoints = {}
-for path in (Path(p) for p in sys.argv[1:]):
+# config -> the cache file it writes to, which is what may not be written twice at
+# once. A config with no cache is its own group and parallelises freely.
+group_of = {}
+for path in (Path(p) for p in sys.argv[2:]):
     try:
         cfg = load_config(path)
     except Exception as e:  # unknown key, bad YAML, missing file
@@ -101,6 +113,7 @@ for path in (Path(p) for p in sys.argv[1:]):
 
     needs_llm = any(arm.strategy != RANDOM for arm in cfg.arms)
     if not needs_llm:
+        group_of[path] = str(path)
         print(f"{path.name:34s} {cells:4d} cells  all-{RANDOM}: no cache, no API key")
         continue
 
@@ -112,6 +125,7 @@ for path in (Path(p) for p in sys.argv[1:]):
     # the records one writes are records the other would have written.
     recipe = (cfg.llm.model, tuple(sorted(cfg.llm.sampling_params().items())))
     caches.setdefault(cache, []).append((path, recipe))
+    group_of[path] = str(cache)
     n = sum(1 for _ in cache.open()) if cache.exists() else 0
     print(f"{path.name:34s} {cells:4d} cells  {cache.name} ({n} records)")
 
@@ -139,7 +153,7 @@ if os.environ.get("SKIP_PROBE") != "1":
     import openai
 
     probed = {}
-    for path in (Path(p) for p in sys.argv[1:]):
+    for path in (Path(p) for p in sys.argv[2:]):
         try:
             cfg = load_config(path)
         except Exception:
@@ -176,6 +190,11 @@ if problems:
     for p in problems:
         print(f"  - {p}", file=sys.stderr)
     sys.exit(1)
+
+# In argv order, so the sweep runs the configs in the order it was asked to.
+groups_path.write_text(
+    "".join(f"{path}\t{group_of.get(path, path)}\n" for path in (Path(p) for p in sys.argv[2:]))
+)
 PY
 [ $? -ne 0 ] && { echo "Aborting: nothing was run."; exit 1; }
 
@@ -186,14 +205,52 @@ if [ "${DRY_RUN:-0}" = "1" ]; then
 fi
 
 # ------------------------------------------------------------------- sweep ----
-# caffeinate -i keeps macOS awake for the duration without touching the display.
+# caffeinate -i keeps macOS awake for the duration without touching the display. It
+# does not exist on the Linux boxes this also runs on, hence the guard.
 RUNNER=()
 command -v caffeinate >/dev/null && RUNNER=(caffeinate -i)
 
-STATUSES=()
+JOBS="${JOBS:-1}"
+STATUS_DIR="$LOG_DIR/status"
+mkdir -p "$STATUS_DIR"
 SWEEP_START=$SECONDS
 
-for cfg in "${CONFIGS[@]}"; do
+if [ "$JOBS" -gt 1 ]; then
+    # Each config is a process that would otherwise take every core for itself, and
+    # JOBS of them thrashing is slower than one. Torch's default is the core count.
+    export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
+    export TOKENIZERS_PARALLELISM=false
+
+    # Warm the HF cache serially first: parallel chains would otherwise race to
+    # download the same checkpoint, and a name typo is better found now.
+    echo "Prefetching checkpoints..."
+    uv run python - "${CONFIGS[@]}" <<'PY'
+import sys
+from pathlib import Path
+
+from transformers import AutoModelForTokenClassification, AutoTokenizer
+
+from uq_pet.config import load_config
+from uq_pet.model_training import configure_hf_logging
+
+# Every checkpoint is loaded with a fresh classifier head, so the missing-weights
+# report is expected noise here exactly as it is during a run.
+configure_hf_logging(quiet=True)
+
+for checkpoint in dict.fromkeys(load_config(Path(p)).train.checkpoint for p in sys.argv[1:]):
+    AutoTokenizer.from_pretrained(checkpoint)
+    AutoModelForTokenClassification.from_pretrained(checkpoint)
+    print(f"  {checkpoint}")
+PY
+    [ $? -ne 0 ] && { echo "Aborting: a checkpoint could not be fetched."; exit 1; }
+fi
+
+# Kill the whole process group, not just the config in front: with JOBS>1 there are
+# several children, and a half-stopped sweep is worse than either outcome.
+trap 'echo; echo "Interrupted — stopping the sweep. Logs in $LOG_DIR"; kill 0; exit 130' INT TERM
+
+run_one() {
+    local cfg="$1" name log start code mins
     name="$(basename "$cfg" .yaml)"
     log="$LOG_DIR/$name.log"
     start=$SECONDS
@@ -204,16 +261,55 @@ for cfg in "${CONFIGS[@]}"; do
 
     mins=$(( (SECONDS - start) / 60 ))
     if [ $code -eq 0 ]; then
-        echo "    ok (${mins}m)"
-        STATUSES+=("ok       ${mins}m  $name")
+        echo "    ok (${mins}m)  $name"
+        printf 'ok       %sm  %s\n' "$mins" "$name" >"$STATUS_DIR/$name"
     else
         echo "    FAILED exit $code (${mins}m) — tail of $log:"
         tail -n 15 "$log" | sed 's/^/      /'
-        STATUSES+=("FAIL($code) ${mins}m  $name")
+        printf 'FAIL(%s) %sm  %s\n' "$code" "$mins" "$name" >"$STATUS_DIR/$name"
+    fi
+    return 0
+}
+
+# One chain per cache file, in the order the configs were given. Configs inside a
+# chain run one after another; chains run against each other, JOBS at a time.
+CHAINS=()
+while IFS= read -r chain; do
+    [ -n "$chain" ] && CHAINS+=("$chain")
+done < <(awk -F'\t' '
+    { if (!($2 in seen)) { seen[$2] = ++n; order[n] = $2 }
+      chain[$2] = chain[$2] " " $1 }
+    END { for (i = 1; i <= n; i++) print substr(chain[order[i]], 2) }
+' "$CACHE_GROUPS")
+
+if [ "$JOBS" -gt 1 ]; then
+    echo "Running ${#CHAINS[@]} chain(s), $JOBS at a time"
+    echo
+fi
+
+for chain in "${CHAINS[@]}"; do
+    if [ "$JOBS" -le 1 ]; then
+        for cfg in $chain; do run_one "$cfg"; done
+        continue
+    fi
+    # `jobs -rp` counts only the still-running children, and works in bash 3.2 —
+    # `wait -n` would be tidier but is bash 4.3+.
+    while [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; do sleep 2; done
+    ( for cfg in $chain; do run_one "$cfg"; done ) &
+done
+wait
+
+# ----------------------------------------------------------------- summary ----
+STATUSES=()
+for cfg in "${CONFIGS[@]}"; do
+    name="$(basename "$cfg" .yaml)"
+    if [ -f "$STATUS_DIR/$name" ]; then
+        STATUSES+=("$(cat "$STATUS_DIR/$name")")
+    else
+        STATUSES+=("NORUN       $name")
     fi
 done
 
-# ----------------------------------------------------------------- summary ----
 {
     echo
     echo "Sweep $STAMP finished at $(date '+%F %T') after $(( (SECONDS - SWEEP_START) / 60 ))m"

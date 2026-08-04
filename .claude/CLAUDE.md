@@ -27,6 +27,7 @@ uv run python -m uq_pet.main --config configs/nhr_gemma.yaml
 # Every config, back to back, unattended (DRY_RUN=1 for the preflight alone)
 scripts/run_all.sh
 SKIP_DONE=1 scripts/run_all.sh          # resume: skip configs that already have results/
+JOBS=4 scripts/run_all.sh               # parallel across cache files, serial within one
 ```
 
 There is no console script and no subcommands — `main.py` is the single entry point.

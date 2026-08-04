@@ -134,6 +134,7 @@ uv run python -m uq_pet.main --config configs/nhr_gemma.yaml
 # Every config in configs/, back to back, unattended. DRY_RUN=1 runs the preflight
 # alone; SKIP_DONE=1 skips configs that already produced a run directory.
 scripts/run_all.sh
+JOBS=4 scripts/run_all.sh    # four at a time, for a machine with a GPU to spare
 ```
 
 `scripts/run_all.sh` is a loop over the entry point plus a preflight that no single
@@ -142,6 +143,13 @@ gateway model once, and refuses to start when two configs with different samplin
 recipes resolve to the same cache file — where each run would evict the other's records
 and re-score the pool from scratch. A failing config doesn't stop the sweep; its log and
 the closing summary land in `results/_sweeps/<timestamp>/`.
+
+`JOBS=N` parallelises **across score caches, never within one**. Configs writing to the
+same cache file are chained and run in sequence however high `JOBS` goes: several runs
+filling one unscored cache at once would be N times the API bill, and — since a record
+is ~85KB and appends that size interleave — a corrupt file to show for it. The unit of
+parallelism is a chain, not a config, so the wall clock has a floor at the longest
+chain and `JOBS` beyond the number of distinct caches buys nothing.
 
 The raw PET jsonl is downloaded on the first run. `NHR_FAU_API_KEY` in `.env` is
 needed **only** when the score cache doesn't already cover the pool — a complete cache
