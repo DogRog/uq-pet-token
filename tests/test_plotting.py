@@ -28,7 +28,7 @@ def make_results(uncertainty_f1, random_f1, budget: float = 10.0) -> pd.DataFram
 
 def test_arm_colors_pin_random_and_are_distinct():
     colors = arm_colors(["random", ANLP, PURE])
-    assert colors["random"] == "#eb6834"
+    assert colors["random"] == "#1f77b4"
     assert len(set(colors.values())) == 3
 
 
@@ -68,3 +68,22 @@ def test_plot_learning_curve_survives_a_single_seed(tmp_path):
         out,
     )
     assert out.stat().st_size > 0
+
+
+def test_show_displays_standalone_figures_without_pyplot(monkeypatch, tmp_path):
+    displayed = []
+    monkeypatch.setattr("IPython.display.display", displayed.append)
+
+    plot_results(make_results([0.6], [0.4]), tmp_path / "bars.png", show=True)
+    plot_results(
+        pd.concat(
+            [
+                make_results([0.6], [0.4], budget=5.0),
+                make_results([0.7], [0.5], budget=25.0),
+            ]
+        ),
+        tmp_path / "curve.png",
+        show=True,
+    )
+
+    assert len(displayed) == 2

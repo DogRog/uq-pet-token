@@ -17,18 +17,29 @@ from uq_pet.uncertainty import RANDOM
 
 logger = logging.getLogger("uq_pet.plotting")
 
-# Validated categorical palette (light surface). The control is pinned to orange so it
-# reads as the baseline across runs; uncertainty arms take the remaining slots in order.
-CONTROL_COLOR = "#eb6834"
-SERIES_COLORS = ["#2a78d6", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
+# Matplotlib's classic categorical sequence, matching the experiment figures used in
+# the paper draft. The random control is always blue; uncertainty arms then receive
+# orange, green, red, and so on in config order.
+CONTROL_COLOR = "#1f77b4"
+SERIES_COLORS = [
+    "#ff7f0e",
+    "#2ca02c",
+    "#d62728",
+    "#9467bd",
+    "#8c564b",
+    "#e377c2",
+    "#7f7f7f",
+    "#bcbd22",
+    "#17becf",
+]
 MARKERS = ["o", "s", "^", "D", "v", "P", "X"]
-SURFACE = "#fcfcfb"
-INK_PRIMARY = "#0b0b0b"
-INK_SECONDARY = "#52514e"
+SURFACE = "#ffffff"
+INK_PRIMARY = "#111111"
+INK_SECONDARY = "#111111"
 
 
 def arm_colors(arms: list[str]) -> dict[str, str]:
-    """Assign a categorical hue per arm, with the random control pinned to orange.
+    """Assign a categorical hue per arm, with the random control pinned to blue.
 
     Colors follow the arm, not its rank in the results, so a run with more arms does
     not repaint the ones it shares with an earlier run.
@@ -61,24 +72,38 @@ def declutter(values: dict[str, float], min_gap: float) -> dict[str, float]:
 
 
 def _style_axes(ax) -> None:
-    ax.grid(axis="y", color="#e6e6e6", linewidth=0.8, zorder=0)
+    ax.grid(True, color="#b0b0b0", alpha=0.35, linewidth=0.8, zorder=0)
     ax.set_axisbelow(True)
-    ax.tick_params(colors=INK_SECONDARY, length=0)
-    for side in ("top", "right", "left"):
-        ax.spines[side].set_visible(False)
-    ax.spines["bottom"].set_color("#d9d9d4")
+    ax.tick_params(colors=INK_SECONDARY, direction="out", length=4, width=0.9)
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_color(INK_PRIMARY)
+        spine.set_linewidth(1.0)
+
+
+def _show_figure(fig) -> None:
+    """Display a standalone Figure in Jupyter without importing pyplot.
+
+    ``Figure.show()`` only works for figures created through pyplot because it needs a
+    GUI manager. These figures deliberately bypass pyplot to avoid its global backend
+    and figure-registry side effects, so notebook display must go through IPython.
+    """
+    from IPython.display import display
+
+    display(fig)
 
 
 def plot_arms(results: pd.DataFrame, out_path: Path, show: bool = False) -> None:
     """Single-budget view — bar = mean over seeds, dots = the individual seeds."""
-    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
 
     arms = list(dict.fromkeys(results["arm"]))
     colors = arm_colors(arms)
     sizes = results.groupby("arm")["n_train"].first()
     budget = results["budget_pct"].iloc[0]
 
-    fig, ax = plt.subplots(figsize=(1.9 * len(arms) + 2.2, 4.4))
+    fig = Figure(figsize=(1.9 * len(arms) + 2.2, 4.4), facecolor=SURFACE)
+    ax = fig.subplots()
     for x, arm in enumerate(arms):
         seed_scores = results.loc[results["arm"] == arm, "entity_f1"]
         ax.bar(x, seed_scores.mean(), width=0.55, color=colors[arm], zorder=2)
@@ -115,16 +140,15 @@ def plot_arms(results: pd.DataFrame, out_path: Path, show: bool = False) -> None
     _style_axes(ax)
     fig.tight_layout()
     if show:
-        plt.show()
+        _show_figure(fig)
         return
     fig.savefig(out_path, dpi=200, facecolor=SURFACE)
-    plt.close(fig)
 
 
 def plot_learning_curve(results: pd.DataFrame, out_path: Path, show: bool = False) -> None:
-    """Budget sweep — one line per arm, mean over seeds, +/-1 std as a band and error bar."""
-    import matplotlib.pyplot as plt
+    """Budget sweep — one marked line per arm, mean over seeds, +/-1 std as a band."""
     import numpy as np
+    from matplotlib.figure import Figure
 
     arms = list(dict.fromkeys(results["arm"]))
     colors = arm_colors(arms)
@@ -141,93 +165,63 @@ def plot_learning_curve(results: pd.DataFrame, out_path: Path, show: bool = Fals
     # A single-seed run has no spread; a zero-width band says exactly that.
     stats["std"] = stats["std"].fillna(0.0)
 
-    top = max((stats["mean"] + stats["std"]).max() * 1.2, 0.05)
+    band_low = float((stats["mean"] - stats["std"]).min())
+    band_high = float((stats["mean"] + stats["std"]).max())
+    y_span = max(band_high - band_low, 0.05)
     # The legend gets its own panel rather than a corner of the axes. Inside the axes it
     # has to sit somewhere, and wherever that is, a run with enough arms eventually draws
     # a line through it — arms fan out at the smallest budget, which is exactly where an
     # "upper left" legend lives. The panel is sized from the longest arm name so a config
     # with `confident:avg_neg_logprob_filtered` in it doesn't get its labels clipped.
     legend_width = 0.55 + 0.058 * max(len(arm) for arm in arms)
-    fig, (ax, legend_ax) = plt.subplots(
-        1,
-        2,
-        figsize=(7.6 + legend_width, 4.6),
-        gridspec_kw={"width_ratios": [7.6, legend_width]},
-    )
+    fig = Figure(figsize=(7.6 + legend_width, 4.9), facecolor=SURFACE)
+    ax, legend_ax = fig.subplots(1, 2, gridspec_kw={"width_ratios": [7.6, legend_width]})
     legend_ax.axis("off")
-    ends = {}
     for arm in arms:
         at_arm = stats.loc[arm].reindex(budgets)
         mean, std = at_arm["mean"].to_numpy(), at_arm["std"].to_numpy()
-        # Band and error bar carry the same number: the spread over training seeds, not
-        # over selections. Every seed trains on the same selected sentences, so this is
-        # training noise alone. The band makes overlap between arms readable at a glance;
-        # the caps keep each condition's own interval legible where the bands collide.
+        # The band is spread over training seeds, not over selections. Every seed trains
+        # on the same selected sentences, so this is training noise alone.
         ax.fill_between(
-            x, mean - std, mean + std, color=colors[arm], alpha=0.18, linewidth=0, zorder=2
+            x, mean - std, mean + std, color=colors[arm], alpha=0.14, linewidth=0, zorder=2
         )
-        ax.errorbar(
+        ax.plot(
             x,
             mean,
-            yerr=std,
             color=colors[arm],
-            linewidth=2,
-            elinewidth=1.5,
-            capsize=4,
-            capthick=1.5,
+            linewidth=1.8,
+            marker="o",
+            markersize=6.5,
             zorder=3,
             label=arm,
         )
-        ends[arm] = mean[-1]
 
-    # Identity never rests on color alone: a legend is always present, and the lines are
-    # additionally labelled at their ends *only* when those ends are far enough apart to
-    # point at unambiguously. Arms converge as the budget grows, and a label nudged clear
-    # of its neighbours no longer marks the line it belongs to.
-    min_gap = top * 0.055
-    spread = max(ends.values()) - min(ends.values())
-    if len(arms) <= 4 and spread >= min_gap * (len(arms) - 1):
-        label_x = x[-1] + span * 0.03
-        for arm, y in declutter(ends, min_gap).items():
-            ax.annotate(
-                arm,
-                (label_x, y),
-                va="center",
-                fontsize=9,
-                color=INK_PRIMARY,
-                annotation_clip=False,
-            )
-        right_pad = 0.34
-    else:
-        right_pad = 0.04
-
-    ax.set_xticks(x, [f"{b:.3g}%" for b in budgets], color=INK_PRIMARY, fontsize=9)
-    ax.set_xlabel("training budget (% of the pool)", color=INK_SECONDARY)
-    ax.set_ylabel("entity-level micro F1 (test split)", color=INK_SECONDARY)
+    ax.set_xticks(x, [f"{b:.3g}" for b in budgets], color=INK_PRIMARY, fontsize=9)
+    ax.set_xlabel("Training budget (% of pool)", color=INK_SECONDARY)
+    ax.set_ylabel("Entity-level micro F1 (test)", color=INK_SECONDARY)
     ax.set_title(
-        "Selection strategy vs. test F1 across budgets  (mean +/- 1 std over seeds)",
+        "Uncertainty-based selection vs random — PET NER",
         pad=14,
         color=INK_PRIMARY,
     )
-    ax.set_ylim(0, top)
-    ax.set_xlim(x[0] - span * 0.04, x[-1] + span * (right_pad + 0.04))
+    ax.set_ylim(max(0.0, band_low - y_span * 0.08), min(1.0, band_high + y_span * 0.08))
+    ax.set_xlim(x[0] - span * 0.04, x[-1] + span * 0.04)
     _style_axes(ax)
     legend_ax.legend(
         *ax.get_legend_handles_labels(),
         frameon=False,
         labelcolor=INK_PRIMARY,
-        fontsize=9,
+        fontsize=10,
         loc="upper left",
         bbox_to_anchor=(0.0, 1.0),
         borderaxespad=0.0,
-        handlelength=1.6,
+        handlelength=2.2,
     )
     fig.tight_layout()
     if show:
-        plt.show()
+        _show_figure(fig)
         return
     fig.savefig(out_path, dpi=200, facecolor=SURFACE)
-    plt.close(fig)
 
 
 def plot_results(results: pd.DataFrame, out_path: Path, show: bool = False) -> None:
@@ -235,7 +229,7 @@ def plot_results(results: pd.DataFrame, out_path: Path, show: bool = False) -> N
     if results["budget_pct"].nunique() > 1:
         plot_learning_curve(results, out_path, show)
     else:
-        plot_arms(results, out_path)
+        plot_arms(results, out_path, show)
 
 
 def _wrap_label(label: str) -> str:
