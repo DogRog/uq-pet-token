@@ -79,6 +79,38 @@ def test_top_logprobs_appears_only_when_set():
     assert LLMConfig(top_logprobs=3).sampling_params()["top_logprobs"] == 3
 
 
+def test_openrouter_backend_uses_separate_requests_and_cache_identity():
+    cfg = LLMConfig(
+        backend="openrouter",
+        logprobs=False,
+        n_samples=3,
+        seed=10,
+        extra_body={"provider": {"only": ["together"], "allow_fallbacks": False}},
+        openrouter_site_url="https://example.test/uq-pet",
+    )
+
+    assert cfg.base_url == "https://openrouter.ai/api/v1"
+    assert cfg.api_key_env == "OPENROUTER_API_KEY"
+    assert cfg.request_count() == 3
+    assert cfg.sampling_params() == {
+        "temperature": 1.0,
+        "seed": 10,
+        "n": 3,
+        "max_tokens": 256,
+        "logprobs": False,
+        "backend": "openrouter",
+        "sample_mode": "separate_requests",
+        "extra_body": {"provider": {"only": ["together"], "allow_fallbacks": False}},
+    }
+    assert "n" not in cfg.request_params(0)
+    assert [cfg.request_params(i)["seed"] for i in range(3)] == [10, 11, 12]
+    assert cfg.default_headers() == {
+        "X-OpenRouter-Metadata": "enabled",
+        "HTTP-Referer": "https://example.test/uq-pet",
+        "X-OpenRouter-Title": "uq-pet",
+    }
+
+
 # --- Loading ------------------------------------------------------------------
 
 
@@ -208,12 +240,18 @@ def test_load_config_unknown_key_raises(tmp_path):
 
 def test_load_config_unknown_nested_key_raises(tmp_path):
     with pytest.raises(TypeError):
-        load_config(_write(tmp_path, {"llm": {"backend": "openrouter"}}))
+        load_config(_write(tmp_path, {"llm": {"transport": "openrouter"}}))
 
 
 @pytest.mark.parametrize("path", sorted(CONFIGS_DIR.glob("*.yaml")), ids=lambda p: p.name)
 def test_shipped_configs_load(path):
     assert isinstance(load_config(path), ExperimentConfig)
+
+
+def test_openrouter_example_loads():
+    cfg = load_config(CONFIGS_DIR / "openrouter_black_box.yaml.example")
+    assert cfg.llm.backend == "openrouter"
+    assert cfg.llm.logprobs is False
 
 
 # --- Validation ---------------------------------------------------------------
@@ -228,6 +266,8 @@ def test_shipped_configs_load(path):
         {"max_retries": 0},
         {"limit": 0},
         {"logprobs": False, "top_logprobs": 3},
+        {"backend": "unknown"},
+        {"extra_body": []},
     ],
 )
 def test_llm_config_validation(kwargs):

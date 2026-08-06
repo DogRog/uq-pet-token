@@ -2,6 +2,7 @@
 
 import json
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -11,6 +12,7 @@ from uq_pet.llm import (
     failed_indices,
     load_cache,
     pack_choice,
+    score_one,
     score_split,
     truncated_count,
     verify_cache_alignment,
@@ -163,6 +165,72 @@ def test_pack_choice_drops_a_sample_truncated_inside_its_reasoning():
 def test_pack_choice_leaves_a_stream_without_channels_untouched():
     choice = harmony_choice("[1", ",", " 0", "]", text="[1, 0]")
     assert packed_tokens(choice) == ["[1", ",", " 0", "]"]
+
+
+def test_make_client_passes_openrouter_headers(monkeypatch):
+    seen = {}
+
+    def fake_openai(**kwargs):
+        seen.update(kwargs)
+        return object()
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(llm, "OpenAI", fake_openai)
+    cfg = LLMConfig(
+        backend="openrouter",
+        openrouter_site_url="https://example.test",
+        openrouter_app_name="uq-pet-test",
+    )
+
+    llm.make_client(cfg)
+
+    assert seen["api_key"] == "test-key"
+    assert seen["base_url"] == "https://openrouter.ai/api/v1"
+    assert seen["default_headers"] == {
+        "X-OpenRouter-Metadata": "enabled",
+        "HTTP-Referer": "https://example.test",
+        "X-OpenRouter-Title": "uq-pet-test",
+    }
+
+
+def test_score_one_combines_openrouter_requests_and_records_routing():
+    calls = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            i = len(calls)
+            return SimpleNamespace(
+                model="resolved/model",
+                choices=[fake_choice(with_logprobs=False)],
+                openrouter_metadata={"summary": f"selected Provider {i}"},
+            )
+
+    client = Mock()
+    client.chat.completions = FakeCompletions()
+    cfg = LLMConfig(
+        backend="openrouter",
+        model="alias/model",
+        n_samples=3,
+        seed=20,
+        logprobs=False,
+        extra_body={"provider": {"allow_fallbacks": False}},
+    )
+
+    record = score_one(client, cfg, "system", "user", 4, "doc::4", "sha", "pool")
+
+    assert len(calls) == 3
+    assert all("n" not in call for call in calls)
+    assert [call["seed"] for call in calls] == [20, 21, 22]
+    assert all(call["extra_body"] == cfg.extra_body for call in calls)
+    assert record["model"] == "alias/model"
+    assert len(record["choices"]) == 3
+    assert [route["response_model"] for route in record["routing"]] == [
+        "resolved/model",
+        "resolved/model",
+        "resolved/model",
+    ]
+    assert record["routing"][0]["openrouter_metadata"]["summary"] == "selected Provider 1"
 
 
 # --- score_split --------------------------------------------------------------

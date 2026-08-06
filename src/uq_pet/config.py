@@ -50,6 +50,11 @@ NER_DATASET_URL = (
     "https://raw.githubusercontent.com/patriziobellan86/PETv1.1/master/PETv1.1-entities.jsonl"
 )
 
+DEFAULT_LLM_BASE_URL = "https://hub.nhr.fau.de/api/llmgw/v1"
+DEFAULT_LLM_API_KEY_ENV = "NHR_FAU_API_KEY"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
+
 NER_TAGS = [
     "O",
     "B-Actor",
@@ -157,8 +162,9 @@ class LLMConfig:
     """
 
     model: str = "RedHatAI/gemma-4-31B-it-FP8-block"
-    base_url: str = "https://hub.nhr.fau.de/api/llmgw/v1"
-    api_key_env: str = "NHR_FAU_API_KEY"
+    backend: str = "openai_compatible"
+    base_url: str = DEFAULT_LLM_BASE_URL
+    api_key_env: str = DEFAULT_LLM_API_KEY_ENV
     cache_prefix: str = "nhr_gemma"
     cache_suffix: str = "dist"
     n_samples: int = 5
@@ -171,8 +177,22 @@ class LLMConfig:
     timeout: float = 120.0
     max_retries: int = 5
     limit: int | None = None
+    extra_body: dict[str, Any] = field(default_factory=dict)
+    openrouter_site_url: str | None = None
+    openrouter_app_name: str | None = "uq-pet"
 
     def __post_init__(self) -> None:
+        if self.backend not in {"openai_compatible", "openrouter"}:
+            raise ValueError(
+                f"llm.backend must be 'openai_compatible' or 'openrouter', got {self.backend!r}"
+            )
+        # `backend: openrouter` is sufficient to select its endpoint and conventional
+        # key name. Explicit overrides still work for proxies in front of OpenRouter.
+        if self.backend == "openrouter":
+            if self.base_url == DEFAULT_LLM_BASE_URL:
+                self.base_url = OPENROUTER_BASE_URL
+            if self.api_key_env == DEFAULT_LLM_API_KEY_ENV:
+                self.api_key_env = OPENROUTER_API_KEY_ENV
         if self.n_samples < 1:
             raise ValueError(f"llm.n_samples must be >= 1, got {self.n_samples}")
         if self.temperature < 0:
@@ -185,12 +205,15 @@ class LLMConfig:
             raise ValueError("llm.top_logprobs requires llm.logprobs to be true")
         if self.limit is not None and self.limit < 1:
             raise ValueError(f"llm.limit must be >= 1 or null, got {self.limit}")
+        if not isinstance(self.extra_body, dict):
+            raise ValueError("llm.extra_body must be a mapping")
 
     def sampling_params(self) -> dict[str, Any]:
-        """The kwargs passed to chat.completions.create, also stored on each record.
+        """The logical sampling recipe stored on each cache record.
 
-        With the defaults this equals the `params` dict in the existing cached
-        records exactly, so those records validate without a migration.
+        With the default backend it is also the exact SDK request kwargs and equals
+        the `params` dict in the existing cache. OpenRouter adds cache-only markers;
+        `request_params` removes those and adapts its separate requests.
         """
         params: dict[str, Any] = {
             "temperature": self.temperature,
@@ -201,7 +224,47 @@ class LLMConfig:
         }
         if self.top_logprobs is not None:
             params["top_logprobs"] = self.top_logprobs
+        if self.backend == "openrouter":
+            # OpenRouter's Chat Completions schema has no `n` parameter. The logical
+            # sample count remains in the cache identity, while score_one issues K
+            # individual requests and combines their choices.
+            params["backend"] = "openrouter"
+            params["sample_mode"] = "separate_requests"
+        if self.extra_body:
+            params["extra_body"] = self.extra_body
         return params
+
+    def request_params(self, sample_index: int = 0) -> dict[str, Any]:
+        """Actual SDK kwargs for one request.
+
+        The default backend still sends one request with ``n=n_samples``, preserving
+        the existing cache and gateway behavior. OpenRouter receives K requests with
+        no unsupported ``n`` field; integer seeds are offset so those requests do not
+        deterministically repeat the same completion.
+        """
+        params = self.sampling_params()
+        params.pop("backend", None)
+        params.pop("sample_mode", None)
+        if self.backend == "openrouter":
+            params.pop("n")
+            if self.seed is not None:
+                params["seed"] = self.seed + sample_index
+        return params
+
+    def request_count(self) -> int:
+        """Number of HTTP requests needed to obtain one sentence's K samples."""
+        return self.n_samples if self.backend == "openrouter" else 1
+
+    def default_headers(self) -> dict[str, str]:
+        """Optional OpenRouter attribution and routing-metadata headers."""
+        if self.backend != "openrouter":
+            return {}
+        headers = {"X-OpenRouter-Metadata": "enabled"}
+        if self.openrouter_site_url:
+            headers["HTTP-Referer"] = self.openrouter_site_url
+        if self.openrouter_app_name:
+            headers["X-OpenRouter-Title"] = self.openrouter_app_name
+        return headers
 
     def cache_path(self, split: str = "pool", tag: str = "") -> Path:
         """Cache file for one split. `tag` separates caches whose split differs.

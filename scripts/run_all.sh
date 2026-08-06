@@ -67,6 +67,7 @@ echo
 # unknown YAML key fails here rather than after hours of training.
 CACHE_GROUPS="$LOG_DIR/cache_groups.tsv"
 uv run python - "$CACHE_GROUPS" "${CONFIGS[@]}" <<'PY'
+import json
 import os
 import sys
 from pathlib import Path
@@ -140,7 +141,7 @@ for path in (Path(p) for p in sys.argv[2:]):
     cache = cfg.llm.cache_path("pool", tag=cfg.few_shot_tag())
     # Identity, not filename: two configs may legitimately share a cache, but only if
     # the records one writes are records the other would have written.
-    recipe = (cfg.llm.model, tuple(sorted(cfg.llm.sampling_params().items())))
+    recipe = (cfg.llm.model, json.dumps(cfg.llm.sampling_params(), sort_keys=True))
     caches.setdefault(cache, []).append((path, recipe))
     group_of[path] = str(cache)
     n = sum(1 for _ in cache.open()) if cache.exists() else 0
@@ -174,6 +175,7 @@ for checkpoint, users in checkpoints.items():
 # sentence of an uncached config, which is hours of the night spent failing.
 if os.environ.get("SKIP_PROBE") != "1":
     import openai
+    from uq_pet.llm import make_client
 
     probed = {}
     for path in (Path(p) for p in sys.argv[2:]):
@@ -183,20 +185,24 @@ if os.environ.get("SKIP_PROBE") != "1":
             continue
         if all(arm.strategy == RANDOM for arm in cfg.arms):
             continue
-        target = (cfg.llm.base_url, cfg.llm.model, cfg.llm.api_key_env)
+        target = (
+            cfg.llm.base_url,
+            cfg.llm.model,
+            cfg.llm.api_key_env,
+            json.dumps(cfg.llm.sampling_params(), sort_keys=True),
+        )
         if target in probed:
             continue
-        client = openai.OpenAI(
-            base_url=cfg.llm.base_url,
-            api_key=os.environ.get(cfg.llm.api_key_env, ""),
-            timeout=30.0,
-            max_retries=0,
-        )
         try:
+            client = make_client(cfg.llm)
+            params = cfg.llm.request_params(0)
+            params["max_tokens"] = 1
+            if "n" in params:
+                params["n"] = 1
             client.chat.completions.create(
                 model=cfg.llm.model,
                 messages=[{"role": "user", "content": "ping"}],
-                max_tokens=1,
+                **params,
             )
             probed[target] = None
             print(f"probe ok  {cfg.llm.model}")

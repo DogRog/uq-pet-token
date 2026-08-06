@@ -51,6 +51,7 @@ def make_client(cfg: LLMConfig) -> OpenAI:
     return OpenAI(
         api_key=api_key,
         base_url=cfg.base_url,
+        default_headers=cfg.default_headers(),
         timeout=cfg.timeout,
         max_retries=0,  # retries are handled in score_one, with jittered backoff
     )
@@ -111,6 +112,11 @@ def pack_choice(choice: Any) -> dict:
             for t in answer_tokens(content)
         ]
     return packed
+
+
+def json_value(value: Any) -> Any:
+    """Convert SDK response extensions (often Pydantic models) for JSONL storage."""
+    return value.model_dump(mode="json") if hasattr(value, "model_dump") else value
 
 
 def load_cache(
@@ -175,37 +181,69 @@ def score_one(
     split: str,
 ) -> dict:
     """Sample the model n_samples times for one sentence. Pure: writes nothing."""
-    params = cfg.sampling_params()
-    response = None
-    for attempt in range(cfg.max_retries):
-        try:
-            response = client.chat.completions.create(
-                model=cfg.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                **params,
-            )
-            break
-        except RETRYABLE as e:
-            if attempt == cfg.max_retries - 1:
-                return {"idx": idx, "key": key, "error": repr(e)}
-            time.sleep(min(2**attempt, 30) * (0.5 + random.random()))
-        except openai.APIStatusError as e:
-            return {"idx": idx, "key": key, "error": repr(e)}  # 400/401/404: fatal
-    else:
-        return {"idx": idx, "key": key, "error": "exhausted retries"}
+    responses = []
+    for request_index in range(cfg.request_count()):
+        response = None
+        for attempt in range(cfg.max_retries):
+            try:
+                response = client.chat.completions.create(
+                    model=cfg.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    **cfg.request_params(request_index),
+                )
+                break
+            except RETRYABLE as e:
+                if attempt == cfg.max_retries - 1:
+                    return {
+                        "idx": idx,
+                        "key": key,
+                        "error": f"sample {request_index}: {e!r}",
+                    }
+                time.sleep(min(2**attempt, 30) * (0.5 + random.random()))
+            except openai.APIStatusError as e:
+                # 400/401/404 are configuration failures, not transient ones.
+                return {"idx": idx, "key": key, "error": f"sample {request_index}: {e!r}"}
+        if response is None:
+            return {"idx": idx, "key": key, "error": "exhausted retries"}
+        responses.append(response)
 
-    return {
+    choices = [pack_choice(choice) for response in responses for choice in response.choices]
+    if len(choices) != cfg.n_samples:
+        return {
+            "idx": idx,
+            "key": key,
+            "error": f"gateway returned {len(choices)} choices, expected {cfg.n_samples}",
+        }
+
+    # OpenRouter can resolve aliases and route consecutive samples through different
+    # providers. Cache identity uses the requested model; the audit metadata preserves
+    # what actually served each request.
+    cache_model = cfg.model if cfg.backend == "openrouter" else responses[0].model
+    record = {
         "idx": idx,
         "key": key,
         "split": split,
-        "model": response.model,
-        "params": params,
+        "model": cache_model,
+        "params": cfg.sampling_params(),
         "prompt_sha": prompt_sha,
-        "choices": [pack_choice(c) for c in response.choices],
+        "choices": choices,
     }
+    if cfg.backend == "openrouter":
+        record["routing"] = [
+            {
+                "response_model": response.model,
+                **(
+                    {"openrouter_metadata": json_value(metadata)}
+                    if (metadata := getattr(response, "openrouter_metadata", None)) is not None
+                    else {}
+                ),
+            }
+            for response in responses
+        ]
+    return record
 
 
 def score_split(

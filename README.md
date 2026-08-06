@@ -155,6 +155,34 @@ The raw PET jsonl is downloaded on the first run. `NHR_FAU_API_KEY` in `.env` is
 needed **only** when the score cache doesn't already cover the pool — a complete cache
 means no client is ever constructed.
 
+### OpenRouter for black-box UQ
+
+Copy [`configs/openrouter_black_box.yaml.example`](configs/openrouter_black_box.yaml.example)
+to a `.yaml` config, select an [OpenRouter model](https://openrouter.ai/models), and put
+`OPENROUTER_API_KEY=...` in `.env`. `backend: openrouter` selects
+`https://openrouter.ai/api/v1` and that key name automatically; both can still be
+overridden for a proxy.
+
+The example sets `logprobs: false` and uses only output-based metrics:
+`vote_entropy`, `disagreement`, `pairwise_f1_disagreement`, and `entity_count_std`.
+OpenRouter's Chat Completions request schema does not expose OpenAI's multi-completion
+`n` parameter, so this backend makes `n_samples` separate requests per sentence and
+combines the choices before caching. For an integer `seed`, request `i` uses
+`seed + i`; use `seed: null` for providers that do not support seeded sampling.
+
+OpenRouter can route one model through several providers. Put its
+[`provider`](https://openrouter.ai/docs/guides/routing/provider-selection) preferences
+under `llm.extra_body`; they are included in cache identity. For a controlled UQ
+experiment, pin one provider with `only: [provider-slug]`, disable fallbacks, and use
+`require_parameters: true` so routing cannot silently discard sampling parameters.
+Each cached OpenRouter record also keeps the returned model and opt-in router metadata
+for auditing.
+
+```bash
+cp configs/openrouter_black_box.yaml.example configs/openrouter_black_box.yaml
+uv run python -m uq_pet.main --config configs/openrouter_black_box.yaml --limit 3 --dry-run
+```
+
 Useful flags: `--skip-scoring` (never call the API; fail if the cache is short),
 `--limit N` (score only the first N pool sentences), `--dry-run` (stop after selection
 and print both arms), `--run-name NAME` (name the run directory), `--no-plot`, `-v`.
