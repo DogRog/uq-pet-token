@@ -347,3 +347,13 @@ def test_verify_cache_alignment_detects_a_shift(sample_records, sample_examples)
 
 def test_verify_cache_alignment_empty_is_zero():
     assert verify_cache_alignment([], [{"tokens": ["a"]}]) == 0.0
+
+
+def test_verify_cache_alignment_reads_self_uncertainty_json():
+    records = [
+        {
+            "idx": 0,
+            "choices": [{"text": '{"tags": [0, 3], "uncertainty": 0.4}'}],
+        }
+    ]
+    assert verify_cache_alignment(records, [{"tokens": ["a", "b"]}]) == 1.0

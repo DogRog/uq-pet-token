@@ -31,7 +31,14 @@ from uq_pet.model_training import (
 )
 from uq_pet.plotting import plot_results
 from uq_pet.prompt import build_system_prompt, build_user_prompts, prompt_fingerprint
-from uq_pet.uncertainty import RANDOM, n_from_percent, score_arm, select, validate_arm
+from uq_pet.uncertainty import (
+    RANDOM,
+    SELF_UNCERTAINTY,
+    n_from_percent,
+    score_arm,
+    select,
+    validate_arm,
+)
 
 logger = logging.getLogger("uq_pet")
 
@@ -112,9 +119,13 @@ def stage_score(
     limit: int | None,
 ) -> tuple[list[dict], str, dict]:
     """Ensure the pool is scored, from cache where possible. Returns (records, sha, meta)."""
-    system_prompt = build_system_prompt(few_shot)
+    system_prompt = build_system_prompt(
+        few_shot, self_report_uncertainty=cfg.llm.self_report_uncertainty
+    )
     prompt_sha = prompt_fingerprint(system_prompt)
-    user_prompts = build_user_prompts(pool_examples)
+    user_prompts = build_user_prompts(
+        pool_examples, self_report_uncertainty=cfg.llm.self_report_uncertainty
+    )
     keys = [sentence_key(ex) for ex in pool_examples]
     cache_path = cfg.llm.cache_path("pool", tag=cfg.few_shot_tag())
     load_kwargs = {
@@ -347,6 +358,13 @@ def main(argv: list[str] | None = None) -> int:
             validate_arm(arm.strategy, arm.params)
         except ValueError as e:
             raise SystemExit(f"{args.config}: {e}") from None
+    if any(arm.strategy == SELF_UNCERTAINTY for arm in cfg.arms) and not (
+        cfg.llm.self_report_uncertainty
+    ):
+        raise SystemExit(
+            f"{args.config}: the '{SELF_UNCERTAINTY}' arm requires "
+            "llm.self_report_uncertainty: true"
+        )
 
     run_dir = make_run_dir(cfg, args.config, args.results_dir, run_name=args.run_name)
     setup_logging(run_dir / "run.log", args.verbose)

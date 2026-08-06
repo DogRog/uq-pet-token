@@ -7,6 +7,7 @@ from conftest import make_choice
 from uq_pet.uncertainty import (
     METRICS,
     RANDOM,
+    SELF_UNCERTAINTY,
     avg_neg_logprob,
     avg_neg_logprob_filtered_scores,
     avg_neg_logprob_pure_scores,
@@ -29,6 +30,7 @@ from uq_pet.uncertainty import (
     rank_by_uncertainty,
     score_arm,
     select,
+    self_uncertainty_scores,
     span_f1,
     tag_spans,
     validate_arm,
@@ -134,6 +136,39 @@ def test_least_confident_rejects_a_meaningless_window(sample_records):
 # Hand-computed for votes (3, 4, 3): H = -(2/3 ln 2/3 + 1/3 ln 1/3) = 0.636514,
 # normalized by ln 3 = 1.098612.
 SPLIT_2_1_ENTROPY = 0.579380
+
+
+def test_self_uncertainty_averages_valid_sample_reports():
+    records = [
+        {
+            "idx": 0,
+            "choices": [
+                {"text": '{"tags": [0], "uncertainty": 0.2}'},
+                {"text": '{"tags": [0], "uncertainty": 0.8}'},
+            ],
+        }
+    ]
+    assert self_uncertainty_scores(records) == {0: pytest.approx(0.5)}
+
+
+def test_self_uncertainty_skips_bad_reports_and_error_records():
+    records = [
+        {
+            "idx": 0,
+            "choices": [
+                {"text": '{"tags": [0], "uncertainty": 0.4}'},
+                {"text": '{"tags": [0], "uncertainty": 3}'},
+            ],
+        },
+        {"idx": 1, "choices": [{"text": "[0]"}]},
+        {"idx": 2, "error": "boom"},
+    ]
+    assert self_uncertainty_scores(records) == {0: 0.4}
+
+
+def test_self_uncertainty_needs_no_logprobs():
+    records = [{"idx": 0, "choices": [{"text": '{"tags": [0], "uncertainty": 0.7}'}]}]
+    assert self_uncertainty_scores(records) == {0: 0.7}
 
 
 def test_extract_tag_ids_parses_every_sample(tag_records):
@@ -394,6 +429,7 @@ def test_random_is_a_metric_like_any_other():
         "disagreement",
         "pairwise_f1_disagreement",
         "entity_count_std",
+        SELF_UNCERTAINTY,
         "length",
     ],
 )
@@ -428,6 +464,7 @@ def test_validate_arm_accepts_good_arms():
     validate_arm(RANDOM, {"seed": 7})
     validate_arm("avg_neg_logprob_pure", {})
     validate_arm("vote_entropy", {})
+    validate_arm(SELF_UNCERTAINTY, {})
 
 
 def test_validate_arm_rejects_a_param_on_a_parameterless_metric():
@@ -465,6 +502,11 @@ def test_score_arm_dispatches_to_the_metric(sample_records):
 def test_score_arm_dispatches_to_disagreement(tag_records):
     records = tag_records({0: [[0, 3], [0, 4]]})
     assert score_arm("disagreement", records) == disagreement_scores(records)
+
+
+def test_score_arm_dispatches_to_self_uncertainty():
+    records = [{"idx": 0, "choices": [{"text": '{"tags": [0], "uncertainty": 0.6}'}]}]
+    assert score_arm(SELF_UNCERTAINTY, records) == {0: 0.6}
 
 
 # --- ranking and budgets ------------------------------------------------------

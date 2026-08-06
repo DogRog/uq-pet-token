@@ -1,0 +1,19 @@
+budget_pct: [5, 10, 15, 20, 25, 30]
+
+arms:
+  - random
+  - self_uncertainty
+
+train_seeds: [0, 1, 2, 3, 4]
+
+n_few_shot: 1
+few_shot_seed: 13
+
+llm:
+  cache_prefix: nhr_gemma4
+  cache_suffix: selfuq-rnone-t512
+  n_samples: 10
+  reasoning_effort: none
+  max_tokens: 512
+  logprobs: false
+  self_report_uncertainty: true

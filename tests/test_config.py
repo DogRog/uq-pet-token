@@ -47,6 +47,12 @@ def test_default_sampling_params_match_cached_params():
     }
 
 
+def test_self_uncertainty_is_a_cache_marker_not_an_api_parameter():
+    cfg = LLMConfig(self_report_uncertainty=True)
+    assert cfg.sampling_params()["self_report_uncertainty"] is True
+    assert "self_report_uncertainty" not in cfg.request_params()
+
+
 def test_default_few_shot_settings_keep_the_existing_cache_name():
     """The default few-shot split must not tag the cache filename.
 

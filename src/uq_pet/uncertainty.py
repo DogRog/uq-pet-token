@@ -27,13 +27,14 @@ from itertools import combinations
 from statistics import fmean, median, pstdev
 
 from uq_pet.config import NER_TAGS
-from uq_pet.prompt import parse_tag_ids
+from uq_pet.prompt import parse_self_uncertainty, parse_tag_ids
 
 Span = tuple[int, int, str]
 
 # The control arm's name. Selection does not treat it specially; `main` and `plotting`
 # use it to find the baseline the other arms are reported against.
 RANDOM = "random"
+SELF_UNCERTAINTY = "self_uncertainty"
 
 METRICS: dict[str, Callable[..., dict[int, float]]] = {}
 
@@ -199,6 +200,30 @@ def least_confident_scores(records: Iterable[dict], *, n_worst: int = 1) -> dict
 # These read the generated text and no logprobs, so they also work against a gateway
 # that does not return them. The K temperature samples act as a committee: the more they
 # vary, the less settled the model is about the sentence.
+
+
+@register(SELF_UNCERTAINTY)
+def self_uncertainty_scores(records: Iterable[dict]) -> dict[int, float]:
+    """Mean self-reported sequence uncertainty over the usable samples (0..1).
+
+    Each completion assesses its own complete tag array. Malformed, non-finite, and
+    out-of-range reports are omitted; a sentence with no usable report receives no
+    score, so selection cannot mistake a missing report for confidence.
+    """
+    scores = {}
+    for rec in records:
+        if "error" in rec:
+            continue
+        values = [
+            score
+            for score in (
+                parse_self_uncertainty(choice.get("text")) for choice in rec.get("choices", [])
+            )
+            if score is not None
+        ]
+        if values:
+            scores[rec["idx"]] = fmean(values)
+    return scores
 
 
 def extract_tag_ids(records: Iterable[dict]) -> dict[int, list[list[int]]]:

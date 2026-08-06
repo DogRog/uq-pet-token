@@ -67,6 +67,14 @@ def test_parser_flags():
     assert (args.skip_scoring, args.limit, args.dry_run, args.verbose) == (True, 5, True, True)
 
 
+def test_self_uncertainty_arm_requires_the_matching_prompt_mode(tmp_path):
+    config = tmp_path / "self-uq-disabled.yaml"
+    config.write_text("arms: [self_uncertainty]\n")
+
+    with pytest.raises(SystemExit, match="requires llm.self_report_uncertainty: true"):
+        pipeline.main(["--config", str(config), "--dry-run"])
+
+
 # --- run dir ------------------------------------------------------------------
 
 

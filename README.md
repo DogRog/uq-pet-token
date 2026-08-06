@@ -53,6 +53,11 @@ enough that a single-seed gap between arms would not be a result.
     sample, averaged over the K samples. Where the two averages above dilute one hard
     tag across the whole sentence — the more so the longer it is — this scores a
     sentence by its hardest decisions and drops the length normalization with it.
+  - `self_uncertainty` — **model self-report, no logprobs required**: each completion
+    returns `{"tags": [...], "uncertainty": u}`, where 0 means completely certain and
+    1 means completely uncertain. The sentence score is the mean of the valid reports
+    across K samples. Missing, malformed, non-finite, and out-of-range reports are
+    omitted rather than clamped; the shared selection rule then takes the top n scores.
   - `vote_entropy` — **outputs only, no logprobs**: parse the K sampled tag arrays and
     average, over token positions, the Shannon entropy of the K votes over log K (so
     0–1). The samples are a committee; the more they vary, the less settled the model
@@ -134,6 +139,9 @@ uv run python -m uq_pet.main --config configs/smoke.yaml --skip-scoring
 
 # The real run.
 uv run python -m uq_pet.main --config configs/nhr_gemma4_1shot.yaml
+
+# Self-reported uncertainty vs. random (uses its own fresh score cache).
+uv run python -m uq_pet.main --config configs/nhr_gemma4_1shot_self_uncertainty.yaml
 
 # Every config in configs/, back to back, unattended. DRY_RUN=1 runs the preflight
 # alone; SKIP_DONE=1 skips configs that already produced a run directory.
@@ -227,6 +235,12 @@ changes `prompt_fingerprint()`, which is stamped onto every new cache record. Re
 written before fingerprinting exist are grandfathered in, so **nothing will stop you
 from mixing two prompts in one cache** — if you edit a template, bump `llm.cache_suffix`
 in your config or delete `data/processed/llm_scores/*.jsonl`.
+
+The self-UQ config opts into a separate JSON response contract with
+`llm.self_report_uncertainty: true`. This mode is included in cache identity and the
+checked-in config uses a dedicated `cache_suffix`, so it cannot mix its responses with
+the legacy array-only cache. A `self_uncertainty` arm without that prompt mode fails at
+startup before making API calls.
 
 ## Layout
 

@@ -182,6 +182,7 @@ class LLMConfig:
     extra_body: dict[str, Any] = field(default_factory=dict)
     openrouter_site_url: str | None = None
     openrouter_app_name: str | None = "uq-pet"
+    self_report_uncertainty: bool = False
 
     def __post_init__(self) -> None:
         if self.backend not in {"openai_compatible", "openrouter"}:
@@ -221,6 +222,8 @@ class LLMConfig:
             raise ValueError("llm.extra_body must be a mapping")
         if self.reasoning_effort is not None and "reasoning" in self.extra_body:
             raise ValueError("set llm.reasoning_effort or llm.extra_body.reasoning, not both")
+        if not isinstance(self.self_report_uncertainty, bool):
+            raise ValueError("llm.self_report_uncertainty must be true or false")
 
     def sampling_params(self) -> dict[str, Any]:
         """The logical sampling recipe stored on each cache record.
@@ -248,6 +251,11 @@ class LLMConfig:
             params["sample_mode"] = "separate_requests"
         if self.extra_body:
             params["extra_body"] = self.extra_body
+        if self.self_report_uncertainty:
+            # Cache-only output-contract marker. request_params removes it before the
+            # SDK call; keeping it in cache identity makes the preflight catch two
+            # prompt modes that accidentally claim the same filename.
+            params["self_report_uncertainty"] = True
         return params
 
     def request_params(self, sample_index: int = 0) -> dict[str, Any]:
@@ -261,6 +269,7 @@ class LLMConfig:
         params = self.sampling_params()
         params.pop("backend", None)
         params.pop("sample_mode", None)
+        params.pop("self_report_uncertainty", None)
         if self.backend == "openrouter":
             params.pop("n")
             if self.seed is not None:
