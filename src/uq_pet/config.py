@@ -54,6 +54,7 @@ DEFAULT_LLM_BASE_URL = "https://hub.nhr.fau.de/api/llmgw/v1"
 DEFAULT_LLM_API_KEY_ENV = "NHR_FAU_API_KEY"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
+REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 NER_TAGS = [
     "O",
@@ -171,6 +172,7 @@ class LLMConfig:
     temperature: float = 1.0
     seed: int | None = 0
     max_tokens: int = 256
+    reasoning_effort: str | None = None
     logprobs: bool = True
     top_logprobs: int | None = None
     workers: int = 8
@@ -197,6 +199,16 @@ class LLMConfig:
             raise ValueError(f"llm.n_samples must be >= 1, got {self.n_samples}")
         if self.temperature < 0:
             raise ValueError(f"llm.temperature must be >= 0, got {self.temperature}")
+        if self.max_tokens < 1:
+            raise ValueError(f"llm.max_tokens must be >= 1, got {self.max_tokens}")
+        if self.reasoning_effort is not None and (
+            not isinstance(self.reasoning_effort, str)
+            or self.reasoning_effort not in REASONING_EFFORTS
+        ):
+            raise ValueError(
+                "llm.reasoning_effort must be one of "
+                f"{sorted(REASONING_EFFORTS)} or null, got {self.reasoning_effort!r}"
+            )
         if self.workers < 1:
             raise ValueError(f"llm.workers must be >= 1, got {self.workers}")
         if self.max_retries < 1:
@@ -207,6 +219,8 @@ class LLMConfig:
             raise ValueError(f"llm.limit must be >= 1 or null, got {self.limit}")
         if not isinstance(self.extra_body, dict):
             raise ValueError("llm.extra_body must be a mapping")
+        if self.reasoning_effort is not None and "reasoning" in self.extra_body:
+            raise ValueError("set llm.reasoning_effort or llm.extra_body.reasoning, not both")
 
     def sampling_params(self) -> dict[str, Any]:
         """The logical sampling recipe stored on each cache record.
@@ -224,6 +238,8 @@ class LLMConfig:
         }
         if self.top_logprobs is not None:
             params["top_logprobs"] = self.top_logprobs
+        if self.reasoning_effort is not None:
+            params["reasoning_effort"] = self.reasoning_effort
         if self.backend == "openrouter":
             # OpenRouter's Chat Completions schema has no `n` parameter. The logical
             # sample count remains in the cache identity, while score_one issues K
@@ -249,6 +265,11 @@ class LLMConfig:
             params.pop("n")
             if self.seed is not None:
                 params["seed"] = self.seed + sample_index
+            if (effort := params.pop("reasoning_effort", None)) is not None:
+                params["extra_body"] = {
+                    **params.get("extra_body", {}),
+                    "reasoning": {"effort": effort},
+                }
         return params
 
     def request_count(self) -> int:

@@ -16,8 +16,10 @@ llm:
   backend: openrouter
   model: google/gemma-4-31b-it
   cache_prefix: openrouter_gemma-4-31b-it
-  cache_suffix: black_box
+  cache_suffix: black_box-rnone-t512
   logprobs: false
+  reasoning_effort: none
+  max_tokens: 512
 
   # This object is passed as OpenAI SDK `extra_body` and is part of cache identity.
   # For the cleanest experiment, add `only: [provider-slug]` and keep fallbacks off,

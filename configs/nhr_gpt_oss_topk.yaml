@@ -20,11 +20,12 @@ few_shot_seed: 13
 
 llm:
   model: gpt-oss-120b
-  # gpt-oss is a reasoning model: max_tokens 2048 covers its analysis channel. The
-  # suffix is `topk2` because that sampling recipe differs from the default one, and
-  # the filename is the only thing that separates the two caches.
+  # GPT-OSS cannot disable reasoning. Low effort keeps the classification run lean;
+  # its reasoning and final tag array share max_tokens, so use a generous ceiling.
+  # The suffix records both changes and keeps this recipe out of the old cache.
   cache_prefix: nhr_oss
-  cache_suffix: topk2
+  cache_suffix: topk2-rlow-t4096
   n_samples: 10
-  max_tokens: 2048
+  reasoning_effort: low
+  max_tokens: 4096
   top_logprobs: 5

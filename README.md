@@ -144,6 +144,12 @@ JOBS=4 scripts/run_all.sh    # four at a time, for a machine with a GPU to spare
 Checked-in configs contain the settings that differ from the dataclass defaults. Every
 run still writes a complete, resolved `config.yaml` snapshot to its result directory.
 
+Reasoning-capable gateways accept `llm.reasoning_effort`: `none` disables thinking on
+models that support a non-thinking mode, while `low`, `medium`, or `high` enables it.
+The setting is part of cache identity. Because reasoning tokens share the completion
+budget with the final tag array, reasoning-enabled configs also set a larger
+`max_tokens`; changing either setting requires a new `cache_suffix`.
+
 `scripts/run_all.sh` is a loop over the entry point plus a preflight that no single
 run can do: it loads every config, validates the arms, checks the API keys, pings each
 gateway model once, and refuses to start when two configs with different sampling

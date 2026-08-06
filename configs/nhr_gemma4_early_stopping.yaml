@@ -37,7 +37,10 @@ few_shot_seed: 13
 
 llm:
   cache_prefix: nhr_gemma4
+  cache_suffix: dist-rnone-t512
   n_samples: 10
+  reasoning_effort: none
+  max_tokens: 512
   top_logprobs: 5
 
 train:

@@ -1,7 +1,8 @@
 # Cheap sanity run over the whole pipeline (~2 minutes, no API calls).
 #
-# It deliberately omits every `llm` sampling field so LLMConfig's defaults apply —
-# and those defaults are exactly what produced the existing
+# It deliberately leaves every `llm` sampling field at LLMConfig's default. The
+# explicit null below documents the reasoning knob while still omitting it from the
+# request and cache identity, so those defaults are exactly what produced the existing
 # data/processed/llm_scores/nhr_gemma_pool_dist.jsonl, so this config hits that cache
 # and never reaches the network. Run it with --skip-scoring to enforce that:
 #
@@ -16,6 +17,7 @@ train_seeds: [0]
 
 llm:
   workers: 4
+  reasoning_effort: null
 
 train:
   epochs: 2

@@ -18,6 +18,8 @@ llm:
   # A single sample is a different sampling recipe, and the filename does not encode
   # the recipe — without this suffix these records land in the 10-sample config's
   # cache, where each run evicts the other's and re-scores the whole pool.
-  cache_suffix: n1
+  cache_suffix: n1-rnone-t512
   n_samples: 1
+  reasoning_effort: none
+  max_tokens: 512
   top_logprobs: 5

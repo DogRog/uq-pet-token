@@ -19,5 +19,8 @@ few_shot_seed: 13
 llm:
   model: mistralai/Mistral-Medium-3.5-128B
   cache_prefix: nhr_mistral
+  cache_suffix: dist-rnone-t512
   n_samples: 10
+  reasoning_effort: none
+  max_tokens: 512
   top_logprobs: 5

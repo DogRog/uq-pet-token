@@ -21,6 +21,8 @@ few_shot_seed: 13
 llm:
   model: moonshotai/Kimi-K2.6
   cache_prefix: nhr_kimi
-  cache_suffix: topk
+  cache_suffix: topk-rnone-t512
   n_samples: 10
+  reasoning_effort: none
+  max_tokens: 512
   top_logprobs: 5

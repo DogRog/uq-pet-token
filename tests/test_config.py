@@ -79,6 +79,13 @@ def test_top_logprobs_appears_only_when_set():
     assert LLMConfig(top_logprobs=3).sampling_params()["top_logprobs"] == 3
 
 
+def test_reasoning_effort_is_optional_and_part_of_cache_identity():
+    assert "reasoning_effort" not in LLMConfig().sampling_params()
+    cfg = LLMConfig(reasoning_effort="none")
+    assert cfg.sampling_params()["reasoning_effort"] == "none"
+    assert cfg.request_params()["reasoning_effort"] == "none"
+
+
 def test_openrouter_backend_uses_separate_requests_and_cache_identity():
     cfg = LLMConfig(
         backend="openrouter",
@@ -109,6 +116,15 @@ def test_openrouter_backend_uses_separate_requests_and_cache_identity():
         "HTTP-Referer": "https://example.test/uq-pet",
         "X-OpenRouter-Title": "uq-pet",
     }
+
+
+def test_openrouter_maps_reasoning_effort_to_its_unified_reasoning_body():
+    cfg = LLMConfig(backend="openrouter", reasoning_effort="high", logprobs=False)
+
+    assert cfg.sampling_params()["reasoning_effort"] == "high"
+    request = cfg.request_params()
+    assert "reasoning_effort" not in request
+    assert request["extra_body"]["reasoning"] == {"effort": "high"}
 
 
 # --- Loading ------------------------------------------------------------------
@@ -254,6 +270,27 @@ def test_openrouter_config_loads():
     assert cfg.llm.logprobs is False
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "nhr_gemma4_1shot.yaml",
+        "nhr_kimi2.6_topk.yaml",
+        "nhr_mistral3.5.yaml",
+        "openrouter_black_box.yaml",
+    ],
+)
+def test_non_reasoning_configs_leave_room_for_the_final_tag_array(name):
+    cfg = load_config(CONFIGS_DIR / name)
+    assert cfg.llm.reasoning_effort == "none"
+    assert cfg.llm.max_tokens >= 512
+
+
+def test_gpt_oss_uses_supported_low_reasoning_with_a_larger_budget():
+    cfg = load_config(CONFIGS_DIR / "nhr_gpt_oss_topk.yaml")
+    assert cfg.llm.reasoning_effort == "low"
+    assert cfg.llm.max_tokens >= 4096
+
+
 # --- Validation ---------------------------------------------------------------
 
 
@@ -262,12 +299,15 @@ def test_openrouter_config_loads():
     [
         {"n_samples": 0},
         {"temperature": -1.0},
+        {"max_tokens": 0},
+        {"reasoning_effort": "off"},
         {"workers": 0},
         {"max_retries": 0},
         {"limit": 0},
         {"logprobs": False, "top_logprobs": 3},
         {"backend": "unknown"},
         {"extra_body": []},
+        {"reasoning_effort": "low", "extra_body": {"reasoning": {"effort": "high"}}},
     ],
 )
 def test_llm_config_validation(kwargs):
