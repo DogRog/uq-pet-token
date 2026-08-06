@@ -9,7 +9,7 @@ wheels/
 # Virtual environments
 .venv
 
-#Macos
+# Macos
 .DS_Store
 
 
@@ -17,3 +17,8 @@ wheels/
 
 /results/
 /data/
+
+
+# Marimo
+__marimo__
+layouts/
