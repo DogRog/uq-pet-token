@@ -380,7 +380,7 @@ def test_every_metric_variant_is_registered_under_its_own_name(name):
 
 
 def test_random_is_a_metric_like_any_other():
-    """The control is in the registry, so nothing downstream needs a special case."""
+    """The control shares the metric dispatch and ranking rule."""
     assert RANDOM in METRICS
     assert RANDOM in metric_names()
 

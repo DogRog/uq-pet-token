@@ -36,7 +36,8 @@ def _():
 
 @app.cell
 def _(RESULTS_DIR, re):
-    _stamp = re.compile(r"_\d{8}_\d{6}$")
+    # Accept both legacy second-resolution run names and current microsecond names.
+    _stamp = re.compile(r"_\d{8}_\d{6}(?:_\d{6})?$")
     _needed = ("results.csv", "selection.json", "config.yaml")
 
     def available_runs():

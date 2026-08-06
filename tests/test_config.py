@@ -248,8 +248,8 @@ def test_shipped_configs_load(path):
     assert isinstance(load_config(path), ExperimentConfig)
 
 
-def test_openrouter_example_loads():
-    cfg = load_config(CONFIGS_DIR / "openrouter_black_box.yaml.example")
+def test_openrouter_config_loads():
+    cfg = load_config(CONFIGS_DIR / "openrouter_black_box.yaml")
     assert cfg.llm.backend == "openrouter"
     assert cfg.llm.logprobs is False
 

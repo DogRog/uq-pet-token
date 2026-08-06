@@ -1,31 +1,18 @@
 [project]
 name = "uq-pet"
 version = "0.1.0"
-description = "Add your description here"
+description = "Compare uncertainty-based and random training-data selection on PET NER"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "accelerate>=1.0; sys_platform == 'linux'",
-    "altair>=6.2.2",
-    "bitsandbytes>=0.45; sys_platform == 'linux'",
     "datasets==2.19.2",
-    "ipykernel>=7.3.0",
-    "ipywidgets>=8.1.0",
-    "jupyter>=1.1.1",
-    "marimo>=0.23.16",
     "matplotlib>=3.11.0",
-    "mcp>=2.0.0",
-    "mlx>=0.31.2; sys_platform == 'darwin'",
-    "mlx-lm>=0.31.3,<0.32; sys_platform == 'darwin'",
+    "numpy>=1.26",
     "openai>=2.44.0",
     "pandas>=3.0.3",
-    "protobuf>=7.35.1",
     "python-dotenv>=1.0",
     "pyyaml>=6.0",
-    "scipy>=1.14",
-    "sentencepiece>=0.2.1",
     "seqeval>=1.2.2",
-    "tiktoken>=0.13.0",
     "torch>=2.12.1",
     "tqdm>=4.66",
     "transformers>=5.12.1",
@@ -36,6 +23,9 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.14",
     "typeguard>=4.6.0",
+]
+notebook = [
+    "marimo>=0.23.16",
 ]
 
 [build-system]

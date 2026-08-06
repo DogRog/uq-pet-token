@@ -335,17 +335,6 @@ def evaluate_model_on(
     return evaluate(predictions, gold)
 
 
-def free_model(*objs) -> None:
-    """Drop models/tokenizers and reclaim accelerator memory between grid cells."""
-    for obj in objs:
-        del obj
-    gc.collect()
-    if torch.backends.mps.is_available():
-        torch.mps.empty_cache()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-
 def train_and_evaluate(
     train_examples: list[dict],
     test_examples: list[dict],
@@ -366,4 +355,11 @@ def train_and_evaluate(
         )
         return {**metrics, **info}
     finally:
-        free_model(model, tokenizer)
+        # Drop the caller's references before asking the allocator to release cached
+        # blocks. Passing them to a helper would keep them alive for the collection.
+        del model, tokenizer
+        gc.collect()
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()

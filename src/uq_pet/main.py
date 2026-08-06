@@ -1,6 +1,6 @@
 """The whole pipeline: download -> split -> prompt -> score -> select -> train -> report.
 
-    uv run python -m uq_pet.main --config configs/nhr_gemma.yaml
+    uv run python -m uq_pet.main --config configs/nhr_gemma4_1shot.yaml
 
 There is exactly one persistent artifact, the LLM score cache, and it is resumable by
 index — so a second run with a complete cache does no API work automatically. Nothing
@@ -11,7 +11,6 @@ import argparse
 import json
 import logging
 import math
-import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -96,11 +95,9 @@ def make_run_dir(
     being compared against with it. `run_name` replaces the config stem when the stem
     is not what distinguishes this run.
     """
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Microseconds make rapid re-runs distinct without ever deleting an earlier run.
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     run_dir = results_dir / f"{run_name or config_path.stem}_{stamp}"
-    if run_dir.exists():
-        # Same config, same second: a re-run, not a distinct one worth keeping.
-        shutil.rmtree(run_dir)
     (run_dir / "figures").mkdir(parents=True)
     (run_dir / "config.yaml").write_text(config_to_yaml(cfg))
     return run_dir

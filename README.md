@@ -8,7 +8,7 @@ Is **LLM uncertainty quantification a good criterion for choosing training data*
 PET NER dataset (417 sentences)
 ├── 5 few-shot examples (`n_few_shot`, used in every prompt)
 ├── 328 experiment pool
-│     │  LLM repeated sampling (K=5, temp 1.0, with token logprobs)
+│     │  LLM repeated sampling (configurable K, temperature and logprobs)
 │     │  → one uncertainty score per sentence, per metric
 │     │    (from the logprobs, or from how much the K outputs disagree)
 │     ├── top-N% by metric A  → fine-tune distilbert → evaluate
@@ -41,7 +41,7 @@ enough that a single-seed gap between arms would not be a result.
   read different halves of a cached sample; the control is registered alongside them, so
   selection has exactly one rule — take the top n of a metric's ranking — and no special
   case:
-  - `random` — a uniform random score per sentence, whose `seed` parameter (default 42)
+  - `random` — a uniform random score per sentence, whose `seed` parameter (default 0)
     picks the draw. Ranking by iid uniform scores and taking the top n *is* a uniform
     random sample of n. It scores the whole pool rather than the cache, so the control
     never inherits the LLM's blind spots.
@@ -124,18 +124,25 @@ def sequence_variance_scores(records, *, normalize: bool = True) -> dict[int, fl
 uv sync
 uv run pytest       # offline unit tests — no network, no API key, no model weights
 
+# Optional analysis notebook
+uv sync --group notebook
+uv run --group notebook marimo edit notebooks/analysis.py
+
 # Sanity run: 9 sentences per arm, 2 epochs, ~10s. Hits the existing score cache,
 # so it makes no API calls at all.
 uv run python -m uq_pet.main --config configs/smoke.yaml --skip-scoring
 
 # The real run.
-uv run python -m uq_pet.main --config configs/nhr_gemma.yaml
+uv run python -m uq_pet.main --config configs/nhr_gemma4_1shot.yaml
 
 # Every config in configs/, back to back, unattended. DRY_RUN=1 runs the preflight
 # alone; SKIP_DONE=1 skips configs that already produced a run directory.
 scripts/run_all.sh
 JOBS=4 scripts/run_all.sh    # four at a time, for a machine with a GPU to spare
 ```
+
+Checked-in configs contain the settings that differ from the dataclass defaults. Every
+run still writes a complete, resolved `config.yaml` snapshot to its result directory.
 
 `scripts/run_all.sh` is a loop over the entry point plus a preflight that no single
 run can do: it loads every config, validates the arms, checks the API keys, pings each
@@ -157,8 +164,8 @@ means no client is ever constructed.
 
 ### OpenRouter for black-box UQ
 
-Copy [`configs/openrouter_black_box.yaml.example`](configs/openrouter_black_box.yaml.example)
-to a `.yaml` config, select an [OpenRouter model](https://openrouter.ai/models), and put
+Edit [`configs/openrouter_black_box.yaml`](configs/openrouter_black_box.yaml), select an
+[OpenRouter model](https://openrouter.ai/models), and put
 `OPENROUTER_API_KEY=...` in `.env`. `backend: openrouter` selects
 `https://openrouter.ai/api/v1` and that key name automatically; both can still be
 overridden for a proxy.
@@ -179,7 +186,6 @@ Each cached OpenRouter record also keeps the returned model and opt-in router me
 for auditing.
 
 ```bash
-cp configs/openrouter_black_box.yaml.example configs/openrouter_black_box.yaml
 uv run python -m uq_pet.main --config configs/openrouter_black_box.yaml --limit 3 --dry-run
 ```
 
@@ -223,7 +229,7 @@ Modules are listed in dependency order. Every one is import-side-effect-free: im
 
 | Path | Purpose |
 | ---- | ------- |
-| `configs/` | YAML run definitions (`nhr_gemma.yaml` real, `smoke.yaml` cheap) |
+| `configs/` | YAML run definitions (`nhr_gemma4_1shot.yaml` primary, `smoke.yaml` cheap) |
 | `data/raw/` | downloaded PET jsonl (gitignored, never edited by hand) |
 | `data/processed/llm_scores/` | cached LLM samples, resumable and shared across runs (gitignored) |
 | `src/uq_pet/config.py` | tags, project paths, cache-identity constants, config dataclasses + YAML loader |
@@ -247,13 +253,13 @@ audit trail), `results.csv`, `summary.csv`, `per_type_f1.csv`, `metrics.json`,
 
 `figures/arm_f1.png` is the decision plot — a learning curve across budgets, or a bar
 chart when there is only one. The curve's error bars are +/-1 std over `train_seeds`,
-and its budgets are evenly spaced categories rather than points on a linear axis.
+and its budgets use their true percentage spacing on a linear axis.
 Compare `metrics.json`'s `by_budget[…].gap_vs_random` against those bars: if a gap is
 smaller than the seed-to-seed variation, there is no result yet, only noise — and if
 two arms' bars overlap at a budget, they are tied there. Add seeds before believing a
 small gap.
 
-Three caveats the numbers won't show you:
+Four caveats the numbers won't show you:
 
 - **The random baseline is a single draw.** All `train_seeds` share one selected set per
   (budget, arm) — the seeds vary training, not selection. So the error bars cover

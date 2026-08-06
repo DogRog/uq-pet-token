@@ -3,6 +3,7 @@ import json
 import pandas as pd
 import pytest
 
+import uq_pet.main as pipeline
 from uq_pet.config import ArmConfig, ExperimentConfig, load_config
 from uq_pet.main import build_parser, make_run_dir, stage_select, summarize
 
@@ -81,6 +82,25 @@ def test_make_run_dir_snapshot_round_trips(tmp_path):
 def test_make_run_dir_honours_run_name(tmp_path):
     run_dir = make_run_dir(ExperimentConfig(), tmp_path / "c.yaml", tmp_path, run_name="custom")
     assert run_dir.name.startswith("custom_")
+
+
+def test_make_run_dir_never_deletes_a_colliding_run(tmp_path, monkeypatch):
+    real_datetime = pipeline.datetime
+
+    class FixedDateTime:
+        @classmethod
+        def now(cls):
+            return real_datetime(2026, 8, 6, 12, 0, 0, 123456)
+
+    monkeypatch.setattr(pipeline, "datetime", FixedDateTime)
+    first = make_run_dir(ExperimentConfig(), tmp_path / "c.yaml", tmp_path)
+    marker = first / "keep-me"
+    marker.write_text("existing result")
+
+    with pytest.raises(FileExistsError):
+        make_run_dir(ExperimentConfig(), tmp_path / "c.yaml", tmp_path)
+
+    assert marker.read_text() == "existing result"
 
 
 # --- selection ----------------------------------------------------------------

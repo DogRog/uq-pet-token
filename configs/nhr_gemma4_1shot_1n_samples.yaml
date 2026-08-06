@@ -14,30 +14,10 @@ n_few_shot: 1
 few_shot_seed: 13
 
 llm:
-  model: RedHatAI/gemma-4-31B-it-FP8-block
-  base_url: https://hub.nhr.fau.de/api/llmgw/v1
-  api_key_env: NHR_FAU_API_KEY
   cache_prefix: nhr_gemma4
   # A single sample is a different sampling recipe, and the filename does not encode
   # the recipe — without this suffix these records land in the 10-sample config's
   # cache, where each run evicts the other's and re-scores the whole pool.
   cache_suffix: n1
   n_samples: 1
-  temperature: 1.0
-  seed: 0
-  max_tokens: 256
-  logprobs: true
   top_logprobs: 5
-  workers: 8
-  timeout: 120.0
-  max_retries: 5
-
-train:
-  checkpoint: distilbert-base-cased
-  epochs: 20
-  batch_size: 8
-  learning_rate: 5.0e-5
-  weight_decay: 0.01
-  warmup_fraction: 0.1
-  max_length: 256
-  eval_batch_size: 32
