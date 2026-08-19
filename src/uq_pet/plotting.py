@@ -180,8 +180,8 @@ def plot_learning_curve(results: pd.DataFrame, out_path: Path, show: bool = Fals
     for arm in arms:
         at_arm = stats.loc[arm].reindex(budgets)
         mean, std = at_arm["mean"].to_numpy(), at_arm["std"].to_numpy()
-        # The band is spread over training seeds, not over selections. Every seed trains
-        # on the same selected sentences, so this is training noise alone.
+        # Each model seed fits its own scorer and therefore may select different
+        # sentences; the band includes both selection and continuation-training noise.
         ax.fill_between(
             x, mean - std, mean + std, color=colors[arm], alpha=0.14, linewidth=0, zorder=2
         )

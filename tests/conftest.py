@@ -1,6 +1,8 @@
 """Shared offline fixtures."""
 
 import os
+import tempfile
+from pathlib import Path
 
 import pytest
 from typeguard import install_import_hook
@@ -8,6 +10,9 @@ from typeguard import install_import_hook
 install_import_hook("uq_pet")
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+os.environ.setdefault(
+    "HF_DATASETS_CACHE", str(Path(tempfile.gettempdir()) / "uq-pet-pytest-datasets")
+)
 
 
 @pytest.fixture

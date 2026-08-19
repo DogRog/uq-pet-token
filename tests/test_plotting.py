@@ -1,3 +1,6 @@
+import sys
+from types import ModuleType
+
 import pandas as pd
 
 from uq_pet.plotting import arm_colors, plot_results
@@ -72,7 +75,14 @@ def test_plot_learning_curve_survives_a_single_seed(tmp_path):
 
 def test_show_displays_standalone_figures_without_pyplot(monkeypatch, tmp_path):
     displayed = []
-    monkeypatch.setattr("IPython.display.display", displayed.append)
+    # IPython is an optional notebook dependency, not part of the default test
+    # environment. Supply only the import contract `_show_figure` needs.
+    ipython = ModuleType("IPython")
+    ipython_display = ModuleType("IPython.display")
+    ipython_display.display = displayed.append
+    ipython.display = ipython_display
+    monkeypatch.setitem(sys.modules, "IPython", ipython)
+    monkeypatch.setitem(sys.modules, "IPython.display", ipython_display)
 
     plot_results(make_results([0.6], [0.4]), tmp_path / "bars.png", show=True)
     plot_results(

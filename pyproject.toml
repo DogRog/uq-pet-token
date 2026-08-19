@@ -24,6 +24,7 @@ dev = [
     "typeguard>=4.6.0",
 ]
 notebook = [
+    "ipython>=9",
     "marimo>=0.23.16",
 ]
 
