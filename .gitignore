@@ -22,3 +22,6 @@ wheels/
 # Marimo
 __marimo__
 layouts/
+
+# Agents
+/.agents

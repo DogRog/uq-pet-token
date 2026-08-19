@@ -38,7 +38,7 @@ def _():
 def _(RESULTS_DIR, re):
     # Accept both legacy second-resolution run names and current microsecond names.
     _stamp = re.compile(r"_\d{8}_\d{6}(?:_\d{6})?$")
-    _needed = ("results.csv", "selection.json", "config.yaml")
+    _needed = ("results.csv", "per_type_f1.csv", "selection.json", "config.yaml")
 
     def available_runs():
         """Return the newest complete result directory for each config."""
@@ -104,6 +104,14 @@ def _(latest, pd):
     for _stem in _required:
         _frame = pd.read_csv(latest[_stem] / "results.csv")
         _frame["budget_pct"] = _frame["budget_pct"].astype(int)
+        _per_type = pd.read_csv(
+            latest[_stem] / "per_type_f1.csv", header=[0, 1], index_col=0
+        ).dropna(how="all")
+        _macro_f1 = _per_type.mean(axis=0).rename("macro_entity_f1").reset_index()
+        _macro_f1["budget_pct"] = _macro_f1["budget_pct"].astype(float).astype(int)
+        _frame = _frame.merge(
+            _macro_f1, on=["budget_pct", "arm"], validate="many_to_one"
+        )
         run_frames[_stem] = _frame
 
     shared_budgets = sorted(
@@ -113,11 +121,28 @@ def _(latest, pd):
 
 
 @app.cell
-def _(FACTOR_RUNS, UQ_ARMS, pd, run_frames):
+def _(mo):
+    score = mo.ui.dropdown(
+        options={
+            "Micro entity F1": "entity_f1",
+            "Macro entity F1": "macro_entity_f1",
+        },
+        value="Macro entity F1",
+        label="Score",
+    )
+    return (score,)
+
+
+@app.cell
+def _(FACTOR_RUNS, UQ_ARMS, pd, run_frames, score):
+    score_label = {
+        "entity_f1": "Micro entity F1",
+        "macro_entity_f1": "Macro entity F1",
+    }[score.value]
     _rows = []
     for _factor, _settings in FACTOR_RUNS.items():
         for _setting, _stem in _settings.items():
-            _means = run_frames[_stem].groupby(["budget_pct", "arm"])["entity_f1"].mean()
+            _means = run_frames[_stem].groupby(["budget_pct", "arm"])[score.value].mean()
             for _budget in _means.index.get_level_values("budget_pct").unique():
                 _at_budget = _means.loc[_budget]
                 _random_f1 = float(_at_budget["random"])
@@ -138,7 +163,7 @@ def _(FACTOR_RUNS, UQ_ARMS, pd, run_frames):
                 )
 
     effects = pd.DataFrame(_rows)
-    return (effects,)
+    return effects, score_label
 
 
 @app.cell
@@ -154,19 +179,15 @@ def _(mo, shared_budgets):
 
 
 @app.cell(hide_code=True)
-def _(budget, mo):
+def _(budget, mo, score):
     mo.vstack(
         [
             mo.md(
                 r"""
-                # What changes uncertainty sampling?
-
-                PET process-extraction NER · entity-level micro F1 · means over training seeds
-
-                **UQ lift = mean F1 of uncertainty-selected arms − random-selection F1.**
-                Positive values favor uncertainty sampling within the same run.
+                What changes uncertainty sampling?
                 """
             ),
+            score,
             budget,
         ]
     )
@@ -180,7 +201,7 @@ def _(budget, effects):
 
 
 @app.cell(hide_code=True)
-def _(Figure, budget, mo, selected_effects):
+def _(Figure, budget, mo, score_label, selected_effects):
     _fig = Figure(figsize=(10.5, 7.4), layout="constrained")
     _axes = _fig.subplots(3, 2)
 
@@ -196,12 +217,14 @@ def _(Figure, budget, mo, selected_effects):
             _ax.plot([0, _value], [_position, _position], color="#cbc9c2", linewidth=1.2)
         _ax.set_yticks(list(_positions), _group["setting"], fontsize=8)
         _ax.set_title(_factor, loc="left", fontsize=11, fontweight="semibold")
-        _ax.set_xlabel("mean UQ lift (Δ F1)")
+        _ax.set_xlabel(f"mean UQ lift (Δ {score_label})")
         _ax.grid(axis="x", color="#e8e7e2", linewidth=0.7)
         _ax.spines[["top", "right", "left"]].set_visible(False)
 
     _fig.delaxes(_axes.flat[-1])
-    _fig.suptitle(f"Observed effects at a {budget.value}% budget", fontsize=13)
+    _fig.suptitle(
+        f"Observed effects at a {budget.value}% budget · {score_label}", fontsize=13
+    )
     mo.as_html(_fig)
     return
 
@@ -277,8 +300,6 @@ def _(early_epoch_range, mo, takeaways):
             f"{early_epoch_range[0]}–{early_epoch_range[2]} "
             f"(median {early_epoch_range[1]:.0f})."
         )
-        + "\n\nThe early-stopping run holds out 20% of each selected set, so compare its "
-        "within-run UQ lift; its raw F1 is not a like-for-like fixed-epoch comparison."
     ).callout(kind="neutral")
     return
 
@@ -361,40 +382,32 @@ def _(
 
 
 @app.cell
-def _(length_selection, run_frames):
+def _(length_selection, run_frames, score):
     _performance = (
         run_frames["nhr_gemma4_1shot"]
-        .groupby(["budget_pct", "arm"], as_index=False)["entity_f1"]
+        .groupby(["budget_pct", "arm"], as_index=False)[score.value]
         .mean()
     )
-    _random = _performance[_performance["arm"] == "random"][["budget_pct", "entity_f1"]]
-    _random = _random.rename(columns={"entity_f1": "random_f1"})
+    _random = _performance[_performance["arm"] == "random"][["budget_pct", score.value]]
+    _random = _random.rename(columns={score.value: "random_f1"})
     length_performance = length_selection.merge(_performance, on=["budget_pct", "arm"])
     length_performance = length_performance.merge(_random, on="budget_pct")
-    length_performance["f1_gap"] = length_performance["entity_f1"] - length_performance["random_f1"]
+    length_performance["f1_gap"] = (
+        length_performance[score.value] - length_performance["random_f1"]
+    )
     return (length_performance,)
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.vstack(
-        [
-            mo.md(
-                r"""
+    mo.md(r"""
     ## Sentence length
-
-    A sentence budget can hide a token budget. The left panel shows which arms select
-    longer sentences; the right checks whether that extra length tracks F1 lift in the
-    primary Gemma 4 experiment. The dedicated `length` arm is a control, not UQ.
-    """
-            )
-        ]
-    )
+    """)
     return
 
 
 @app.cell(hide_code=True)
-def _(Figure, budget, length_performance, mo, pool_lengths):
+def _(Figure, budget, length_performance, mo, pool_lengths, score_label):
     _arm_labels = {
         "random": "random",
         "avg_neg_logprob_filtered": "avg NLP",
@@ -444,10 +457,15 @@ def _(Figure, budget, length_performance, mo, pool_lengths):
             fontsize=7,
         )
     _effect_ax.set_xlabel("selected tokens per sentence (mean)")
-    _effect_ax.set_ylabel("Δ F1 vs random")
+    _effect_ax.set_ylabel(f"Δ {score_label} vs random")
     _effect_ax.set_title("Length versus downstream lift", loc="left", fontweight="semibold")
     _effect_ax.grid(color="#e8e7e2", linewidth=0.7)
     _effect_ax.spines[["top", "right"]].set_visible(False)
+    _fig.suptitle(
+        f"Score: {score_label} · Budget: {budget.value}% of pool sentences",
+        fontsize=12,
+        fontweight="semibold",
+    )
     mo.as_html(_fig)
     return
 
@@ -485,19 +503,9 @@ def _(budget, length_summary, mo):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.vstack(
-        [
-            mo.md(
-                r"""
+    mo.md(r"""
     ## BIO-tag distribution
-
-    The pool chart shows gold-token prevalence. The heatmap shows how each selected set
-    moves that distribution in percentage points. All arms receive the same number of
-    sentences, but not necessarily the same number or mix of tokens.
-    """
-            )
-        ]
-    )
+    """)
     return
 
 

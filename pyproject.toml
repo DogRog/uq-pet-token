@@ -10,6 +10,7 @@ dependencies = [
     "numpy>=1.26",
     "openai>=2.44.0",
     "pandas>=3.0.3",
+    "pydantic-ai>=2.8.0",
     "python-dotenv>=1.0",
     "pyyaml>=6.0",
     "seqeval>=1.2.2",
@@ -20,6 +21,8 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "mcp>=1",
+    "pydantic>=2",
     "pytest>=8.0",
     "ruff>=0.14",
     "typeguard>=4.6.0",
