@@ -172,7 +172,7 @@ def plot_learning_curve(results: pd.DataFrame, out_path: Path, show: bool = Fals
     # has to sit somewhere, and wherever that is, a run with enough arms eventually draws
     # a line through it — arms fan out at the smallest budget, which is exactly where an
     # "upper left" legend lives. The panel is sized from the longest arm name so a config
-    # with `confident:avg_neg_logprob_filtered` in it doesn't get its labels clipped.
+    # with `confident:mean_token_entropy` in it doesn't get its labels clipped.
     legend_width = 0.55 + 0.058 * max(len(arm) for arm in arms)
     fig = Figure(figsize=(7.6 + legend_width, 4.9), facecolor=SURFACE)
     ax, legend_ax = fig.subplots(1, 2, gridspec_kw={"width_ratios": [7.6, legend_width]})

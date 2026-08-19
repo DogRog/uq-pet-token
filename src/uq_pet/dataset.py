@@ -1,4 +1,4 @@
-"""PET NER dataset download, loading, and few-shot/pool/test splitting."""
+"""PET NER dataset download, loading, and seed/pool/test splitting."""
 
 import urllib.request
 from pathlib import Path
@@ -6,12 +6,12 @@ from pathlib import Path
 from datasets import ClassLabel, Dataset, Features, Sequence, Value, load_dataset
 
 from uq_pet.config import (
-    FEW_SHOT_SPLIT_SEED,
-    N_FEW_SHOT_EXAMPLES,
+    N_SEED_EXAMPLES,
     NER_DATASET_URL,
     NER_TAGS,
     RAW_DATASET_PATH,
     SEED,
+    SEED_SPLIT_SEED,
     TEST_SIZE,
 )
 
@@ -44,16 +44,16 @@ def load_pet_ner(path: Path = RAW_DATASET_PATH) -> Dataset:
 def split_dataset(
     seed: int = SEED,
     test_size: float = TEST_SIZE,
-    n_few_shot: int = N_FEW_SHOT_EXAMPLES,
-    few_shot_seed: int = FEW_SHOT_SPLIT_SEED,
+    n_seed: int = N_SEED_EXAMPLES,
+    seed_split_seed: int = SEED_SPLIT_SEED,
 ) -> tuple[Dataset, Dataset, Dataset]:
-    """Split PET into few-shot examples, experiment pool, and held-out test.
+    """Split PET into labelled seed examples, experiment pool, and held-out test.
 
-    Returns (few_shot, pool, test). The pool excludes the few-shot examples, so no
-    sentence ever appears in its own prompt. With the defaults: 5 / 328 / 84.
+    Returns (seed_set, pool, test). The seed set is the only labelled data available
+    before pool selection. With the defaults: 5 / 328 / 84.
     """
     outer = load_pet_ner().train_test_split(test_size=test_size, seed=seed)
-    inner = outer["train"].train_test_split(train_size=n_few_shot, shuffle=True, seed=few_shot_seed)
+    inner = outer["train"].train_test_split(train_size=n_seed, shuffle=True, seed=seed_split_seed)
     return inner["train"], inner["test"], outer["test"]
 
 

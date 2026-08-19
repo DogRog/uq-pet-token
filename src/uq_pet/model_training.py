@@ -134,22 +134,8 @@ def validation_loss(model, loader, device: torch.device) -> float:
     return total / batches if batches else float("nan")
 
 
-def train_token_classifier(
-    examples: list[dict],
-    seed: int,
-    cfg: TrainConfig,
-    device: torch.device | None = None,
-):
-    """Fine-tune on `examples` (dicts with 'tokens' and integer 'ner-tags').
-
-    Returns (model, tokenizer, info); the model is left on the training device in eval
-    mode. `info` records how long training actually ran — with a fixed epoch budget
-    that is just `cfg.epochs`, but under early stopping it is the evidence for whether
-    one fixed budget was ever the right one.
-    """
-    set_seed(seed)
-    device = device or get_device()
-
+def load_token_classifier(cfg: TrainConfig, device: torch.device):
+    """Load the configured encoder with a fresh PET classification head."""
     tokenizer = AutoTokenizer.from_pretrained(cfg.checkpoint)
     model = AutoModelForTokenClassification.from_pretrained(
         cfg.checkpoint,
@@ -157,6 +143,33 @@ def train_token_classifier(
         id2label=dict(enumerate(NER_TAGS)),
         label2id={tag: i for i, tag in enumerate(NER_TAGS)},
     ).to(device)
+    return model, tokenizer
+
+
+def copy_model_state(model) -> dict[str, torch.Tensor]:
+    """Independent CPU snapshot suitable for initializing every experiment cell."""
+    return {key: value.detach().to("cpu", copy=True) for key, value in model.state_dict().items()}
+
+
+def fit_token_classifier(
+    model,
+    tokenizer,
+    examples: list[dict],
+    seed: int,
+    cfg: TrainConfig,
+    device: torch.device | None = None,
+    *,
+    epochs: int | None = None,
+    early_stopping: bool | None = None,
+):
+    """Fine-tune an existing token classifier and leave it in evaluation mode."""
+    set_seed(seed)
+    device = device or get_device()
+    epoch_budget = cfg.epochs if epochs is None else epochs
+    if epoch_budget < 0:
+        raise ValueError(f"epochs must be >= 0, got {epoch_budget}")
+    use_early_stopping = cfg.early_stopping if early_stopping is None else early_stopping
+    use_early_stopping = bool(use_early_stopping and cfg.early_stopping)
 
     def collate(batch):
         return encode_batch(
@@ -168,10 +181,10 @@ def train_token_classifier(
 
     fit_examples, val_examples = (
         split_off_validation(examples, cfg.val_fraction, seed)
-        if cfg.early_stopping
+        if use_early_stopping
         else (list(examples), [])
     )
-    if cfg.early_stopping and not val_examples:
+    if use_early_stopping and not val_examples:
         # A 3-sentence budget cannot spare a validation sentence. Say so rather than
         # reporting an early-stopping run that quietly used the fixed schedule.
         logger.warning(
@@ -179,7 +192,21 @@ def train_token_classifier(
             "%d epochs without early stopping",
             cfg.val_fraction,
             len(examples),
-            cfg.epochs,
+            epoch_budget,
+        )
+
+    if epoch_budget == 0:
+        model.eval()
+        return (
+            model,
+            tokenizer,
+            {
+                "n_fit": len(fit_examples),
+                "n_val": len(val_examples),
+                "epochs_run": 0,
+                "best_epoch": None,
+                "best_val_loss": None,
+            },
         )
 
     loader = DataLoader(
@@ -205,7 +232,7 @@ def train_token_classifier(
     )
     # The schedule spans the full budget even when early stopping cuts it short: the
     # decay a step sees must not depend on when training happens to end.
-    total_steps = len(loader) * cfg.epochs
+    total_steps = len(loader) * epoch_budget
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
         num_warmup_steps=int(cfg.warmup_fraction * total_steps),
@@ -216,7 +243,7 @@ def train_token_classifier(
     epochs_run = 0
 
     model.train()
-    for epoch in range(1, cfg.epochs + 1):
+    for epoch in range(1, epoch_budget + 1):
         for encoding, labels in loader:
             encoding = {k: v.to(device) for k, v in encoding.items()}
             outputs = model(**encoding, labels=labels.to(device))
@@ -234,7 +261,7 @@ def train_token_classifier(
             best_loss, best_epoch, since_best = loss, epoch, 0
             # On CPU: the restore below has to survive whatever the next epochs do to
             # the live weights, and a device-side copy per improvement is wasteful.
-            best_state = {k: v.detach().to("cpu", copy=True) for k, v in model.state_dict().items()}
+            best_state = copy_model_state(model)
         else:
             since_best += 1
             if since_best >= cfg.early_stopping_patience:
@@ -254,6 +281,31 @@ def train_token_classifier(
         "best_val_loss": round(best_loss, 4) if best_epoch is not None else None,
     }
     return model, tokenizer, info
+
+
+def train_token_classifier(
+    examples: list[dict],
+    seed: int,
+    cfg: TrainConfig,
+    device: torch.device | None = None,
+    *,
+    epochs: int | None = None,
+    early_stopping: bool | None = None,
+):
+    """Load and fine-tune a fresh token classifier on ``examples``."""
+    set_seed(seed)
+    device = device or get_device()
+    model, tokenizer = load_token_classifier(cfg, device)
+    return fit_token_classifier(
+        model,
+        tokenizer,
+        examples,
+        seed,
+        cfg,
+        device,
+        epochs=epochs,
+        early_stopping=early_stopping,
+    )
 
 
 @torch.no_grad()
@@ -341,9 +393,23 @@ def train_and_evaluate(
     seed: int,
     cfg: TrainConfig,
     device: torch.device | None = None,
+    *,
+    initial_state: dict[str, torch.Tensor] | None = None,
 ) -> dict:
-    """One (arm, seed) cell: fine-tune, score on the held-out split, free the model."""
-    model, tokenizer, info = train_token_classifier(train_examples, seed, cfg, device=device)
+    """Continue one independent cell, evaluate it, and release its model.
+
+    When ``initial_state`` is supplied, every cell begins with the same seed-trained
+    parameters rather than a fresh pretrained checkpoint.
+    """
+    device = device or get_device()
+    if initial_state is None:
+        model, tokenizer, info = train_token_classifier(train_examples, seed, cfg, device=device)
+    else:
+        model, tokenizer = load_token_classifier(cfg, device)
+        model.load_state_dict(initial_state)
+        model, tokenizer, info = fit_token_classifier(
+            model, tokenizer, train_examples, seed, cfg, device
+        )
     try:
         metrics = evaluate_model_on(
             model,

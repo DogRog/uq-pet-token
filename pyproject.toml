@@ -1,21 +1,17 @@
 [project]
 name = "uq-pet"
 version = "0.1.0"
-description = "Compare uncertainty-based and random training-data selection on PET NER"
+description = "Compare BERT uncertainty and random training-data selection on PET NER"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "datasets==2.19.2",
     "matplotlib>=3.11.0",
     "numpy>=1.26",
-    "openai>=2.44.0",
     "pandas>=3.0.3",
-    "pydantic-ai>=2.8.0",
-    "python-dotenv>=1.0",
     "pyyaml>=6.0",
     "seqeval>=1.2.2",
     "torch>=2.12.1",
-    "tqdm>=4.66",
     "transformers>=5.12.1",
 ]
 

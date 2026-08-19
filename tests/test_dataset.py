@@ -45,28 +45,27 @@ def test_to_examples_returns_json_serializable_python_types(sample_examples):
 
 @needs_raw_data
 def test_split_sizes_and_first_key():
-    """Canary for the idx-keyed LLM cache.
+    """Canary for direct comparison with the preserved llm-uq branch.
 
-    Cache records are keyed by position in `pool`. If a datasets upgrade or a change
-    to SEED/TEST_SIZE/N_FEW_SHOT_EXAMPLES reorders the split, every cached record
-    silently points at the wrong sentence — this test fails first.
+    A datasets upgrade or split-constant change would make the two experiment branches
+    train on different sentences.
     """
-    few_shot, pool, test = split_dataset()
-    assert (len(few_shot), len(pool), len(test)) == (5, 328, 84)
+    seed_set, pool, test = split_dataset()
+    assert (len(seed_set), len(pool), len(test)) == (5, 328, 84)
     assert sentence_key(to_examples(pool)[0]) == "doc-1.1::9"
 
 
 @needs_raw_data
-def test_n_few_shot_moves_sentences_out_of_the_pool():
-    """The test split is untouched, so only the few-shot/pool boundary moves."""
-    few_shot, pool, test = split_dataset(n_few_shot=10)
-    assert (len(few_shot), len(pool), len(test)) == (10, 323, 84)
+def test_n_seed_moves_sentences_out_of_the_pool():
+    """The test split is untouched, so only the seed/pool boundary moves."""
+    seed_set, pool, test = split_dataset(n_seed=10)
+    assert (len(seed_set), len(pool), len(test)) == (10, 323, 84)
 
 
 @needs_raw_data
-def test_few_shot_seed_changes_which_sentences_are_held_out():
+def test_seed_split_seed_changes_which_sentences_are_held_out():
     default, _, _ = split_dataset()
-    other, other_pool, _ = split_dataset(few_shot_seed=7)
+    other, other_pool, _ = split_dataset(seed_split_seed=7)
 
     default_keys = {sentence_key(e) for e in to_examples(default)}
     other_keys = {sentence_key(e) for e in to_examples(other)}
@@ -79,7 +78,7 @@ def test_few_shot_seed_changes_which_sentences_are_held_out():
 
 @needs_raw_data
 def test_split_is_deterministic_and_disjoint():
-    few_shot, pool, test = split_dataset()
+    seed_set, pool, test = split_dataset()
     again = split_dataset()
     assert [sentence_key(e) for e in to_examples(pool)] == [
         sentence_key(e) for e in to_examples(again[1])
@@ -87,8 +86,8 @@ def test_split_is_deterministic_and_disjoint():
 
     keys = {
         name: {sentence_key(e) for e in to_examples(ds)}
-        for name, ds in (("few_shot", few_shot), ("pool", pool), ("test", test))
+        for name, ds in (("seed", seed_set), ("pool", pool), ("test", test))
     }
-    assert not keys["few_shot"] & keys["pool"]
+    assert not keys["seed"] & keys["pool"]
     assert not keys["pool"] & keys["test"]
-    assert not keys["few_shot"] & keys["test"]
+    assert not keys["seed"] & keys["test"]

@@ -2,14 +2,14 @@ import pandas as pd
 
 from uq_pet.plotting import arm_colors, plot_results
 
-ANLP = "avg_neg_logprob_filtered"
-PURE = "avg_neg_logprob_pure"
+ENTROPY = "mean_token_entropy"
+MARGIN = "margin"
 
 
 def make_results(uncertainty_f1, random_f1, budget: float = 10.0) -> pd.DataFrame:
     """Only the columns the figures read: one row per (arm, seed) at one budget."""
     rows = []
-    for arm, scores in ((ANLP, uncertainty_f1), ("random", random_f1)):
+    for arm, scores in ((ENTROPY, uncertainty_f1), ("random", random_f1)):
         for seed, f1 in enumerate(scores):
             rows.append(
                 {
@@ -27,16 +27,16 @@ def make_results(uncertainty_f1, random_f1, budget: float = 10.0) -> pd.DataFram
 
 
 def test_arm_colors_pin_random_and_are_distinct():
-    colors = arm_colors(["random", ANLP, PURE])
+    colors = arm_colors(["random", ENTROPY, MARGIN])
     assert colors["random"] == "#1f77b4"
     assert len(set(colors.values())) == 3
 
 
 def test_arm_colors_follow_the_arm_not_its_position():
     """Dropping an arm must not repaint the survivors."""
-    full = arm_colors(["random", ANLP, PURE])
-    fewer = arm_colors(["random", ANLP])
-    assert fewer[ANLP] == full[ANLP]
+    full = arm_colors(["random", ENTROPY, MARGIN])
+    fewer = arm_colors(["random", ENTROPY])
+    assert fewer[ENTROPY] == full[ENTROPY]
 
 
 # --- figures ------------------------------------------------------------------

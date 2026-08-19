@@ -1,0 +1,28 @@
+# Primary seed-trained BERT uncertainty experiment.
+budget_pct: [5, 10, 25]
+arms:
+  - random
+  - mean_token_entropy
+  - max_token_entropy
+  - least_confident
+  - margin
+  - length
+  - strategy: confident
+    metric: mean_token_entropy
+model_seeds: [0, 1, 2, 3, 4]
+n_seed: 5
+seed_split_seed: 42
+
+uq:
+  bootstrap_epochs: 20
+  score_batch_size: 32
+
+train:
+  checkpoint: distilbert-base-cased
+  epochs: 20
+  batch_size: 8
+  learning_rate: 5.0e-5
+  weight_decay: 0.01
+  warmup_fraction: 0.1
+  max_length: 256
+  eval_batch_size: 32

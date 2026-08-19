@@ -9,8 +9,10 @@ import torch
 from uq_pet.config import TrainConfig
 from uq_pet.model_training import (
     configure_hf_logging,
+    copy_model_state,
     encode_batch,
     evaluate,
+    fit_token_classifier,
     get_device,
     set_seed,
     split_off_validation,
@@ -126,6 +128,33 @@ def test_configure_hf_logging_is_idempotent():
     configure_hf_logging(quiet=True)
     configure_hf_logging(quiet=False)
     configure_hf_logging(quiet=True)  # leave the suite quiet
+
+
+def test_copy_model_state_is_independent_cpu_storage():
+    model = torch.nn.Linear(2, 2)
+    snapshot = copy_model_state(model)
+    original = snapshot["weight"].clone()
+    with torch.no_grad():
+        model.weight.add_(10)
+    assert snapshot["weight"].device.type == "cpu"
+    assert torch.equal(snapshot["weight"], original)
+
+
+def test_zero_epoch_fit_leaves_an_explicit_untrained_ablation():
+    model = torch.nn.Linear(2, 2)
+    before = copy_model_state(model)
+    returned, _tokenizer, info = fit_token_classifier(
+        model,
+        object(),
+        _examples(2),
+        seed=0,
+        cfg=TrainConfig(epochs=1),
+        device=torch.device("cpu"),
+        epochs=0,
+        early_stopping=False,
+    )
+    assert info["epochs_run"] == 0
+    assert all(torch.equal(before[key], value) for key, value in returned.state_dict().items())
 
 
 # --- the validation split for early stopping ----------------------------------

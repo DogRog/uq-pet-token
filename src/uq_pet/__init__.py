@@ -1,1 +1,1 @@
-"""Uncertainty-based training-data selection experiments on the PET NER dataset."""
+"""Seed-trained BERT uncertainty experiments on the PET NER dataset."""
