@@ -1,15 +1,15 @@
 [project]
 name = "uq-pet"
 version = "0.1.0"
-description = "Compare BERT uncertainty and random training-data selection on PET NER"
+description = "Compare uncertainty and random token acquisition for online PET NER training"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "altair>=5.5.0",
     "datasets==2.19.2",
-    "matplotlib>=3.11.0",
+    "marimo>=0.23.16",
     "numpy>=1.26",
-    "pandas>=3.0.3",
-    "pyyaml>=6.0",
+    "polars>=1.0",
     "seqeval>=1.2.2",
     "torch>=2.12.1",
     "transformers>=5.12.1",
@@ -17,15 +17,8 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "mcp>=1",
-    "pydantic>=2",
     "pytest>=8.0",
     "ruff>=0.14",
-    "typeguard>=4.6.0",
-]
-notebook = [
-    "ipython>=9",
-    "marimo>=0.23.16",
 ]
 
 [build-system]
@@ -37,7 +30,7 @@ packages = ["src/uq_pet"]
 
 [tool.ruff]
 line-length = 100
-src = ["src", "tests"]
+src = ["src", "tests", "notebooks"]
 
 [tool.ruff.format]
 # Pinned to today's defaults so `ruff format` can't restyle the tree on a ruff upgrade.
@@ -67,12 +60,8 @@ ignore = [
 convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-# Notebooks legitimately import mid-cell and rely on names from earlier cells.
-"notebooks/*.ipynb" = ["E402", "F821", "I001"]
+# A marimo cell renders its final expression; Ruff sees that expression as unused.
+"notebooks/*.py" = ["B018"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-m 'not slow'"
-markers = [
-    "slow: needs model weights or a network fetch",
-]

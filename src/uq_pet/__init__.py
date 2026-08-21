@@ -1,1 +1,1 @@
-"""Seed-trained BERT uncertainty experiments on the PET NER dataset."""
+"""Token-level online active learning on the PET NER dataset."""

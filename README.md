@@ -1,161 +1,99 @@
-# uq-pet: BERT uncertainty
+# uq-pet: token-level active learning
 
-Does uncertainty from the same token-classification model that will be trained provide
-a better PET NER training set than random selection?
+Does a PET token classifier learn faster when each online update uses its most
+uncertain unlabelled words instead of the same number of random words?
 
-The earlier LLM-scored experiment is preserved on the `llm-uq` branch. This branch,
-`bert-uq`, uses a seed-trained BERT-family model for both grading and training.
+This branch, `bert-token-uq`, implements the experiment as a small marimo workflow.
+The earlier sentence-level BERT experiment remains on `bert-uq`.
 
-## Experiment design
+## Protocol
 
-```text
-PET NER dataset (417 sentences)
-├── 5 labelled seed sentences
-│     └── fit one PET token classifier per model seed
-├── 328 experiment-pool sentences
-│     └── seed-trained classifier -> word probabilities -> sentence uncertainty
-│           ├── top N% by uncertainty
-│           ├── most-confident / length controls
-│           └── random N%
-│
-│     For every arm and budget:
-│       clone the same seed-trained weights
-│       -> continue training on seed + selected sentences
-└── 84 held-out test sentences -> entity-level NER evaluation only
-```
+The stable PET split remains 5 labelled seed sentences, 328 pool sentences, and 84
+held-out test sentences. For every model seed:
 
-The central invariant is that grading and training share not just a checkpoint name,
-but the exact fitted parameter state. For one model seed, the seed set is trained once;
-every arm and budget starts from an independent clone of that state. The pool's gold
-labels are not read during scoring, and the test split is used only for evaluation.
+1. Fine-tune a fresh 15-tag token classifier on the five seed sentences.
+2. Clone the exact fitted weights and optimizer state into uncertainty and random arms.
+3. Evaluate both arms before acquisition (round 0).
+4. At each round, acquire `K` previously unseen pool words:
+   - uncertainty selects the largest score from the configured UQ metric;
+   - random draws uniformly from its remaining word pool.
+5. Reveal only the selected labels.
+6. Continue each arm from its current weights and optimizer state using the new
+   token-centred items plus limited replay.
+7. Evaluate on the held-out test set and repeat.
 
-Selection depends on the model seed, so the grid is:
+The full sentence remains model input, but each online training item labels exactly
+one word. Only its first subword contributes to loss; every other position is `-100`.
+By default, each round replays up to `K` older labelled tokens, including seed tokens.
 
-```text
-model_seeds x budgets x arms
-```
+The notebook exposes three token-level UQ metrics, all using the first subword's class
+probabilities and all ranked with larger values meaning more uncertain:
 
-The reported spread therefore includes both seed-dependent selection and continuation
-training, rather than training noise alone.
+- `entropy`: normalized predictive entropy.
+- `least_confidence`: one minus the largest class probability.
+- `margin`: one minus the gap between the two largest class probabilities.
 
-## Uncertainty arms
-
-All scores are sentence-level and increase with uncertainty:
-
-- `mean_token_entropy`: mean normalized predictive entropy over words.
-- `max_token_entropy`: entropy of the least-certain word.
-- `least_confident`: mean `1 - max(class probability)` over words.
-- `margin`: mean inverse gap between the two most likely tag classes.
-- `confident`: reverse another metric, defaulting to `mean_token_entropy`.
-- `length`: sentence-length control.
-- `random`: uniform random-selection control. Unless its `seed` parameter is explicit,
-  it follows the model seed.
-
-Only the first subword represents each word, matching training-label alignment. Padding
-and special tokens never enter uncertainty. Truncated word counts are recorded in
-`metrics.json`.
-
-## Seed training and the untrained ablation
-
-`uq.bootstrap_epochs` controls how long the PET classifier is fitted on the labelled
-seed set before it scores the pool. The default is 20. Setting it to zero is supported
-as an explicit untrained-head ablation:
-
-```yaml
-uq:
-  bootstrap_epochs: 0
-```
-
-That run is technically valid, but its entropy primarily describes the randomly
-initialized PET classification head rather than learned PET NER uncertainty.
-
-The default five seed sentences contain 11 of the 15 BIO tags. They omit `I-Activity`,
-`I-XOR Gateway`, `B-AND Gateway`, and `I-AND Gateway`. The split is retained so results
-remain directly comparable with `llm-uq`; seed-size experiments should report label
-coverage as a limitation.
-
-## Running
+## Run it
 
 ```bash
 uv sync
+uv run marimo edit notebooks/bert_token_uq.py
+```
+
+Choose the settings and press **Run experiment**. A completed run writes:
+
+```text
+results/bert_token_uq_<timestamp>/
+├── config.json
+├── results.csv
+└── selections.json
+```
+
+The entity F1 and token-accuracy charts appear after bootstrap evaluation and update
+live after both arms finish every round. The notebook also shows selected label counts,
+the run description, paired gap against random, and the token-level selection log.
+
+For a read-only presentation view, use:
+
+```bash
+uv run marimo run notebooks/bert_token_uq.py
+```
+
+The first real run downloads `distilbert-base-cased` if it is not already cached. It
+does not require an API key.
+
+## Checks
+
+```bash
 uv run pytest
-uv run ruff check .
-uv run ruff format --check .
-
-# One seed, one bootstrap epoch, one continuation epoch.
-uv run python -m uq_pet.main --config configs/smoke.yaml
-
-# Primary experiment.
-uv run python -m uq_pet.main --config configs/bert_uq.yaml
-
-# Validate the unattended sweep without running it.
-DRY_RUN=1 scripts/run_all.sh
-scripts/run_all.sh
+uv run ruff check src tests notebooks
+uv run ruff format --check src tests notebooks
+uv run marimo check notebooks/bert_token_uq.py
+uv run notebooks/bert_token_uq.py
 ```
 
-The first run downloads `train.checkpoint` if it is not already in the Hugging Face
-cache. There are no LLM requests, API keys, prompts, or generation caches.
+Running the notebook as a plain script uses small synthetic display data. It validates
+the reactive notebook without downloading weights or starting an experiment.
 
-`--dry-run` still fits the seed model and scores the pool, then prints selections and
-stops before continuation training. `scripts/run_all.sh`'s `DRY_RUN=1` is cheaper: it
-only validates configs and arms.
+## Scientific invariants
 
-## Configuration
-
-```yaml
-budget_pct: [5, 10, 25]
-arms:
-  - random
-  - mean_token_entropy
-  - max_token_entropy
-  - strategy: confident
-    metric: mean_token_entropy
-model_seeds: [0, 1, 2]
-n_seed: 5
-seed_split_seed: 42
-
-uq:
-  bootstrap_epochs: 20
-  score_batch_size: 32
-
-train:
-  checkpoint: distilbert-base-cased
-  epochs: 20
-  batch_size: 8
-  learning_rate: 5.0e-5
-  max_length: 256
-```
-
-There is intentionally only one checkpoint field. Both the uncertainty scorer and all
-continuation models read `train.checkpoint`.
-
-## Outputs
-
-Each run writes a new timestamped directory under `results/` containing:
-
-- `config.yaml`: fully resolved configuration.
-- `selection.json`: selected sentence keys by model seed, budget, and arm.
-- `results.csv`: one evaluation row per model seed, budget, and arm, including
-  `n_seed`, `n_selected`, and `n_train`.
-- `summary.csv`, `per_type_f1.csv`, and `metrics.json`.
-- `figures/arm_f1.png` and `run.log`.
-
-Entity-level micro F1 is the primary result. `gap_vs_random` in `metrics.json` compares
-each arm's mean across model seeds with random at the same budget.
+- The test set is evaluation-only.
+- Pool inputs passed to uncertainty scoring contain no labels.
+- A label is read from the private pool lookup only after its word is selected.
+- Acquisition is without replacement and counts newly labelled words.
+- First subwords are used consistently for scoring, online loss, and evaluation.
+- Continuation subwords, padding, and special tokens are ignored.
+- Truncated pool words are not selectable; truncated test words are an error.
+- Both arms begin from the same fitted state and receive the same update budget.
+- The uncertainty and random arms keep separate weights and optimizer histories.
+- Selection and replay use deterministic local random generators.
 
 ## Layout
 
 | Path | Purpose |
 | --- | --- |
-| `src/uq_pet/config.py` | experiment, UQ, and training configuration |
-| `src/uq_pet/dataset.py` | PET loading and seed/pool/test split |
-| `src/uq_pet/model_training.py` | load, seed-fit, clone, continue, and evaluate models |
-| `src/uq_pet/bert_uq.py` | word-level predictive probability records |
-| `src/uq_pet/uncertainty.py` | BERT UQ metrics, controls, ranking, and selection |
-| `src/uq_pet/plotting.py` | result figures |
-| `src/uq_pet/main.py` | end-to-end CLI pipeline |
-| `configs/` | primary and smoke experiment definitions |
-| `tests/` | offline unit tests plus opt-in slow model tests |
-
-Every package module remains import-side-effect-free. Network access and model loading
-happen only after entering `main()` or explicitly calling a training function.
+| `src/uq_pet/pet_data.py` | PET identity, download, stable split, and private label lookup |
+| `src/uq_pet/token_model.py` | masking, training, UQ metrics, inference, and evaluation |
+| `src/uq_pet/active_learning.py` | acquisition rounds, replay, orchestration, and outputs |
+| `notebooks/bert_token_uq.py` | controls, experiment run, tables, and plots |
+| `tests/test_token_uq.py` | focused offline invariant tests |
