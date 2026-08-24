@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from seqeval.metrics import f1_score, precision_score, recall_score
 from torch.utils.data import DataLoader
-from transformers import AutoModelForTokenClassification, AutoTokenizer
+from transformers import AutoConfig, AutoModelForTokenClassification, AutoTokenizer
 
 from uq_pet.pet_data import NER_TAGS, TokenKey
 
@@ -102,7 +102,16 @@ def train_items(
 
 
 def load_token_classifier(checkpoint: str, device: torch.device):
-    tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+    config = AutoConfig.from_pretrained(checkpoint)
+    tokenizer_kwargs = {"use_fast": True}
+    if config.model_type in {"roberta", "xlm-roberta"}:
+        tokenizer_kwargs["add_prefix_space"] = True
+    tokenizer = AutoTokenizer.from_pretrained(checkpoint, **tokenizer_kwargs)
+    if not tokenizer.is_fast:
+        raise ValueError(
+            f"checkpoint {checkpoint!r} did not provide a fast tokenizer; "
+            "word-to-subword alignment requires one"
+        )
     model = AutoModelForTokenClassification.from_pretrained(
         checkpoint,
         num_labels=len(NER_TAGS),

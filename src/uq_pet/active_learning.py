@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 import torch
+from rich.console import Console
 
 from uq_pet.pet_data import NER_TAGS, RESULTS_DIR, TokenKey
 from uq_pet.token_model import (
@@ -19,6 +20,8 @@ from uq_pet.token_model import (
     set_seed,
     train_items,
 )
+
+CONSOLE = Console()
 
 
 def full_sentence_items(examples: list[dict]) -> list[dict]:
@@ -125,7 +128,7 @@ def run_active_learning(
     selections: list[dict] = []
 
     for model_seed in model_seeds:
-        print(f"seed={model_seed}: bootstrap")
+        CONSOLE.rule(f"[bold cyan]Seed {model_seed} · bootstrap[/]")
         set_seed(model_seed)
         base_model, tokenizer = load_token_classifier(checkpoint, device)
         scoreable = scoreable_token_keys(
@@ -164,6 +167,11 @@ def run_active_learning(
         baseline["train_loss"] = bootstrap_loss
         baseline["n_new"] = 0
         baseline["n_replay"] = 0
+        CONSOLE.print(
+            "[bold green]baseline[/] "
+            f"[dim]entity F1[/] [bold]{baseline['entity_f1']:.4f}[/]  "
+            f"[dim]token accuracy[/] [bold]{baseline['token_accuracy']:.4f}[/]"
+        )
         for arm in ("uncertainty", "random"):
             results.append(_result_row(model_seed, arm, 0, 0, baseline))
         if progress_callback is not None:
@@ -267,9 +275,13 @@ def run_active_learning(
                             else None,
                         }
                     )
-                print(
-                    f"seed={model_seed} round={round_idx} arm={arm} "
-                    f"acquired={len(acquired[arm])} f1={metrics['entity_f1']:.4f}"
+                arm_style = "bold magenta" if arm == "uncertainty" else "bold blue"
+                CONSOLE.print(
+                    f"[{arm_style}]{arm:>11}[/]  "
+                    f"[dim]round[/] {round_idx:>2}/{rounds}  "
+                    f"[dim]acquired[/] {len(acquired[arm]):>4}  "
+                    f"[dim]entity F1[/] [bold]{metrics['entity_f1']:.4f}[/]  "
+                    f"[dim]loss[/] {metrics['train_loss']:.4f}"
                 )
             if progress_callback is not None:
                 progress_callback(list(results))

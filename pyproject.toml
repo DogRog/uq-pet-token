@@ -10,9 +10,15 @@ dependencies = [
     "marimo>=0.23.16",
     "numpy>=1.26",
     "polars>=1.0",
+    "pydantic>=2.12",
+    "python-dotenv>=1.2",
+    "rich>=14.3",
+    "sentencepiece>=0.2",
     "seqeval>=1.2.2",
     "torch>=2.12.1",
     "transformers>=5.12.1",
+    "wandb>=0.25",
+    "wigglystuff>=0.2.30",
 ]
 
 [dependency-groups]

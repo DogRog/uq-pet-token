@@ -17,6 +17,7 @@ wheels/
 
 /results/
 /data/
+/wandb/
 
 
 # Marimo
@@ -25,3 +26,4 @@ layouts/
 
 # Agents
 /.agents
+skills-lock.json

@@ -59,6 +59,77 @@ For a read-only presentation view, use:
 uv run marimo run notebooks/bert_token_uq.py
 ```
 
+## Batch runs
+
+The notebook uses one validated parameter model for its form and Rich-formatted CLI. With no CLI
+arguments it still runs the synthetic, no-download validation. Supplying any experiment
+argument starts a real run automatically:
+
+```bash
+uv run notebooks/bert_token_uq.py --help
+uv run notebooks/bert_token_uq.py \
+  --checkpoint microsoft/deberta-v3-base \
+  --model-seeds 0 \
+  --bootstrap-epochs 20 \
+  --update-passes 2 \
+  --learning-rate 0.00003 \
+  --batch-size 8
+```
+
+The local sweep launcher samples acquisition and training configurations and crosses each one with the
+requested checkpoints and model seeds. It is a dry run unless `--launch` is present:
+
+```bash
+# Four configurations × five checkpoints × five seeds = 100 printed commands.
+uv run scripts/bert_token_uq_grid.py
+
+# A small real smoke sweep: one configuration × two checkpoints × one seed.
+uv run scripts/bert_token_uq_grid.py \
+  --count 1 \
+  --checkpoints distilbert-base-cased,bert-base-cased \
+  --seeds 0 \
+  --launch
+```
+
+Launched sweeps write a manifest, per-run records, and `combined_results.csv` below
+`results/sweeps/`. Add `--wandb` to enable Weights & Biases for every job; it is off by
+default. Set `WANDB_API_KEY` in the environment or `.env`, and optionally choose a project:
+
+```bash
+uv run scripts/bert_token_uq_grid.py \
+  --count 1 \
+  --wandb \
+  --wandb-project uq-pet-token-uq \
+  --launch
+```
+
+For online W&B launches, the launcher checks `WANDB_API_KEY` before creating the sweep
+or starting its first job. `WANDB_MODE=offline` intentionally bypasses that key check.
+
+### Two workers on one CUDA GPU
+
+The parallel wrapper reproducibly splits the five checkpoints across two concurrent
+grid workers. Both workers use the same sampled configurations and model seeds, but
+their checkpoint sets do not overlap. It is also a dry run by default:
+
+```bash
+uv run scripts/parallel_bert_token_uq_grid.py
+```
+
+Launch both workers on CUDA device 0 with optional W&B tracking:
+
+```bash
+uv run scripts/parallel_bert_token_uq_grid.py \
+  --cuda-device 0 \
+  --launch \
+  --wandb
+```
+
+One launch directory under `results/parallel_launches/` records the exact commands,
+worker PIDs and statuses, separate logs, child sweep folders, and a combined results
+CSV. Each experiment already holds both active-learning arms in GPU memory, so monitor
+`nvidia-smi` and use the sequential launcher if two workers exceed GPU memory.
+
 The first real run downloads `distilbert-base-cased` if it is not already cached. It
 does not require an API key.
 
@@ -74,6 +145,28 @@ uv run notebooks/bert_token_uq.py
 
 Running the notebook as a plain script uses small synthetic display data. It validates
 the reactive notebook without downloading weights or starting an experiment.
+
+## Agent skills
+
+This project uses the [Vercel skills CLI](https://github.com/vercel-labs/skills) to
+install skills for Codex. The marimo skills come from
+[marimo-team/skills](https://github.com/marimo-team/skills):
+
+```bash
+npx skills add marimo-team/skills --agent codex
+```
+
+The installed files live under the ignored `.agents/skills/` directory, while
+`skills-lock.json` records their sources and hashes. Useful maintenance commands are:
+
+```bash
+npx skills list --agent codex
+npx skills update --project --yes
+npx skills add owner/repository --agent codex
+```
+
+Use `--list` on an `add` command to inspect a repository before installing it, or
+`--skill <name>` to select particular skills.
 
 ## Scientific invariants
 
@@ -96,4 +189,8 @@ the reactive notebook without downloading weights or starting an experiment.
 | `src/uq_pet/token_model.py` | masking, training, UQ metrics, inference, and evaluation |
 | `src/uq_pet/active_learning.py` | acquisition rounds, replay, orchestration, and outputs |
 | `notebooks/bert_token_uq.py` | controls, experiment run, tables, and plots |
+| `scripts/bert_token_uq_grid.py` | dry-run-first local sweep generation and execution |
+| `scripts/parallel_bert_token_uq_grid.py` | reproducible two-worker CUDA sweep wrapper |
 | `tests/test_token_uq.py` | focused offline invariant tests |
+| `tests/test_batch_grid.py` | deterministic sweep and aggregation tests |
+| `skills-lock.json` | project skill sources and content hashes |

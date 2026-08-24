@@ -14,6 +14,7 @@ from uq_pet.active_learning import (
 )
 from uq_pet.token_model import (
     encode_targets,
+    load_token_classifier,
     score_token_uncertainty,
     scoreable_token_keys,
     token_uncertainty,
@@ -138,6 +139,34 @@ def test_scoreable_keys_exclude_truncated_words():
     ]
     keys = scoreable_token_keys(FakeTokenizer(), pool_inputs, max_length=2, batch_size=1)
     assert keys == {(4, 0)}
+
+
+def test_roberta_loader_requests_fast_pretokenized_compatible_tokenizer(monkeypatch):
+    tokenizer_calls = []
+
+    class TinyModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.tensor(0.0))
+
+    monkeypatch.setattr(
+        "uq_pet.token_model.AutoConfig.from_pretrained",
+        lambda checkpoint: SimpleNamespace(model_type="roberta"),
+    )
+
+    def fake_tokenizer(checkpoint, **kwargs):
+        tokenizer_calls.append((checkpoint, kwargs))
+        return SimpleNamespace(is_fast=True)
+
+    monkeypatch.setattr("uq_pet.token_model.AutoTokenizer.from_pretrained", fake_tokenizer)
+    monkeypatch.setattr(
+        "uq_pet.token_model.AutoModelForTokenClassification.from_pretrained",
+        lambda *args, **kwargs: TinyModel(),
+    )
+
+    load_token_classifier("roberta-base", torch.device("cpu"))
+
+    assert tokenizer_calls == [("roberta-base", {"use_fast": True, "add_prefix_space": True})]
 
 
 def test_selection_is_exact_reproducible_and_without_replacement():
