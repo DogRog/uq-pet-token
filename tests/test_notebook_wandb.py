@@ -38,11 +38,12 @@ def result_row(arm, round_idx, accuracy):
 
 def test_wandb_evaluation_log_separates_arm_metrics_in_one_step():
     payload = make_wandb_evaluation_log(
-        [result_row("uncertainty", 1, 0.8), result_row("random", 1, 0.7)]
+        [result_row("uncertainty", 1, 0.8), result_row("random", 1, 0.7)],
+        "least_confidence",
     )
 
     assert payload["evaluation/round"] == 1
-    assert payload["evaluation/token_accuracy/uncertainty"] == 0.8
+    assert payload["evaluation/token_accuracy/least_confidence"] == 0.8
     assert payload["evaluation/token_accuracy/random"] == 0.7
     assert "evaluation/token_accuracy" not in payload
     assert "evaluation/arm" not in payload
@@ -50,19 +51,20 @@ def test_wandb_evaluation_log_separates_arm_metrics_in_one_step():
 
 def test_wandb_evaluation_log_rejects_a_half_finished_round():
     with pytest.raises(ValueError, match="exactly one row per arm"):
-        make_wandb_evaluation_log([result_row("uncertainty", 1, 0.8)])
+        make_wandb_evaluation_log([result_row("uncertainty", 1, 0.8)], "entropy")
 
 
 def test_wandb_metric_configuration_hides_bookkeeping_and_uses_acquisition_x_axis():
     calls = []
     configure_wandb_metrics(
-        SimpleNamespace(define_metric=lambda *args, **kwargs: calls.append((args, kwargs)))
+        SimpleNamespace(define_metric=lambda *args, **kwargs: calls.append((args, kwargs))),
+        "least_confidence",
     )
 
     assert (("evaluation/round",), {"hidden": True}) in calls
     assert (("evaluation/n_new/random",), {"hidden": True}) in calls
     assert (
-        ("evaluation/token_accuracy/uncertainty",),
+        ("evaluation/token_accuracy/least_confidence",),
         {"step_metric": "evaluation/percent_acquired"},
     ) in calls
 
@@ -76,16 +78,18 @@ def test_wandb_comparison_uses_one_html_panel_and_no_table_per_seed():
     chart_calls = []
     html_calls = []
 
-    def make_learning_chart(result_records, seed):
-        chart_calls.append((result_records, seed))
+    def make_learning_chart(result_records, seed, uq_metric):
+        chart_calls.append((result_records, seed, uq_metric))
         return SimpleNamespace(to_html=lambda: "<html>comparison</html>")
 
     def html(data, *, inject):
         html_calls.append((data, inject))
         return "html-media"
 
-    media = make_wandb_comparison_media(SimpleNamespace(Html=html), make_learning_chart, records)
+    media = make_wandb_comparison_media(
+        SimpleNamespace(Html=html), make_learning_chart, records, "least_confidence"
+    )
 
-    assert media == {"final_comparison/seed_0_learning_curves": "html-media"}
-    assert chart_calls == [(records, 0)]
+    assert media == {"final_comparison/seed_0_least_confidence_vs_random": "html-media"}
+    assert chart_calls == [(records, 0, "least_confidence")]
     assert html_calls == [("<html>comparison</html>", False)]

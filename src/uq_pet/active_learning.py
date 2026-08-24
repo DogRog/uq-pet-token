@@ -25,9 +25,12 @@ from uq_pet.token_model import (
 CONSOLE = Console()
 
 
-def _round_progress_table(round_results: dict[str, dict]) -> Table:
-    """Render uncertainty and random results as two equal-width columns."""
-    arms = (("uncertainty", "bold magenta"), ("random", "bold blue"))
+def _round_progress_table(round_results: dict[str, dict], uq_metric: str) -> Table:
+    """Render the named UQ method and random results as two equal-width columns."""
+    arms = (
+        ("uncertainty", uq_metric, "bold magenta"),
+        ("random", "random", "bold blue"),
+    )
     total_rounds = round_results["uncertainty"]["total_rounds"]
     token_budget = round_results["uncertainty"]["token_budget"]
     round_width = len(str(total_rounds))
@@ -37,10 +40,11 @@ def _round_progress_table(round_results: dict[str, dict]) -> Table:
     table.add_column(ratio=1)
     table.add_column(ratio=1)
     cells = []
-    for arm, arm_style in arms:
+    label_width = max(len(display_name) for _, display_name, _ in arms)
+    for arm, display_name, arm_style in arms:
         row = round_results[arm]
         cells.append(
-            f"[{arm_style}]{arm:>11}[/]  "
+            f"[{arm_style}]{display_name:>{label_width}}[/]  "
             f"[dim]round[/] {row['round']:>{round_width}}/{total_rounds}  "
             f"[dim]acquired[/] {row['n_acquired']:>{acquired_width}}  "
             f"[dim]entity F1[/] [bold]{row['entity_f1']:.4f}[/]  "
@@ -358,7 +362,7 @@ def run_active_learning(
                             else None,
                         }
                     )
-            CONSOLE.print(_round_progress_table(round_results))
+            CONSOLE.print(_round_progress_table(round_results, uq_metric))
             if progress_callback is not None:
                 progress_callback(list(results))
 

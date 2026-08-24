@@ -93,16 +93,18 @@ def test_round_progress_renders_arms_in_two_columns():
                 "entity_f1": 0.4497,
                 "train_loss": 0.2596,
             },
-        }
+        },
+        "least_confidence",
     )
 
     console.print(table)
 
     rendered_lines = output.getvalue().splitlines()
     assert len(rendered_lines) == 1
-    assert "uncertainty" in rendered_lines[0]
+    assert "least_confidence" in rendered_lines[0]
+    assert "uncertainty" not in rendered_lines[0]
     assert "random" in rendered_lines[0]
-    assert rendered_lines[0].index("uncertainty") < rendered_lines[0].index("random")
+    assert rendered_lines[0].index("least_confidence") < rendered_lines[0].index("random")
 
 
 def test_encode_targets_masks_unselected_and_continuation_subwords():

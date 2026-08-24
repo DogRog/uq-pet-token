@@ -75,21 +75,21 @@ def wandb_logging():
         "train_loss",
     )
 
-    def configure_wandb_metrics(wandb_run):
+    def configure_wandb_metrics(wandb_run, uq_metric):
         """Keep bookkeeping data out of auto-panels and use acquisition as x."""
         for field in common_fields:
             wandb_run.define_metric(f"evaluation/{field}", hidden=True)
         for field in hidden_arm_fields:
-            for arm in arms:
+            for arm in (uq_metric, "random"):
                 wandb_run.define_metric(f"evaluation/{field}/{arm}", hidden=True)
         for field in tracked_arm_fields:
-            for arm in arms:
+            for arm in (uq_metric, "random"):
                 wandb_run.define_metric(
                     f"evaluation/{field}/{arm}",
                     step_metric="evaluation/percent_acquired",
                 )
 
-    def make_wandb_evaluation_log(rows):
+    def make_wandb_evaluation_log(rows, uq_metric):
         """Build one W&B step with a separate scalar series for each arm."""
         if len(rows) != len(arms):
             raise ValueError("a W&B evaluation step requires exactly one row per arm")
@@ -109,14 +109,15 @@ def wandb_logging():
             if set(rows_by_arm[arm]) - set(common_fields) - {"arm"} != arm_fields:
                 raise ValueError("W&B evaluation rows have different metric fields")
             for field in sorted(arm_fields):
-                payload[f"evaluation/{field}/{arm}"] = rows_by_arm[arm][field]
+                display_arm = uq_metric if arm == "uncertainty" else arm
+                payload[f"evaluation/{field}/{display_arm}"] = rows_by_arm[arm][field]
         return payload
 
-    def make_wandb_comparison_media(wandb_module, make_learning_chart, result_records):
+    def make_wandb_comparison_media(wandb_module, make_learning_chart, result_records, uq_metric):
         """Build one table-free interactive comparison panel per model seed."""
         return {
-            f"final_comparison/seed_{seed}_learning_curves": wandb_module.Html(
-                make_learning_chart(result_records, seed).to_html(),
+            f"final_comparison/seed_{seed}_{uq_metric}_vs_random": wandb_module.Html(
+                make_learning_chart(result_records, seed, uq_metric).to_html(),
                 inject=False,
             )
             for seed in sorted({row["seed"] for row in result_records})
@@ -127,18 +128,25 @@ def wandb_logging():
 
 @app.cell
 def _(alt, pl):
-    def make_learning_chart(result_records, seed):
+    def make_learning_chart(result_records, seed, uq_metric):
         curve = (
             pl.DataFrame(result_records)
             .filter(pl.col("seed") == seed)
+            .with_columns(
+                pl.when(pl.col("arm") == "uncertainty")
+                .then(pl.lit(uq_metric))
+                .otherwise(pl.col("arm"))
+                .alias("arm")
+            )
             .sort(["arm", "percent_acquired"])
         )
+        arm_order = ["random", uq_metric]
         arm_color = alt.Color(
             "arm:N",
             title=None,
-            sort=["random", "uncertainty"],
+            sort=arm_order,
             scale=alt.Scale(
-                domain=["random", "uncertainty"],
+                domain=arm_order,
                 range=["#4C78A8", "#F58518"],
             ),
             legend=alt.Legend(orient="top"),
@@ -184,9 +192,15 @@ def _(alt, pl):
         )
         return alt.hconcat(entity_chart, accuracy_chart, spacing=35).resolve_scale(color="shared")
 
-    def make_variance_chart(results_frame):
+    def make_variance_chart(results_frame, uq_metric):
         summary = (
-            results_frame.group_by(["arm", "n_acquired", "percent_acquired"])
+            results_frame.with_columns(
+                pl.when(pl.col("arm") == "uncertainty")
+                .then(pl.lit(uq_metric))
+                .otherwise(pl.col("arm"))
+                .alias("arm")
+            )
+            .group_by(["arm", "n_acquired", "percent_acquired"])
             .agg(
                 pl.col("entity_f1").mean().alias("entity_f1_mean"),
                 pl.col("entity_f1").std().fill_null(0.0).alias("entity_f1_std"),
@@ -209,12 +223,13 @@ def _(alt, pl):
             )
             .sort(["arm", "percent_acquired"])
         )
+        arm_order = ["random", uq_metric]
         arm_color = alt.Color(
             "arm:N",
             title=None,
-            sort=["random", "uncertainty"],
+            sort=arm_order,
             scale=alt.Scale(
-                domain=["random", "uncertainty"],
+                domain=arm_order,
                 range=["#4C78A8", "#F58518"],
             ),
             legend=alt.Legend(orient="top"),
@@ -705,7 +720,7 @@ def _(
                 name=config["wandb_run_name"],
                 config=config,
             )
-            configure_wandb_metrics(wandb_run)
+            configure_wandb_metrics(wandb_run, config["uq_metric"])
 
         data_path = download_pet_ner()
         seed_examples, pool_inputs, pool_gold, test_examples = load_pet_splits(data_path)
@@ -733,14 +748,16 @@ def _(
                                 f"round {latest['round']} of {latest['total_rounds']} · "
                                 f"{latest['percent_acquired']:.2f}% acquired"
                             ),
-                            make_learning_chart(progress_records, latest["seed"]),
+                            make_learning_chart(
+                                progress_records, latest["seed"], config["uq_metric"]
+                            ),
                         ]
                     )
                 )
             if wandb_run is not None:
                 new_rows = progress_records[wandb_rows_logged[0] :]
                 if new_rows:
-                    wandb_run.log(make_wandb_evaluation_log(new_rows))
+                    wandb_run.log(make_wandb_evaluation_log(new_rows, config["uq_metric"]))
                 wandb_rows_logged[0] = len(progress_records)
 
         if not is_script_mode:
@@ -786,7 +803,9 @@ def _(
             )
             if wandb_run is not None:
                 wandb_run.log(
-                    make_wandb_comparison_media(wandb, make_learning_chart, result_records)
+                    make_wandb_comparison_media(
+                        wandb, make_learning_chart, result_records, config["uq_metric"]
+                    )
                 )
             if is_script_mode:
                 print(f"Batch output: {run_dir}")
@@ -801,7 +820,7 @@ def _(
         seed_graphs.extend(
             [
                 mo.md(f"## Seed {model_seed}"),
-                make_learning_chart(result_records, model_seed),
+                make_learning_chart(result_records, model_seed, config["uq_metric"]),
             ]
         )
     completed_seed_graphs = mo.vstack(seed_graphs)
@@ -838,7 +857,7 @@ def _(config, dataset_summary, mo, run_dir):
 
 
 @app.cell(hide_code=True)
-def _(make_variance_chart, mo, results_df):
+def _(config, make_variance_chart, mo, results_df):
     mo.vstack(
         [
             mo.md("""
@@ -846,53 +865,75 @@ def _(make_variance_chart, mo, results_df):
 
             Lines show the mean across seeds; shaded ranges show ±1 standard deviation.
             """),
-            make_variance_chart(results_df),
+            make_variance_chart(results_df, config["uq_metric"]),
         ]
     )
     return
 
 
 @app.cell(hide_code=True)
-def _(mo, results_df):
-    mo.vstack([mo.md("## Round results"), mo.ui.table(results_df, selection=None)])
+def _(config, mo, pl, results_df):
+    display_results = results_df.with_columns(
+        pl.when(pl.col("arm") == "uncertainty")
+        .then(pl.lit(config["uq_metric"]))
+        .otherwise(pl.col("arm"))
+        .alias("arm")
+    )
+    mo.vstack([mo.md("## Round results"), mo.ui.table(display_results, selection=None)])
     return
 
 
 @app.cell(hide_code=True)
-def _(mo, pl, results_df):
+def _(config, mo, pl, results_df):
+    gap_name = f"{config['uq_metric']}_minus_random"
     paired = results_df.pivot(
         on="arm",
         index=["seed", "round", "n_acquired", "percent_acquired"],
         values="entity_f1",
-    ).with_columns((pl.col("uncertainty") - pl.col("random")).alias("uncertainty_minus_random"))
+    ).with_columns((pl.col("uncertainty") - pl.col("random")).alias(gap_name))
     gap_table = (
         paired.group_by(["round", "n_acquired", "percent_acquired"])
         .agg(
-            pl.col("uncertainty_minus_random").mean().alias("mean"),
-            pl.col("uncertainty_minus_random").std().alias("std"),
+            pl.col(gap_name).mean().alias("mean"),
+            pl.col(gap_name).std().alias("std"),
         )
         .sort(["percent_acquired", "round"])
     )
-    mo.vstack([mo.md("## Entity F1 gap"), mo.ui.table(gap_table, selection=None)])
+    mo.vstack(
+        [
+            mo.md(f"## Entity F1 gap — `{config['uq_metric']}` minus random"),
+            mo.ui.table(gap_table, selection=None),
+        ]
+    )
     return
 
 
 @app.cell
-def _(alt, pl, selections_df):
-    label_counts = selections_df.group_by(["arm", "label"]).agg(pl.len().alias("count"))
+def _(alt, config, pl, selections_df):
+    label_counts = (
+        selections_df.with_columns(
+            pl.when(pl.col("arm") == "uncertainty")
+            .then(pl.lit(config["uq_metric"]))
+            .otherwise(pl.col("arm"))
+            .alias("arm")
+        )
+        .group_by(["arm", "label"])
+        .agg(pl.len().alias("count"))
+    )
+    arm_order = ["random", config["uq_metric"]]
     label_chart = (
         alt.Chart(label_counts)
         .mark_bar()
         .encode(
             x=alt.X("count:Q", title="Acquired tokens"),
             y=alt.Y("label:N", title="Gold label", sort="-x"),
-            yOffset=alt.YOffset("arm:N", sort=["random", "uncertainty"]),
+            yOffset=alt.YOffset("arm:N", sort=arm_order),
             color=alt.Color(
                 "arm:N",
                 title=None,
-                sort=["random", "uncertainty"],
+                sort=arm_order,
                 scale=alt.Scale(
-                    domain=["random", "uncertainty"],
+                    domain=arm_order,
                     range=["#4C78A8", "#F58518"],
                 ),
             ),
@@ -913,11 +954,17 @@ def _(alt, pl, selections_df):
 
 
 @app.cell(hide_code=True)
-def _(mo, selections_df):
+def _(config, mo, pl, selections_df):
+    display_selections = selections_df.with_columns(
+        pl.when(pl.col("arm") == "uncertainty")
+        .then(pl.lit(config["uq_metric"]))
+        .otherwise(pl.col("arm"))
+        .alias("arm")
+    )
     mo.vstack(
         [
             mo.md("## Selection log"),
-            mo.ui.table(selections_df, selection=None, page_size=20),
+            mo.ui.table(display_selections, selection=None, page_size=20),
         ]
     )
     return
