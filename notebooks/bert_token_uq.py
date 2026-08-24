@@ -66,11 +66,6 @@ def wandb_logging():
         "scoreable_pool_tokens",
         "token_budget",
     )
-    comparison_metrics = {
-        "entity_f1": "Entity F1",
-        "token_accuracy": "Token accuracy",
-        "train_loss": "Training loss",
-    }
     hidden_arm_fields = ("n_new", "n_replay")
     tracked_arm_fields = (
         "entity_f1",
@@ -117,31 +112,17 @@ def wandb_logging():
                 payload[f"evaluation/{field}/{arm}"] = rows_by_arm[arm][field]
         return payload
 
-    def make_wandb_comparison_charts(wandb_module, result_records):
-        """Build final two-line W&B charts for every model seed in the records."""
-        charts = {}
-        seeds = sorted({row["seed"] for row in result_records})
-        for seed in seeds:
-            seed_rows = [row for row in result_records if row["seed"] == seed]
-            rows_by_arm = {
-                arm: sorted(
-                    (row for row in seed_rows if row["arm"] == arm),
-                    key=lambda row: row["percent_acquired"],
-                )
-                for arm in arms
-            }
-            for metric, title in comparison_metrics.items():
-                charts[f"final_comparison/seed_{seed}_{metric}"] = wandb_module.plot.line_series(
-                    xs=[[row["percent_acquired"] for row in rows_by_arm[arm]] for arm in arms],
-                    ys=[[row[metric] for row in rows_by_arm[arm]] for arm in arms],
-                    keys=["Uncertainty", "Random"],
-                    title=f"Seed {seed} — {title}",
-                    xname="Scoreable pool acquired (%)",
-                    split_table=True,
-                )
-        return charts
+    def make_wandb_comparison_media(wandb_module, make_learning_chart, result_records):
+        """Build one table-free interactive comparison panel per model seed."""
+        return {
+            f"final_comparison/seed_{seed}_learning_curves": wandb_module.Html(
+                make_learning_chart(result_records, seed).to_html(),
+                inject=False,
+            )
+            for seed in sorted({row["seed"] for row in result_records})
+        }
 
-    return configure_wandb_metrics, make_wandb_comparison_charts, make_wandb_evaluation_log
+    return configure_wandb_metrics, make_wandb_comparison_media, make_wandb_evaluation_log
 
 
 @app.cell
@@ -618,7 +599,7 @@ def _(
     is_batch_mode,
     is_script_mode,
     load_pet_splits,
-    make_wandb_comparison_charts,
+    make_wandb_comparison_media,
     make_wandb_evaluation_log,
     make_learning_chart,
     model_params,
@@ -804,7 +785,9 @@ def _(
                 results_dir=results_root,
             )
             if wandb_run is not None:
-                wandb_run.log(make_wandb_comparison_charts(wandb, result_records))
+                wandb_run.log(
+                    make_wandb_comparison_media(wandb, make_learning_chart, result_records)
+                )
             if is_script_mode:
                 print(f"Batch output: {run_dir}")
         finally:

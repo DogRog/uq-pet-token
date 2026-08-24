@@ -12,7 +12,7 @@ NOTEBOOK_SPEC.loader.exec_module(notebook)
 
 _, wandb_defs = notebook.wandb_logging.run()
 configure_wandb_metrics = wandb_defs["configure_wandb_metrics"]
-make_wandb_comparison_charts = wandb_defs["make_wandb_comparison_charts"]
+make_wandb_comparison_media = wandb_defs["make_wandb_comparison_media"]
 make_wandb_evaluation_log = wandb_defs["make_wandb_evaluation_log"]
 
 
@@ -67,25 +67,25 @@ def test_wandb_metric_configuration_hides_bookkeeping_and_uses_acquisition_x_axi
     ) in calls
 
 
-def test_wandb_comparison_chart_contains_both_arm_lines():
-    calls = []
-
-    def line_series(**kwargs):
-        calls.append(kwargs)
-        return kwargs
-
+def test_wandb_comparison_uses_one_html_panel_and_no_table_per_seed():
     records = [
         result_row(arm, round_idx, accuracy)
         for arm, accuracies in (("uncertainty", (0.6, 0.8)), ("random", (0.6, 0.7)))
         for round_idx, accuracy in enumerate(accuracies)
     ]
-    charts = make_wandb_comparison_charts(
-        SimpleNamespace(plot=SimpleNamespace(line_series=line_series)), records
-    )
+    chart_calls = []
+    html_calls = []
 
-    accuracy_chart = charts["final_comparison/seed_0_token_accuracy"]
-    assert accuracy_chart["xs"] == [[0.0, 10.0], [0.0, 10.0]]
-    assert accuracy_chart["ys"] == [[0.6, 0.8], [0.6, 0.7]]
-    assert accuracy_chart["keys"] == ["Uncertainty", "Random"]
-    assert accuracy_chart["split_table"] is True
-    assert len(calls) == 3
+    def make_learning_chart(result_records, seed):
+        chart_calls.append((result_records, seed))
+        return SimpleNamespace(to_html=lambda: "<html>comparison</html>")
+
+    def html(data, *, inject):
+        html_calls.append((data, inject))
+        return "html-media"
+
+    media = make_wandb_comparison_media(SimpleNamespace(Html=html), make_learning_chart, records)
+
+    assert media == {"final_comparison/seed_0_learning_curves": "html-media"}
+    assert chart_calls == [(records, 0)]
+    assert html_calls == [("<html>comparison</html>", False)]
