@@ -10,6 +10,7 @@ from pathlib import Path
 
 import torch
 from rich.console import Console
+from rich.table import Table
 
 from uq_pet.pet_data import NER_TAGS, RESULTS_DIR, TokenKey
 from uq_pet.token_model import (
@@ -22,6 +23,31 @@ from uq_pet.token_model import (
 )
 
 CONSOLE = Console()
+
+
+def _round_progress_table(round_results: dict[str, dict]) -> Table:
+    """Render uncertainty and random results as two equal-width columns."""
+    arms = (("uncertainty", "bold magenta"), ("random", "bold blue"))
+    total_rounds = round_results["uncertainty"]["total_rounds"]
+    token_budget = round_results["uncertainty"]["token_budget"]
+    round_width = len(str(total_rounds))
+    acquired_width = len(str(token_budget))
+
+    table = Table.grid(expand=True, padding=(0, 3))
+    table.add_column(ratio=1)
+    table.add_column(ratio=1)
+    cells = []
+    for arm, arm_style in arms:
+        row = round_results[arm]
+        cells.append(
+            f"[{arm_style}]{arm:>11}[/]  "
+            f"[dim]round[/] {row['round']:>{round_width}}/{total_rounds}  "
+            f"[dim]acquired[/] {row['n_acquired']:>{acquired_width}}  "
+            f"[dim]entity F1[/] [bold]{row['entity_f1']:.4f}[/]  "
+            f"[dim]loss[/] {row['train_loss']:.4f}"
+        )
+    table.add_row(*cells)
+    return table
 
 
 def full_sentence_items(examples: list[dict]) -> list[dict]:
@@ -244,6 +270,7 @@ def run_active_learning(
         }
 
         for round_idx in range(1, rounds + 1):
+            round_results = {}
             uq_scores = score_token_uncertainty(
                 models["uncertainty"],
                 tokenizer,
@@ -299,18 +326,18 @@ def run_active_learning(
                         "n_replay": len(replay),
                     }
                 )
-                results.append(
-                    _result_row(
-                        model_seed,
-                        arm,
-                        round_idx,
-                        len(acquired[arm]),
-                        metrics,
-                        scoreable_tokens=len(scoreable),
-                        token_budget=token_budget,
-                        total_rounds=rounds,
-                    )
+                result = _result_row(
+                    model_seed,
+                    arm,
+                    round_idx,
+                    len(acquired[arm]),
+                    metrics,
+                    scoreable_tokens=len(scoreable),
+                    token_budget=token_budget,
+                    total_rounds=rounds,
                 )
+                results.append(result)
+                round_results[arm] = result
 
                 for pool_idx, word_idx in chosen[arm]:
                     example = pool_inputs[pool_idx]
@@ -331,14 +358,7 @@ def run_active_learning(
                             else None,
                         }
                     )
-                arm_style = "bold magenta" if arm == "uncertainty" else "bold blue"
-                CONSOLE.print(
-                    f"[{arm_style}]{arm:>11}[/]  "
-                    f"[dim]round[/] {round_idx:>2}/{rounds}  "
-                    f"[dim]acquired[/] {len(acquired[arm]):>4}  "
-                    f"[dim]entity F1[/] [bold]{metrics['entity_f1']:.4f}[/]  "
-                    f"[dim]loss[/] {metrics['train_loss']:.4f}"
-                )
+            CONSOLE.print(_round_progress_table(round_results))
             if progress_callback is not None:
                 progress_callback(list(results))
 

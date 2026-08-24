@@ -1,10 +1,13 @@
+from io import StringIO
 from types import SimpleNamespace
 
 import pytest
 import torch
+from rich.console import Console
 
 import uq_pet.active_learning as active_learning
 from uq_pet.active_learning import (
+    _round_progress_table,
     acquisition_schedule,
     reveal_pool_items,
     run_active_learning,
@@ -72,6 +75,34 @@ class FakeModel:
         # its continuation piece, stays uniform and must not affect word uncertainty.
         logits[input_ids == 1, 0] = 10.0
         return SimpleNamespace(logits=logits)
+
+
+def test_round_progress_renders_arms_in_two_columns():
+    output = StringIO()
+    console = Console(file=output, width=160, color_system=None)
+    common = {"round": 7, "total_rounds": 368, "n_acquired": 112, "token_budget": 5888}
+    table = _round_progress_table(
+        {
+            "uncertainty": {
+                **common,
+                "entity_f1": 0.3205,
+                "train_loss": 0.5357,
+            },
+            "random": {
+                **common,
+                "entity_f1": 0.4497,
+                "train_loss": 0.2596,
+            },
+        }
+    )
+
+    console.print(table)
+
+    rendered_lines = output.getvalue().splitlines()
+    assert len(rendered_lines) == 1
+    assert "uncertainty" in rendered_lines[0]
+    assert "random" in rendered_lines[0]
+    assert rendered_lines[0].index("uncertainty") < rendered_lines[0].index("random")
 
 
 def test_encode_targets_masks_unselected_and_continuation_subwords():
