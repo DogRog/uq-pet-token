@@ -55,6 +55,73 @@ def _():
 
 
 @app.cell
+def wandb_logging():
+    arms = ("uncertainty", "random")
+    common_fields = (
+        "seed",
+        "round",
+        "total_rounds",
+        "n_acquired",
+        "percent_acquired",
+        "scoreable_pool_tokens",
+        "token_budget",
+    )
+    comparison_metrics = {
+        "entity_f1": "Entity F1",
+        "token_accuracy": "Token accuracy",
+        "train_loss": "Training loss",
+    }
+
+    def make_wandb_evaluation_log(rows):
+        """Build one W&B step with a separate scalar series for each arm."""
+        if len(rows) != len(arms):
+            raise ValueError("a W&B evaluation step requires exactly one row per arm")
+
+        rows_by_arm = {row["arm"]: row for row in rows}
+        if set(rows_by_arm) != set(arms):
+            raise ValueError("a W&B evaluation step requires uncertainty and random rows")
+
+        first = rows_by_arm[arms[0]]
+        for field in common_fields:
+            if any(rows_by_arm[arm][field] != first[field] for arm in arms[1:]):
+                raise ValueError(f"W&B evaluation rows disagree on {field}")
+
+        payload = {f"evaluation/{field}": first[field] for field in common_fields}
+        arm_fields = set(first) - set(common_fields) - {"arm"}
+        for arm in arms:
+            if set(rows_by_arm[arm]) - set(common_fields) - {"arm"} != arm_fields:
+                raise ValueError("W&B evaluation rows have different metric fields")
+            for field in sorted(arm_fields):
+                payload[f"evaluation/{field}/{arm}"] = rows_by_arm[arm][field]
+        return payload
+
+    def make_wandb_comparison_charts(wandb_module, result_records):
+        """Build live two-line W&B charts for every model seed in the records."""
+        charts = {}
+        seeds = sorted({row["seed"] for row in result_records})
+        for seed in seeds:
+            seed_rows = [row for row in result_records if row["seed"] == seed]
+            rows_by_arm = {
+                arm: sorted(
+                    (row for row in seed_rows if row["arm"] == arm),
+                    key=lambda row: row["percent_acquired"],
+                )
+                for arm in arms
+            }
+            for metric, title in comparison_metrics.items():
+                charts[f"comparison/seed_{seed}/{metric}"] = wandb_module.plot.line_series(
+                    xs=[[row["percent_acquired"] for row in rows_by_arm[arm]] for arm in arms],
+                    ys=[[row[metric] for row in rows_by_arm[arm]] for arm in arms],
+                    keys=["Uncertainty", "Random"],
+                    title=f"Seed {seed} — {title}",
+                    xname="Scoreable pool acquired (%)",
+                )
+        return charts
+
+    return make_wandb_comparison_charts, make_wandb_evaluation_log
+
+
+@app.cell
 def _(alt, pl):
     def make_learning_chart(result_records, seed):
         curve = (
@@ -527,6 +594,8 @@ def _(
     is_batch_mode,
     is_script_mode,
     load_pet_splits,
+    make_wandb_comparison_charts,
+    make_wandb_evaluation_log,
     make_learning_chart,
     model_params,
     mo,
@@ -663,8 +732,14 @@ def _(
                     )
                 )
             if wandb_run is not None:
-                for row in progress_records[wandb_rows_logged[0] :]:
-                    wandb_run.log({f"evaluation/{key}": value for key, value in row.items()})
+                new_rows = progress_records[wandb_rows_logged[0] :]
+                if new_rows:
+                    wandb_payload = make_wandb_evaluation_log(new_rows)
+                    latest_seed_rows = [
+                        row for row in progress_records if row["seed"] == latest["seed"]
+                    ]
+                    wandb_payload.update(make_wandb_comparison_charts(wandb, latest_seed_rows))
+                    wandb_run.log(wandb_payload)
                 wandb_rows_logged[0] = len(progress_records)
 
         if not is_script_mode:
