@@ -10,7 +10,6 @@ import random
 import shlex
 import subprocess
 import sys
-from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 
@@ -20,20 +19,20 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from uq_pet.experiment import (
+    DEFAULT_CHECKPOINTS,
+    DEFAULT_MODEL_SEEDS,
+    ExperimentConfig,
+    require_wandb_credentials,
+)
+from uq_pet.token_model import UQ_METRICS
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 NOTEBOOK_PATH = PROJECT_ROOT / "notebooks" / "bert_token_uq.py"
 SWEEPS_DIR = PROJECT_ROOT / "results" / "sweeps"
 
-CHECKPOINTS = (
-    "distilbert-base-cased",
-    "bert-base-cased",
-    "roberta-base",
-    "microsoft/deberta-v3-base",
-    "answerdotai/ModernBERT-base",
-)
-MODEL_SEEDS = (0, 1, 2, 3, 4)
 SEARCH_SPACE = {
-    "uq_metric": ("entropy", "least_confidence", "margin"),
+    "uq_metric": UQ_METRICS,
     "k": (8, 16, 32),
     "bootstrap_epochs": (10, 20, 30),
     "update_passes": (1, 2, 4),
@@ -41,11 +40,6 @@ SEARCH_SPACE = {
     "batch_size": (4, 8, 16),
     "replay_ratio": (0, 0.5, 1.0, 2.0),
     "weight_decay": (0.0, 0.01),
-}
-FIXED = {
-    "max_pool_percent": 100.0,
-    "score_batch_size": 32,
-    "max_length": 256,
 }
 CONSOLE = Console()
 
@@ -90,15 +84,15 @@ def build_runs(
     for config_idx, search_config in enumerate(search_configs, start=1):
         for checkpoint in checkpoints:
             for seed in seeds:
-                params = {
-                    "checkpoint": checkpoint,
-                    "model_seeds": seed,
-                    **FIXED,
-                    "max_pool_percent": max_pool_percent,
+                config = ExperimentConfig(
+                    checkpoint=checkpoint,
+                    model_seeds=[seed],
+                    max_pool_percent=max_pool_percent,
                     **search_config,
-                    "wandb_enabled": wandb_enabled,
-                    "wandb_project": wandb_project,
-                }
+                    wandb_enabled=wandb_enabled,
+                    wandb_project=wandb_project,
+                )
+                params = config.model_dump()
                 digest = hashlib.sha256(json.dumps(params, sort_keys=True).encode()).hexdigest()[:8]
                 run_id = f"cfg{config_idx:02d}-{_slug(checkpoint)}-seed{seed}-{digest}"
                 params["wandb_run_name"] = run_id
@@ -115,10 +109,7 @@ def format_value(value: object) -> str:
 
 
 def params_to_cli_args(params: dict) -> list[str]:
-    args = []
-    for key, value in params.items():
-        args.extend([f"--{key.replace('_', '-')}", format_value(value)])
-    return args
+    return ["--config-json", json.dumps(params, separators=(",", ":"), sort_keys=True)]
 
 
 def printable_command(params: dict) -> str:
@@ -229,19 +220,6 @@ def parse_csv_ints(value: str) -> tuple[int, ...]:
     return parsed
 
 
-def require_wandb_credentials(environment: Mapping[str, str]) -> None:
-    """Reject an online W&B launch before any sweep subprocess starts."""
-    if environment.get("WANDB_MODE", "").strip().lower() == "offline":
-        return
-    if environment.get("WANDB_API_KEY", "").strip():
-        return
-    raise ValueError(
-        "W&B logging is enabled but WANDB_API_KEY is missing. "
-        f"Set it in the environment or {PROJECT_ROOT / '.env'}, then rerun. "
-        "No jobs were started."
-    )
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -259,13 +237,13 @@ def main() -> None:
     parser.add_argument(
         "--checkpoints",
         type=parse_csv_strings,
-        default=CHECKPOINTS,
+        default=DEFAULT_CHECKPOINTS,
         help="Comma-separated checkpoint IDs (default: all five configured models).",
     )
     parser.add_argument(
         "--seeds",
         type=parse_csv_ints,
-        default=MODEL_SEEDS,
+        default=DEFAULT_MODEL_SEEDS,
         help="Comma-separated model seeds (default: 0,1,2,3,4).",
     )
     parser.add_argument(
@@ -281,7 +259,7 @@ def main() -> None:
     parser.add_argument(
         "--max-pool-percent",
         type=float,
-        default=FIXED["max_pool_percent"],
+        default=ExperimentConfig().max_pool_percent,
         help="Maximum scoreable-pool percentage acquired per run (default: 100).",
     )
     parser.add_argument(

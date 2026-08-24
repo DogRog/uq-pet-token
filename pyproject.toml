@@ -36,7 +36,7 @@ packages = ["src/uq_pet"]
 
 [tool.ruff]
 line-length = 100
-src = ["src", "tests", "notebooks"]
+src = ["src", "tests", "notebooks", "scripts"]
 
 [tool.ruff.format]
 # Pinned to today's defaults so `ruff format` can't restyle the tree on a ruff upgrade.

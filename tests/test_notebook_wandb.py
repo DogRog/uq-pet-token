@@ -1,19 +1,15 @@
-import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-NOTEBOOK_PATH = Path(__file__).resolve().parents[1] / "notebooks" / "bert_token_uq.py"
-NOTEBOOK_SPEC = importlib.util.spec_from_file_location("bert_token_uq", NOTEBOOK_PATH)
-assert NOTEBOOK_SPEC is not None and NOTEBOOK_SPEC.loader is not None
-notebook = importlib.util.module_from_spec(NOTEBOOK_SPEC)
-NOTEBOOK_SPEC.loader.exec_module(notebook)
-
-_, wandb_defs = notebook.wandb_logging.run()
-configure_wandb_metrics = wandb_defs["configure_wandb_metrics"]
-make_wandb_comparison_media = wandb_defs["make_wandb_comparison_media"]
-make_wandb_evaluation_log = wandb_defs["make_wandb_evaluation_log"]
+import uq_pet.experiment as experiment
+from uq_pet.experiment import (
+    ExperimentConfig,
+    configure_wandb_metrics,
+    execute_experiment,
+    make_wandb_evaluation_log,
+)
 
 
 def result_row(arm, round_idx, accuracy):
@@ -69,7 +65,7 @@ def test_wandb_metric_configuration_hides_bookkeeping_and_uses_acquisition_x_axi
     ) in calls
 
 
-def test_wandb_comparison_uses_one_html_panel_and_no_table_per_seed():
+def test_wandb_comparison_uses_one_html_panel_and_no_table_per_seed(monkeypatch):
     records = [
         result_row(arm, round_idx, accuracy)
         for arm, accuracies in (("uncertainty", (0.6, 0.8)), ("random", (0.6, 0.7)))
@@ -86,10 +82,62 @@ def test_wandb_comparison_uses_one_html_panel_and_no_table_per_seed():
         html_calls.append((data, inject))
         return "html-media"
 
-    media = make_wandb_comparison_media(
-        SimpleNamespace(Html=html), make_learning_chart, records, "least_confidence"
+    monkeypatch.setattr(experiment, "make_learning_chart", make_learning_chart)
+    media = experiment.make_wandb_comparison_media(
+        SimpleNamespace(Html=html), records, "least_confidence"
     )
 
     assert media == {"final_comparison/seed_0_least_confidence_vs_random": "html-media"}
     assert chart_calls == [(records, 0, "least_confidence")]
     assert html_calls == [("<html>comparison</html>", False)]
+
+
+def test_execute_experiment_uses_shared_config_and_persists_derived_settings(monkeypatch, tmp_path):
+    config = ExperimentConfig(model_seeds=0, max_pool_percent=50, wandb_enabled=True)
+    captured = {}
+    rows = [
+        {
+            **result_row("uncertainty", 0, 0.6),
+            "scoreable_pool_tokens": 200,
+            "token_budget": 100,
+            "total_rounds": 5,
+        },
+        {
+            **result_row("random", 0, 0.6),
+            "scoreable_pool_tokens": 200,
+            "token_budget": 100,
+            "total_rounds": 5,
+        },
+    ]
+
+    monkeypatch.setattr(experiment, "download_pet_ner", lambda: Path("pet.jsonl"))
+    monkeypatch.setattr(
+        experiment,
+        "load_pet_splits",
+        lambda path: ([{"tokens": ["seed"]}], [{"tokens": ["pool"]}], {(0, 0): 0}, []),
+    )
+    monkeypatch.setattr(experiment, "get_device", lambda: "cpu")
+
+    def run_active_learning(*args, **kwargs):
+        captured["active_learning_kwargs"] = kwargs
+        return rows, [{"token": "pool"}]
+
+    def write_run(run_config, results, selections, *, results_dir):
+        captured["run_config"] = run_config
+        captured["results_dir"] = results_dir
+        return results_dir / "run"
+
+    monkeypatch.setattr(experiment, "run_active_learning", run_active_learning)
+    monkeypatch.setattr(experiment, "write_run", write_run)
+
+    run_config, summary, results, selections, run_dir = execute_experiment(
+        config, results_dir=tmp_path
+    )
+
+    assert "wandb_enabled" not in captured["active_learning_kwargs"]
+    assert captured["active_learning_kwargs"]["model_seeds"] == [0]
+    assert captured["run_config"]["effective_pool_percent"] == 50
+    assert summary["acquisition_rounds"] == 5
+    assert results == rows
+    assert selections == [{"token": "pool"}]
+    assert run_dir == tmp_path / "run"

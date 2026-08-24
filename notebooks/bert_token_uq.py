@@ -24,7 +24,6 @@ def _():
 @app.cell
 def _():
     import os
-    import sys
     from pathlib import Path
 
     import altair as alt
@@ -32,166 +31,42 @@ def _():
     import wandb
     from wigglystuff import EnvConfig
 
-    from uq_pet.active_learning import run_active_learning, write_run
-    from uq_pet.pet_data import RESULTS_DIR, download_pet_ner, load_pet_splits
-    from uq_pet.token_model import get_device
+    from uq_pet.experiment import (
+        DEFAULT_CHECKPOINTS,
+        ExperimentConfig,
+        configure_wandb_metrics,
+        execute_experiment,
+        make_learning_chart,
+        make_wandb_comparison_media,
+        make_wandb_evaluation_log,
+        require_wandb_credentials,
+    )
+    from uq_pet.pet_data import RESULTS_DIR
+    from uq_pet.token_model import UQ_METRICS
 
     alt.renderers.set_embed_options(scaleFactor=3)
     return (
+        DEFAULT_CHECKPOINTS,
         EnvConfig,
+        ExperimentConfig,
         Path,
         RESULTS_DIR,
+        UQ_METRICS,
         alt,
-        download_pet_ner,
-        get_device,
-        load_pet_splits,
+        configure_wandb_metrics,
+        execute_experiment,
+        make_learning_chart,
+        make_wandb_comparison_media,
+        make_wandb_evaluation_log,
         os,
         pl,
-        run_active_learning,
-        sys,
+        require_wandb_credentials,
         wandb,
-        write_run,
     )
-
-
-@app.cell
-def wandb_logging():
-    arms = ("uncertainty", "random")
-    common_fields = (
-        "seed",
-        "round",
-        "total_rounds",
-        "n_acquired",
-        "percent_acquired",
-        "scoreable_pool_tokens",
-        "token_budget",
-    )
-    hidden_arm_fields = ("n_new", "n_replay")
-    tracked_arm_fields = (
-        "entity_f1",
-        "entity_precision",
-        "entity_recall",
-        "token_accuracy",
-        "train_loss",
-    )
-
-    def configure_wandb_metrics(wandb_run, uq_metric):
-        """Keep bookkeeping data out of auto-panels and use acquisition as x."""
-        for field in common_fields:
-            wandb_run.define_metric(f"evaluation/{field}", hidden=True)
-        for field in hidden_arm_fields:
-            for arm in (uq_metric, "random"):
-                wandb_run.define_metric(f"evaluation/{field}/{arm}", hidden=True)
-        for field in tracked_arm_fields:
-            for arm in (uq_metric, "random"):
-                wandb_run.define_metric(
-                    f"evaluation/{field}/{arm}",
-                    step_metric="evaluation/percent_acquired",
-                )
-
-    def make_wandb_evaluation_log(rows, uq_metric):
-        """Build one W&B step with a separate scalar series for each arm."""
-        if len(rows) != len(arms):
-            raise ValueError("a W&B evaluation step requires exactly one row per arm")
-
-        rows_by_arm = {row["arm"]: row for row in rows}
-        if set(rows_by_arm) != set(arms):
-            raise ValueError("a W&B evaluation step requires uncertainty and random rows")
-
-        first = rows_by_arm[arms[0]]
-        for field in common_fields:
-            if any(rows_by_arm[arm][field] != first[field] for arm in arms[1:]):
-                raise ValueError(f"W&B evaluation rows disagree on {field}")
-
-        payload = {f"evaluation/{field}": first[field] for field in common_fields}
-        arm_fields = set(first) - set(common_fields) - {"arm"}
-        for arm in arms:
-            if set(rows_by_arm[arm]) - set(common_fields) - {"arm"} != arm_fields:
-                raise ValueError("W&B evaluation rows have different metric fields")
-            for field in sorted(arm_fields):
-                display_arm = uq_metric if arm == "uncertainty" else arm
-                payload[f"evaluation/{field}/{display_arm}"] = rows_by_arm[arm][field]
-        return payload
-
-    def make_wandb_comparison_media(wandb_module, make_learning_chart, result_records, uq_metric):
-        """Build one table-free interactive comparison panel per model seed."""
-        return {
-            f"final_comparison/seed_{seed}_{uq_metric}_vs_random": wandb_module.Html(
-                make_learning_chart(result_records, seed, uq_metric).to_html(),
-                inject=False,
-            )
-            for seed in sorted({row["seed"] for row in result_records})
-        }
-
-    return configure_wandb_metrics, make_wandb_comparison_media, make_wandb_evaluation_log
 
 
 @app.cell
 def _(alt, pl):
-    def make_learning_chart(result_records, seed, uq_metric):
-        curve = (
-            pl.DataFrame(result_records)
-            .filter(pl.col("seed") == seed)
-            .with_columns(
-                pl.when(pl.col("arm") == "uncertainty")
-                .then(pl.lit(uq_metric))
-                .otherwise(pl.col("arm"))
-                .alias("arm")
-            )
-            .sort(["arm", "percent_acquired"])
-        )
-        arm_order = ["random", uq_metric]
-        arm_color = alt.Color(
-            "arm:N",
-            title=None,
-            sort=arm_order,
-            scale=alt.Scale(
-                domain=arm_order,
-                range=["#4C78A8", "#F58518"],
-            ),
-            legend=alt.Legend(orient="top"),
-        )
-        shared_x = alt.X(
-            "percent_acquired:Q",
-            title="Scoreable pool acquired (%)",
-            scale=alt.Scale(domain=[0, 100]),
-        )
-        entity_chart = (
-            alt.Chart(curve)
-            .mark_line(strokeWidth=2.5)
-            .encode(
-                x=shared_x,
-                y=alt.Y("entity_f1:Q", title="F1", scale=alt.Scale(zero=False)),
-                color=arm_color,
-                order=alt.Order("percent_acquired:Q"),
-                tooltip=[
-                    alt.Tooltip("arm:N", title="Arm"),
-                    alt.Tooltip("percent_acquired:Q", title="Pool acquired", format=".2f"),
-                    alt.Tooltip("n_acquired:Q", title="Acquired", format=".0f"),
-                    alt.Tooltip("entity_f1:Q", title="Entity F1", format=".3f"),
-                ],
-            )
-            .properties(title="Entity F1", width=500, height=320)
-        )
-        accuracy_chart = (
-            alt.Chart(curve)
-            .mark_line(strokeWidth=2.5)
-            .encode(
-                x=shared_x,
-                y=alt.Y("token_accuracy:Q", title="Accuracy", scale=alt.Scale(zero=False)),
-                color=arm_color,
-                order=alt.Order("percent_acquired:Q"),
-                tooltip=[
-                    alt.Tooltip("arm:N", title="Arm"),
-                    alt.Tooltip("percent_acquired:Q", title="Pool acquired", format=".2f"),
-                    alt.Tooltip("n_acquired:Q", title="Acquired", format=".0f"),
-                    alt.Tooltip("token_accuracy:Q", title="Token accuracy", format=".3f"),
-                ],
-            )
-            .properties(title="Token accuracy", width=500, height=320)
-        )
-        return alt.hconcat(entity_chart, accuracy_chart, spacing=35).resolve_scale(color="shared")
-
     def make_variance_chart(results_frame, uq_metric):
         summary = (
             results_frame.with_columns(
@@ -287,187 +162,88 @@ def _(alt, pl):
         )
         return alt.hconcat(entity_chart, accuracy_chart, spacing=35).resolve_scale(color="shared")
 
-    return make_learning_chart, make_variance_chart
+    return (make_variance_chart,)
 
 
 @app.cell
-def _():
-    import hashlib
-    import json
-    from typing import Literal, Self
+def _(ExperimentConfig):
+    default_config = ExperimentConfig().model_dump()
 
-    from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-    from rich import box
-    from rich.console import Console
-    from rich.table import Table
+    def make_demo_run(config):
+        scoreable_tokens = 96
+        requested_tokens = int(scoreable_tokens * config["max_pool_percent"] / 100)
+        rounds = requested_tokens // config["k"]
+        token_budget = rounds * config["k"]
+        run_config = {
+            **config,
+            "scoreable_pool_tokens": scoreable_tokens,
+            "token_budget": token_budget,
+            "rounds": rounds,
+            "effective_pool_percent": 100 * token_budget / scoreable_tokens,
+        }
+        results = [
+            {
+                "seed": model_seed,
+                "arm": arm,
+                "round": round_idx,
+                "total_rounds": rounds,
+                "n_acquired": round_idx * config["k"],
+                "percent_acquired": 100 * round_idx * config["k"] / scoreable_tokens,
+                "scoreable_pool_tokens": scoreable_tokens,
+                "token_budget": token_budget,
+                "entity_f1": 0.10
+                + model_seed * 0.001
+                + round_idx * (0.03 if arm == "uncertainty" else 0.02),
+                "entity_precision": 0.12,
+                "entity_recall": 0.10,
+                "token_accuracy": 0.70 + round_idx * 0.01,
+                "train_loss": 1.0 / (round_idx + 1),
+                "n_new": 0 if round_idx == 0 else config["k"],
+                "n_replay": 0 if round_idx == 0 else config["k"],
+            }
+            for model_seed in config["model_seeds"]
+            for arm in ("uncertainty", "random")
+            for round_idx in range(rounds + 1)
+        ]
+        selections = [
+            {
+                "seed": model_seed,
+                "arm": arm,
+                "round": 1,
+                "pool_idx": idx,
+                "word_idx": 0,
+                "document_name": "script-demo",
+                "sentence_id": idx,
+                "token": token,
+                "label": label,
+                "uq_metric": config["uq_metric"] if arm == "uncertainty" else None,
+                "uq_score": 0.8 if arm == "uncertainty" else None,
+            }
+            for model_seed in config["model_seeds"]
+            for arm in ("uncertainty", "random")
+            for idx, (token, label) in enumerate((("check", "B-Activity"), ("form", "O")))
+        ]
+        summary = {
+            "mode": "script demo",
+            "seed_sentences": 5,
+            "pool_sentences": 328,
+            "scoreable_pool_tokens": scoreable_tokens,
+            "acquisition_budget_tokens": token_budget,
+            "acquisition_rounds": rounds,
+            "effective_pool_percent": run_config["effective_pool_percent"],
+            "test_sentences": 84,
+            "device": "not loaded",
+        }
+        return run_config, summary, results, selections
 
-    default_checkpoints = (
-        "distilbert-base-cased",
-        "bert-base-cased",
-        "roberta-base",
-        "microsoft/deberta-v3-base",
-        "answerdotai/ModernBERT-base",
-    )
-
-    class ModelParams(BaseModel):
-        model_config = ConfigDict(extra="forbid")
-
-        checkpoint: str = Field(
-            default=default_checkpoints[0],
-            min_length=1,
-            description="Hugging Face token-classification base checkpoint.",
-        )
-        model_seeds: list[int] = Field(
-            default_factory=lambda: [0, 1, 2, 3, 4],
-            min_length=1,
-            description="Comma-separated model initialization seeds.",
-        )
-        uq_metric: Literal["entropy", "least_confidence", "margin"] = Field(
-            default="entropy",
-            description="Larger-is-more-uncertain acquisition metric.",
-        )
-        k: int = Field(default=32, ge=1, description="New pool tokens selected per round and arm.")
-        max_pool_percent: float = Field(
-            default=100.0,
-            gt=0,
-            le=100,
-            description="Maximum percentage of scoreable pool tokens to acquire.",
-        )
-        bootstrap_epochs: int = Field(
-            default=20,
-            ge=0,
-            description="Passes over the five fully labelled seed sentences.",
-        )
-        update_passes: int = Field(
-            default=1,
-            ge=1,
-            description="Passes over new and replayed tokens per round.",
-        )
-        replay_ratio: float = Field(
-            default=1.0,
-            ge=0,
-            description="Older labelled tokens replayed per newly selected token.",
-        )
-        learning_rate: float = Field(
-            default=5e-5,
-            gt=0,
-            description="AdamW learning rate for bootstrap and online updates.",
-        )
-        weight_decay: float = Field(
-            default=0.01,
-            ge=0,
-            description="AdamW weight decay.",
-        )
-        batch_size: int = Field(default=8, ge=1, description="Training item batch size.")
-        score_batch_size: int = Field(
-            default=32,
-            ge=1,
-            description="Pool scoring and test evaluation batch size.",
-        )
-        max_length: int = Field(
-            default=256,
-            ge=4,
-            description="Maximum tokenizer sequence length.",
-        )
-        wandb_enabled: bool = Field(
-            default=False,
-            description="Log settings and evaluation rows to Weights & Biases.",
-        )
-        wandb_project: str = Field(
-            default="uq-pet-token-uq",
-            description="Weights & Biases project name.",
-        )
-        wandb_run_name: str = Field(
-            default="",
-            description="Optional W&B run name; generated when empty.",
-        )
-
-        @field_validator("model_seeds", mode="before")
-        @classmethod
-        def parse_model_seeds(cls, value):
-            if isinstance(value, str):
-                values = [part.strip() for part in value.split(",") if part.strip()]
-                return [int(part) for part in values]
-            if isinstance(value, int):
-                return [value]
-            return value
-
-        @field_validator("checkpoint")
-        @classmethod
-        def validate_checkpoint(cls, value):
-            if not value.strip():
-                raise ValueError("checkpoint must not be blank")
-            return value.strip()
-
-        @field_validator("wandb_project", "wandb_run_name")
-        @classmethod
-        def strip_wandb_text(cls, value):
-            return value.strip()
-
-        @model_validator(mode="after")
-        def validate_run(self) -> Self:
-            if any(seed < 0 for seed in self.model_seeds):
-                raise ValueError("model seeds must be non-negative")
-            if len(self.model_seeds) != len(set(self.model_seeds)):
-                raise ValueError("model seeds must be unique")
-            if self.wandb_enabled and not self.wandb_project.strip():
-                raise ValueError("wandb_project is required when W&B logging is enabled")
-            return self
-
-        def resolved_wandb_run_name(self) -> str:
-            if self.wandb_run_name.strip():
-                return self.wandb_run_name.strip()
-            checkpoint_name = self.checkpoint.rsplit("/", maxsplit=1)[-1]
-            payload = self.model_dump(exclude={"wandb_run_name"})
-            digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:8]
-            seeds = "-".join(str(seed) for seed in self.model_seeds)
-            return f"{checkpoint_name}-seeds{seeds}-{digest}"
-
-    def print_cli_help():
-        console = Console()
-        console.print(
-            "[bold]Usage:[/] [cyan]uv run notebooks/bert_token_uq.py[/] "
-            "[green]--checkpoint[/] [italic]<id>[/] [dim]\\[options][/]"
-        )
-        console.print(
-            "[dim]No arguments runs the synthetic validation; "
-            "any experiment option runs training.[/]"
-        )
-        console.print()
-        table = Table(
-            title="CLI Options",
-            title_style="bold italic",
-            box=box.ROUNDED,
-            header_style="bold white",
-            border_style="bright_blue",
-            row_styles=("", "dim"),
-        )
-        table.add_column("Flag", style="bold cyan", no_wrap=True)
-        table.add_column("Type", style="green", no_wrap=True)
-        table.add_column("Default", style="yellow")
-        table.add_column("Description")
-        for name, field in ModelParams.model_fields.items():
-            default = field.get_default(call_default_factory=True)
-            annotation = str(field.annotation).replace("typing.", "")
-            if annotation.startswith("<class '"):
-                annotation = annotation.removeprefix("<class '").removesuffix("'>")
-                annotation = annotation.rsplit(".", maxsplit=1)[-1]
-            table.add_row(
-                f"--{name.replace('_', '-')}",
-                annotation,
-                str(default),
-                field.description or "",
-            )
-        console.print(table)
-
-    return ModelParams, default_checkpoints, print_cli_help
+    return default_config, make_demo_run
 
 
 @app.cell
 def _(mo):
     is_script_mode = mo.app_meta().mode == "script"
     cli_arguments = dict(mo.cli_args()) if is_script_mode else {}
-    is_batch_mode = is_script_mode and bool(cli_arguments)
+    is_batch_mode = "config-json" in cli_arguments
     return cli_arguments, is_batch_mode, is_script_mode
 
 
@@ -487,7 +263,7 @@ def _(EnvConfig, is_script_mode, mo, wandb):
 
 
 @app.cell
-def _(default_checkpoints, mo):
+def _(DEFAULT_CHECKPOINTS, UQ_METRICS, default_config, mo):
     params_form = (
         mo.md("""
         ## Experiment parameters
@@ -510,61 +286,104 @@ def _(default_checkpoints, mo):
         """)
         .batch(
             checkpoint=mo.ui.dropdown(
-                options=list(default_checkpoints),
-                value=default_checkpoints[0],
+                options=list(DEFAULT_CHECKPOINTS),
+                value=default_config["checkpoint"],
                 label="Hugging Face checkpoint",
                 full_width=True,
             ),
             model_seeds=mo.ui.text(
-                value="0,1,2,3,4",
+                value=",".join(str(seed) for seed in default_config["model_seeds"]),
                 label="Model seeds (comma-separated)",
                 full_width=True,
             ),
             uq_metric=mo.ui.dropdown(
-                options={
-                    "Predictive entropy": "entropy",
-                    "Least confidence": "least_confidence",
-                    "Margin": "margin",
-                },
-                value="Predictive entropy",
+                options=list(UQ_METRICS),
+                value=default_config["uq_metric"],
                 label="UQ metric",
             ),
-            k=mo.ui.number(start=1, stop=1000, step=1, value=32, label="New tokens per round"),
+            k=mo.ui.number(
+                start=1,
+                stop=1000,
+                step=1,
+                value=default_config["k"],
+                label="New tokens per round",
+            ),
             max_pool_percent=mo.ui.number(
                 start=0.1,
                 stop=100,
                 step=0.1,
-                value=100,
+                value=default_config["max_pool_percent"],
                 label="Maximum scoreable pool (%)",
             ),
             bootstrap_epochs=mo.ui.number(
-                start=0, stop=100, step=1, value=20, label="Bootstrap epochs"
+                start=0,
+                stop=100,
+                step=1,
+                value=default_config["bootstrap_epochs"],
+                label="Bootstrap epochs",
             ),
             update_passes=mo.ui.number(
-                start=1, stop=20, step=1, value=1, label="Update passes per round"
+                start=1,
+                stop=20,
+                step=1,
+                value=default_config["update_passes"],
+                label="Update passes per round",
             ),
-            replay_ratio=mo.ui.number(start=0, stop=4, step=0.25, value=1.0, label="Replay ratio"),
+            replay_ratio=mo.ui.number(
+                start=0,
+                stop=4,
+                step=0.25,
+                value=default_config["replay_ratio"],
+                label="Replay ratio",
+            ),
             learning_rate=mo.ui.number(
                 start=0.000001,
                 stop=0.001,
                 step=0.000001,
-                value=0.00005,
+                value=default_config["learning_rate"],
                 label="Learning rate",
             ),
             weight_decay=mo.ui.number(
-                start=0, stop=0.2, step=0.001, value=0.01, label="Weight decay"
+                start=0,
+                stop=0.2,
+                step=0.001,
+                value=default_config["weight_decay"],
+                label="Weight decay",
             ),
-            batch_size=mo.ui.number(start=1, stop=64, step=1, value=8, label="Training batch size"),
+            batch_size=mo.ui.number(
+                start=1,
+                stop=64,
+                step=1,
+                value=default_config["batch_size"],
+                label="Training batch size",
+            ),
             score_batch_size=mo.ui.number(
-                start=1, stop=256, step=1, value=32, label="Scoring batch size"
+                start=1,
+                stop=256,
+                step=1,
+                value=default_config["score_batch_size"],
+                label="Scoring batch size",
             ),
             max_length=mo.ui.number(
-                start=4, stop=2048, step=4, value=256, label="Maximum sequence length"
+                start=4,
+                stop=2048,
+                step=4,
+                value=default_config["max_length"],
+                label="Maximum sequence length",
             ),
-            wandb_enabled=mo.ui.checkbox(value=False, label="Enable W&B logging"),
-            wandb_project=mo.ui.text(value="uq-pet-token-uq", label="W&B project", full_width=True),
+            wandb_enabled=mo.ui.checkbox(
+                value=default_config["wandb_enabled"],
+                label="Enable W&B logging",
+            ),
+            wandb_project=mo.ui.text(
+                value=default_config["wandb_project"],
+                label="W&B project",
+                full_width=True,
+            ),
             wandb_run_name=mo.ui.text(
-                value="", label="W&B run name (generated when empty)", full_width=True
+                value=default_config["wandb_run_name"],
+                label="W&B run name (generated when empty)",
+                full_width=True,
             ),
         )
         .form(submit_button_label="Run experiment")
@@ -574,33 +393,18 @@ def _(default_checkpoints, mo):
 
 
 @app.cell
-def _(
-    ModelParams,
-    cli_arguments,
-    is_batch_mode,
-    is_script_mode,
-    mo,
-    params_form,
-    print_cli_help,
-    sys,
-):
-    if is_script_mode and "help" in cli_arguments:
-        print_cli_help()
-        sys.exit(0)
-
+def _(ExperimentConfig, cli_arguments, is_batch_mode, is_script_mode, mo, params_form):
     mo.stop(
         not is_script_mode and params_form.value is None,
         mo.md("*Submit the form to start training.*"),
     )
     if is_batch_mode:
-        model_params = ModelParams(
-            **{key.replace("-", "_"): value for key, value in cli_arguments.items()}
-        )
+        experiment_config = ExperimentConfig.model_validate_json(cli_arguments["config-json"])
     elif is_script_mode:
-        model_params = ModelParams()
+        experiment_config = ExperimentConfig()
     else:
-        model_params = ModelParams(**params_form.value)
-    return (model_params,)
+        experiment_config = ExperimentConfig(**params_form.value)
+    return (experiment_config,)
 
 
 @app.cell
@@ -608,113 +412,35 @@ def _(
     Path,
     RESULTS_DIR,
     configure_wandb_metrics,
-    download_pet_ner,
     env_config_widget,
-    get_device,
+    execute_experiment,
+    experiment_config,
     is_batch_mode,
     is_script_mode,
-    load_pet_splits,
+    make_demo_run,
     make_wandb_comparison_media,
     make_wandb_evaluation_log,
     make_learning_chart,
-    model_params,
     mo,
     os,
     pl,
-    run_active_learning,
+    require_wandb_credentials,
     wandb,
-    write_run,
 ):
-    config = model_params.model_dump()
-    config["wandb_run_name"] = model_params.resolved_wandb_run_name()
-    experiment_config = {
-        key: value
-        for key, value in config.items()
-        if key not in {"wandb_enabled", "wandb_project", "wandb_run_name"}
-    }
-
+    config = experiment_config.resolved_dict()
     if is_script_mode and not is_batch_mode:
-        # Script mode validates notebook execution without downloading model weights.
-        demo_scoreable_tokens = 96
-        demo_requested_tokens = int(demo_scoreable_tokens * config["max_pool_percent"] / 100)
-        demo_rounds = demo_requested_tokens // config["k"]
-        demo_token_budget = demo_rounds * config["k"]
-        config.update(
-            {
-                "scoreable_pool_tokens": demo_scoreable_tokens,
-                "token_budget": demo_token_budget,
-                "rounds": demo_rounds,
-                "effective_pool_percent": 100 * demo_token_budget / demo_scoreable_tokens,
-            }
-        )
-        result_records = [
-            {
-                "seed": model_seed,
-                "arm": arm,
-                "round": round_idx,
-                "total_rounds": demo_rounds,
-                "n_acquired": round_idx * config["k"],
-                "percent_acquired": 100 * round_idx * config["k"] / demo_scoreable_tokens,
-                "scoreable_pool_tokens": demo_scoreable_tokens,
-                "token_budget": demo_token_budget,
-                "entity_f1": 0.10
-                + model_seed * 0.001
-                + round_idx * (0.03 if arm == "uncertainty" else 0.02),
-                "entity_precision": 0.12,
-                "entity_recall": 0.10,
-                "token_accuracy": 0.70 + round_idx * 0.01,
-                "train_loss": 1.0 / (round_idx + 1),
-                "n_new": 0 if round_idx == 0 else config["k"],
-                "n_replay": 0 if round_idx == 0 else config["k"],
-            }
-            for model_seed in config["model_seeds"]
-            for arm in ("uncertainty", "random")
-            for round_idx in range(demo_rounds + 1)
-        ]
-        selection_records = [
-            {
-                "seed": model_seed,
-                "arm": arm,
-                "round": 1,
-                "pool_idx": idx,
-                "word_idx": 0,
-                "document_name": "script-demo",
-                "sentence_id": idx,
-                "token": token,
-                "label": label,
-                "uq_metric": config["uq_metric"] if arm == "uncertainty" else None,
-                "uq_score": 0.8 if arm == "uncertainty" else None,
-            }
-            for model_seed in config["model_seeds"]
-            for arm in ("uncertainty", "random")
-            for idx, (token, label) in enumerate((("check", "B-Activity"), ("form", "O")))
-        ]
-        dataset_summary = {
-            "mode": "script demo",
-            "seed_sentences": 5,
-            "pool_sentences": 328,
-            "scoreable_pool_tokens": demo_scoreable_tokens,
-            "acquisition_budget_tokens": demo_token_budget,
-            "acquisition_rounds": demo_rounds,
-            "effective_pool_percent": config["effective_pool_percent"],
-            "test_sentences": 84,
-            "device": "not loaded",
-        }
+        config, dataset_summary, result_records, selection_records = make_demo_run(config)
         run_dir = None
     else:
         wandb_run = None
         if config["wandb_enabled"]:
             offline = os.environ.get("WANDB_MODE", "").lower() == "offline"
-            if is_script_mode and not offline:
-                api_key = os.environ.get("WANDB_API_KEY")
-                if not api_key:
-                    raise RuntimeError(
-                        "W&B logging is enabled but WANDB_API_KEY is missing; "
-                        "set it in the environment or .env"
-                    )
-                wandb.login(key=api_key, verify=True)
-            elif not is_script_mode and not offline:
-                env_config_widget.require_valid()
+            if not offline:
+                if is_batch_mode:
+                    require_wandb_credentials(os.environ)
+                    wandb.login(key=os.environ["WANDB_API_KEY"], verify=True)
+                else:
+                    env_config_widget.require_valid()
             wandb_run = wandb.init(
                 project=config["wandb_project"],
                 name=config["wandb_run_name"],
@@ -722,17 +448,6 @@ def _(
             )
             configure_wandb_metrics(wandb_run, config["uq_metric"])
 
-        data_path = download_pet_ner()
-        seed_examples, pool_inputs, pool_gold, test_examples = load_pet_splits(data_path)
-        device = get_device()
-        dataset_summary = {
-            "mode": "experiment",
-            "seed_sentences": len(seed_examples),
-            "pool_sentences": len(pool_inputs),
-            "pool_tokens": len(pool_gold),
-            "test_sentences": len(test_examples),
-            "device": str(device),
-        }
         wandb_rows_logged = [0]
 
         def update_live_chart(progress_records):
@@ -765,49 +480,30 @@ def _(
                 mo.md("Training the seed model; the chart will appear after round 0.")
             )
         try:
-            result_records, selection_records = run_active_learning(
-                seed_examples,
-                pool_inputs,
-                pool_gold,
-                test_examples,
-                **experiment_config,
-                device=device,
-                progress_callback=update_live_chart,
-            )
-            first_result = result_records[0]
-            derived_config = {
-                "scoreable_pool_tokens": first_result["scoreable_pool_tokens"],
-                "token_budget": first_result["token_budget"],
-                "rounds": first_result["total_rounds"],
-                "effective_pool_percent": 100
-                * first_result["token_budget"]
-                / first_result["scoreable_pool_tokens"],
-            }
-            config.update(derived_config)
-            dataset_summary.update(
-                {
-                    "scoreable_pool_tokens": config["scoreable_pool_tokens"],
-                    "acquisition_budget_tokens": config["token_budget"],
-                    "acquisition_rounds": config["rounds"],
-                    "effective_pool_percent": config["effective_pool_percent"],
-                }
-            )
-            if wandb_run is not None:
-                wandb_run.config.update(derived_config)
             results_root = Path(os.environ.get("UQ_PET_RESULTS_DIR", RESULTS_DIR))
-            run_dir = write_run(
-                config,
-                result_records,
-                selection_records,
-                results_dir=results_root,
+            config, dataset_summary, result_records, selection_records, run_dir = (
+                execute_experiment(
+                    experiment_config,
+                    results_dir=results_root,
+                    progress_callback=update_live_chart,
+                )
             )
             if wandb_run is not None:
-                wandb_run.log(
-                    make_wandb_comparison_media(
-                        wandb, make_learning_chart, result_records, config["uq_metric"]
-                    )
+                wandb_run.config.update(
+                    {
+                        key: config[key]
+                        for key in (
+                            "scoreable_pool_tokens",
+                            "token_budget",
+                            "rounds",
+                            "effective_pool_percent",
+                        )
+                    }
                 )
-            if is_script_mode:
+                wandb_run.log(
+                    make_wandb_comparison_media(wandb, result_records, config["uq_metric"])
+                )
+            if is_batch_mode:
                 print(f"Batch output: {run_dir}")
         finally:
             if wandb_run is not None:

@@ -4,22 +4,23 @@
 
 `bert-token-uq` compares sequential acquisition of uncertain PET NER words with the
 same number of random words. The implementation is intentionally small: three focused
-modules and one marimo notebook.
+experiment modules, one shared experiment entry layer, and one marimo notebook.
 
 ## Commands
 
 ```bash
 uv sync
 uv run pytest
-uv run ruff check src tests notebooks
-uv run ruff format --check src tests notebooks
+uv run ruff check src tests notebooks scripts
+uv run ruff format --check src tests notebooks scripts
 uv run marimo check notebooks/bert_token_uq.py
 uv run notebooks/bert_token_uq.py
 uv run marimo edit notebooks/bert_token_uq.py
 ```
 
-Plain script mode uses synthetic display records and must not download or train a
-model. A real run starts only from the notebook's **Run experiment** button.
+Plain notebook script mode uses synthetic display records and must not download or
+train a model unless a validated `--config-json` batch configuration is supplied.
+Real runs start from the notebook's **Run experiment** button or that batch mode.
 
 ## Experiment invariants
 
@@ -48,5 +49,6 @@ model. A real run starts only from the notebook's **Run experiment** button.
 
 Do not add YAML configuration, a CLI framework, metric registries, callbacks, model
 checkpoint management, or generalized experiment abstractions without a concrete
-need. Keep experimental controls in the marimo notebook; keep data, model operations,
-and active-learning orchestration in their existing focused modules.
+need. Keep the validated experiment configuration in `experiment.py`, UI controls in
+the marimo notebook, and data, model operations, and active-learning orchestration in
+their focused modules.
