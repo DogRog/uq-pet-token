@@ -34,7 +34,7 @@ CHECKPOINTS = (
 MODEL_SEEDS = (0, 1, 2, 3, 4)
 SEARCH_SPACE = {
     "uq_metric": ("entropy", "least_confidence", "margin"),
-    "k": (8, 16, 32, 64),
+    "k": (8, 16, 32),
     "bootstrap_epochs": (10, 20, 30),
     "update_passes": (1, 2, 4),
     "learning_rate": (2e-5, 3e-5, 5e-5),
@@ -43,7 +43,7 @@ SEARCH_SPACE = {
     "weight_decay": (0.0, 0.01),
 }
 FIXED = {
-    "rounds": 100,
+    "max_pool_percent": 100.0,
     "score_batch_size": 32,
     "max_length": 256,
 }
@@ -83,6 +83,7 @@ def build_runs(
     *,
     wandb_enabled: bool,
     wandb_project: str,
+    max_pool_percent: float,
 ) -> list[dict]:
     """Cross sampled configurations with every requested checkpoint and seed."""
     runs = []
@@ -93,6 +94,7 @@ def build_runs(
                     "checkpoint": checkpoint,
                     "model_seeds": seed,
                     **FIXED,
+                    "max_pool_percent": max_pool_percent,
                     **search_config,
                     "wandb_enabled": wandb_enabled,
                     "wandb_project": wandb_project,
@@ -133,6 +135,7 @@ def make_sweep_summary(
     *,
     sampler_seed: int,
     wandb_enabled: bool,
+    max_pool_percent: float,
 ) -> Panel:
     summary = Table.grid(padding=(0, 2))
     summary.add_column(style="bold cyan", justify="right")
@@ -141,6 +144,7 @@ def make_sweep_summary(
     summary.add_row("Checkpoints", str(checkpoint_count))
     summary.add_row("Model seeds", str(seed_count))
     summary.add_row("Total runs", f"[bold yellow]{total_runs}[/]")
+    summary.add_row("Pool cap", f"{max_pool_percent:g}%")
     summary.add_row("Sampler seed", str(sampler_seed))
     summary.add_row(
         "W&B",
@@ -275,6 +279,12 @@ def main() -> None:
         help="W&B project used with --wandb.",
     )
     parser.add_argument(
+        "--max-pool-percent",
+        type=float,
+        default=FIXED["max_pool_percent"],
+        help="Maximum scoreable-pool percentage acquired per run (default: 100).",
+    )
+    parser.add_argument(
         "--sweeps-dir",
         type=Path,
         default=SWEEPS_DIR,
@@ -289,6 +299,8 @@ def main() -> None:
 
     if args.count < 1:
         parser.error("--count must be positive")
+    if not 0 < args.max_pool_percent <= 100:
+        parser.error("--max-pool-percent must be in (0, 100]")
     if args.launch and args.wandb:
         load_dotenv(PROJECT_ROOT / ".env")
         try:
@@ -311,6 +323,7 @@ def main() -> None:
         args.seeds,
         wandb_enabled=args.wandb,
         wandb_project=args.wandb_project,
+        max_pool_percent=args.max_pool_percent,
     )
     CONSOLE.print(
         make_sweep_summary(
@@ -320,6 +333,7 @@ def main() -> None:
             len(runs),
             sampler_seed=args.seed,
             wandb_enabled=args.wandb,
+            max_pool_percent=args.max_pool_percent,
         )
     )
     CONSOLE.print()
@@ -344,6 +358,7 @@ def main() -> None:
         "model_seeds": list(args.seeds),
         "wandb_enabled": args.wandb,
         "wandb_project": args.wandb_project,
+        "max_pool_percent": args.max_pool_percent,
         "runs": [],
     }
     manifest_path = sweep_dir / "manifest.json"

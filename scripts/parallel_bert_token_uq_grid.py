@@ -70,6 +70,8 @@ def build_worker_specs(args, launch_dir: Path) -> list[dict]:
             ",".join(str(seed) for seed in args.seeds),
             "--wandb-project",
             args.wandb_project,
+            "--max-pool-percent",
+            str(args.max_pool_percent),
             "--sweeps-dir",
             str(sweeps_dir),
             "--launch",
@@ -101,6 +103,7 @@ def print_plan(args, launch_dir: Path, specs: list[dict]) -> None:
     summary.add_row("Sampled configs", str(args.count))
     summary.add_row("Model seeds", str(seed_count))
     summary.add_row("Total runs", f"[bold yellow]{total_runs}[/]")
+    summary.add_row("Pool cap", f"{args.max_pool_percent:g}%")
     summary.add_row("Sampler seed", str(args.seed))
     summary.add_row("W&B", "[bold green]enabled[/]" if args.wandb else "[dim]disabled[/]")
     summary.add_row("Launch directory", str(launch_dir))
@@ -243,6 +246,12 @@ def main() -> None:
     parser.add_argument("--wandb", action="store_true", help="Enable W&B for every run.")
     parser.add_argument("--wandb-project", default="uq-pet-token-uq")
     parser.add_argument(
+        "--max-pool-percent",
+        type=float,
+        default=100.0,
+        help="Maximum scoreable-pool percentage acquired per run (default: 100).",
+    )
+    parser.add_argument(
         "--launch",
         action="store_true",
         help="Start both workers. Without this flag, only show the plan.",
@@ -251,6 +260,8 @@ def main() -> None:
 
     if args.count < 1:
         parser.error("--count must be positive")
+    if not 0 < args.max_pool_percent <= 100:
+        parser.error("--max-pool-percent must be in (0, 100]")
     if args.launch and args.wandb:
         load_dotenv(PROJECT_ROOT / ".env")
         try:

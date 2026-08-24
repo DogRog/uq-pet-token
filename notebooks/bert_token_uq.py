@@ -58,7 +58,9 @@ def _():
 def _(alt, pl):
     def make_learning_chart(result_records, seed):
         curve = (
-            pl.DataFrame(result_records).filter(pl.col("seed") == seed).sort(["arm", "n_acquired"])
+            pl.DataFrame(result_records)
+            .filter(pl.col("seed") == seed)
+            .sort(["arm", "percent_acquired"])
         )
         arm_color = alt.Color(
             "arm:N",
@@ -71,9 +73,9 @@ def _(alt, pl):
             legend=alt.Legend(orient="top"),
         )
         shared_x = alt.X(
-            "n_acquired:Q",
-            title="Acquired pool tokens",
-            axis=alt.Axis(format="d"),
+            "percent_acquired:Q",
+            title="Scoreable pool acquired (%)",
+            scale=alt.Scale(domain=[0, 100]),
         )
         entity_chart = (
             alt.Chart(curve)
@@ -82,9 +84,10 @@ def _(alt, pl):
                 x=shared_x,
                 y=alt.Y("entity_f1:Q", title="F1", scale=alt.Scale(zero=False)),
                 color=arm_color,
-                order=alt.Order("n_acquired:Q"),
+                order=alt.Order("percent_acquired:Q"),
                 tooltip=[
                     alt.Tooltip("arm:N", title="Arm"),
+                    alt.Tooltip("percent_acquired:Q", title="Pool acquired", format=".2f"),
                     alt.Tooltip("n_acquired:Q", title="Acquired", format=".0f"),
                     alt.Tooltip("entity_f1:Q", title="Entity F1", format=".3f"),
                 ],
@@ -98,9 +101,10 @@ def _(alt, pl):
                 x=shared_x,
                 y=alt.Y("token_accuracy:Q", title="Accuracy", scale=alt.Scale(zero=False)),
                 color=arm_color,
-                order=alt.Order("n_acquired:Q"),
+                order=alt.Order("percent_acquired:Q"),
                 tooltip=[
                     alt.Tooltip("arm:N", title="Arm"),
+                    alt.Tooltip("percent_acquired:Q", title="Pool acquired", format=".2f"),
                     alt.Tooltip("n_acquired:Q", title="Acquired", format=".0f"),
                     alt.Tooltip("token_accuracy:Q", title="Token accuracy", format=".3f"),
                 ],
@@ -111,7 +115,7 @@ def _(alt, pl):
 
     def make_variance_chart(results_frame):
         summary = (
-            results_frame.group_by(["arm", "n_acquired"])
+            results_frame.group_by(["arm", "n_acquired", "percent_acquired"])
             .agg(
                 pl.col("entity_f1").mean().alias("entity_f1_mean"),
                 pl.col("entity_f1").std().fill_null(0.0).alias("entity_f1_std"),
@@ -132,7 +136,7 @@ def _(alt, pl):
                 .clip(0.0, 1.0)
                 .alias("token_accuracy_upper"),
             )
-            .sort(["arm", "n_acquired"])
+            .sort(["arm", "percent_acquired"])
         )
         arm_color = alt.Color(
             "arm:N",
@@ -145,9 +149,9 @@ def _(alt, pl):
             legend=alt.Legend(orient="top"),
         )
         shared_x = alt.X(
-            "n_acquired:Q",
-            title="Acquired pool tokens",
-            axis=alt.Axis(format="d"),
+            "percent_acquired:Q",
+            title="Scoreable pool acquired (%)",
+            scale=alt.Scale(domain=[0, 100]),
         )
 
         def metric_chart(mean_field, std_field, lower_field, upper_field, title, y_title):
@@ -170,6 +174,7 @@ def _(alt, pl):
                     color=arm_color,
                     tooltip=[
                         alt.Tooltip("arm:N", title="Arm"),
+                        alt.Tooltip("percent_acquired:Q", title="Pool acquired", format=".2f"),
                         alt.Tooltip("n_acquired:Q", title="Acquired", format=".0f"),
                         alt.Tooltip(f"{mean_field}:Q", title="Mean", format=".3f"),
                         alt.Tooltip(f"{std_field}:Q", title="Std. dev.", format=".3f"),
@@ -236,7 +241,12 @@ def _():
             description="Larger-is-more-uncertain acquisition metric.",
         )
         k: int = Field(default=32, ge=1, description="New pool tokens selected per round and arm.")
-        rounds: int = Field(default=5, ge=1, description="Number of acquisition rounds.")
+        max_pool_percent: float = Field(
+            default=100.0,
+            gt=0,
+            le=100,
+            description="Maximum percentage of scoreable pool tokens to acquire.",
+        )
         bootstrap_epochs: int = Field(
             default=20,
             ge=0,
@@ -400,7 +410,7 @@ def _(default_checkpoints, mo):
 
         {model_seeds}
 
-        {uq_metric} {k} {rounds}
+        {uq_metric} {k} {max_pool_percent}
 
         {bootstrap_epochs} {update_passes} {replay_ratio}
 
@@ -434,7 +444,13 @@ def _(default_checkpoints, mo):
                 label="UQ metric",
             ),
             k=mo.ui.number(start=1, stop=1000, step=1, value=32, label="New tokens per round"),
-            rounds=mo.ui.number(start=1, stop=100, step=1, value=5, label="Rounds"),
+            max_pool_percent=mo.ui.number(
+                start=0.1,
+                stop=100,
+                step=0.1,
+                value=100,
+                label="Maximum scoreable pool (%)",
+            ),
             bootstrap_epochs=mo.ui.number(
                 start=0, stop=100, step=1, value=20, label="Bootstrap epochs"
             ),
@@ -530,12 +546,28 @@ def _(
 
     if is_script_mode and not is_batch_mode:
         # Script mode validates notebook execution without downloading model weights.
+        demo_scoreable_tokens = 96
+        demo_requested_tokens = int(demo_scoreable_tokens * config["max_pool_percent"] / 100)
+        demo_rounds = demo_requested_tokens // config["k"]
+        demo_token_budget = demo_rounds * config["k"]
+        config.update(
+            {
+                "scoreable_pool_tokens": demo_scoreable_tokens,
+                "token_budget": demo_token_budget,
+                "rounds": demo_rounds,
+                "effective_pool_percent": 100 * demo_token_budget / demo_scoreable_tokens,
+            }
+        )
         result_records = [
             {
                 "seed": model_seed,
                 "arm": arm,
                 "round": round_idx,
+                "total_rounds": demo_rounds,
                 "n_acquired": round_idx * config["k"],
+                "percent_acquired": 100 * round_idx * config["k"] / demo_scoreable_tokens,
+                "scoreable_pool_tokens": demo_scoreable_tokens,
+                "token_budget": demo_token_budget,
                 "entity_f1": 0.10
                 + model_seed * 0.001
                 + round_idx * (0.03 if arm == "uncertainty" else 0.02),
@@ -548,7 +580,7 @@ def _(
             }
             for model_seed in config["model_seeds"]
             for arm in ("uncertainty", "random")
-            for round_idx in range(3)
+            for round_idx in range(demo_rounds + 1)
         ]
         selection_records = [
             {
@@ -572,6 +604,10 @@ def _(
             "mode": "script demo",
             "seed_sentences": 5,
             "pool_sentences": 328,
+            "scoreable_pool_tokens": demo_scoreable_tokens,
+            "acquisition_budget_tokens": demo_token_budget,
+            "acquisition_rounds": demo_rounds,
+            "effective_pool_percent": config["effective_pool_percent"],
             "test_sentences": 84,
             "device": "not loaded",
         }
@@ -619,7 +655,8 @@ def _(
                             mo.md(
                                 f"### Live results — seed {latest['seed']} "
                                 f"({seed_position} of {len(config['model_seeds'])}), "
-                                f"round {latest['round']} of {config['rounds']}"
+                                f"round {latest['round']} of {latest['total_rounds']} · "
+                                f"{latest['percent_acquired']:.2f}% acquired"
                             ),
                             make_learning_chart(progress_records, latest["seed"]),
                         ]
@@ -644,6 +681,26 @@ def _(
                 device=device,
                 progress_callback=update_live_chart,
             )
+            first_result = result_records[0]
+            derived_config = {
+                "scoreable_pool_tokens": first_result["scoreable_pool_tokens"],
+                "token_budget": first_result["token_budget"],
+                "rounds": first_result["total_rounds"],
+                "effective_pool_percent": 100
+                * first_result["token_budget"]
+                / first_result["scoreable_pool_tokens"],
+            }
+            config.update(derived_config)
+            dataset_summary.update(
+                {
+                    "scoreable_pool_tokens": config["scoreable_pool_tokens"],
+                    "acquisition_budget_tokens": config["token_budget"],
+                    "acquisition_rounds": config["rounds"],
+                    "effective_pool_percent": config["effective_pool_percent"],
+                }
+            )
+            if wandb_run is not None:
+                wandb_run.config.update(derived_config)
             results_root = Path(os.environ.get("UQ_PET_RESULTS_DIR", RESULTS_DIR))
             run_dir = write_run(
                 config,
@@ -683,8 +740,11 @@ def _(config, dataset_summary, mo, run_dir):
 
             **{config["checkpoint"]}** was bootstrapped for
             **{config["bootstrap_epochs"]} epochs** with model seed(s)
-            **{seed_description}**. Each of the **{config["rounds"]} rounds** acquired
-            **{config["k"]} new tokens per arm**, trained for
+            **{seed_description}**. Acquisition was capped at
+            **{config["max_pool_percent"]:g}%** of the scoreable pool. This produced
+            **{config["rounds"]} full rounds** of **{config["k"]} new tokens per arm**
+            and an effective endpoint of **{config["effective_pool_percent"]:.2f}%**.
+            Each round trained for
             **{config["update_passes"]} pass(es)**, and replayed
             **{config["replay_ratio"]:g}× K** older labels. The uncertainty arm used
             **{config["uq_metric"].replace("_", " ")}** scoring.
@@ -722,16 +782,16 @@ def _(mo, results_df):
 def _(mo, pl, results_df):
     paired = results_df.pivot(
         on="arm",
-        index=["seed", "round", "n_acquired"],
+        index=["seed", "round", "n_acquired", "percent_acquired"],
         values="entity_f1",
     ).with_columns((pl.col("uncertainty") - pl.col("random")).alias("uncertainty_minus_random"))
     gap_table = (
-        paired.group_by(["round", "n_acquired"])
+        paired.group_by(["round", "n_acquired", "percent_acquired"])
         .agg(
             pl.col("uncertainty_minus_random").mean().alias("mean"),
             pl.col("uncertainty_minus_random").std().alias("std"),
         )
-        .sort(["round", "n_acquired"])
+        .sort(["percent_acquired", "round"])
     )
     mo.vstack([mo.md("## Entity F1 gap"), mo.ui.table(gap_table, selection=None)])
     return

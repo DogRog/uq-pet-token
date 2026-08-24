@@ -84,12 +84,45 @@ def sample_replay(items: list[dict], k: int, ratio: float, *, seed: int) -> list
     return [items[idx] for idx in indices]
 
 
-def _result_row(seed: int, arm: str, round_idx: int, acquired: int, metrics: dict) -> dict:
+def acquisition_schedule(scoreable_tokens: int, k: int, max_pool_percent: float) -> tuple[int, int]:
+    """Return full acquisition rounds and their token budget."""
+    if scoreable_tokens < 1:
+        raise ValueError("the scoreable pool must contain at least one token")
+    if k < 1:
+        raise ValueError(f"k must be positive, got {k}")
+    if not 0 < max_pool_percent <= 100:
+        raise ValueError(f"max_pool_percent must be in (0, 100], got {max_pool_percent}")
+
+    requested_tokens = int(scoreable_tokens * max_pool_percent / 100)
+    rounds = requested_tokens // k
+    if rounds < 1:
+        raise ValueError(
+            f"{max_pool_percent:g}% of {scoreable_tokens} scoreable tokens "
+            f"is fewer than one full k={k} acquisition round"
+        )
+    return rounds, rounds * k
+
+
+def _result_row(
+    seed: int,
+    arm: str,
+    round_idx: int,
+    acquired: int,
+    metrics: dict,
+    *,
+    scoreable_tokens: int,
+    token_budget: int,
+    total_rounds: int,
+) -> dict:
     return {
         "seed": seed,
         "arm": arm,
         "round": round_idx,
+        "total_rounds": total_rounds,
         "n_acquired": acquired,
+        "percent_acquired": 100 * acquired / scoreable_tokens,
+        "scoreable_pool_tokens": scoreable_tokens,
+        "token_budget": token_budget,
         **metrics,
     }
 
@@ -104,7 +137,7 @@ def run_active_learning(
     model_seeds: list[int],
     uq_metric: str,
     k: int,
-    rounds: int,
+    max_pool_percent: float,
     bootstrap_epochs: int,
     update_passes: int,
     replay_ratio: float,
@@ -117,8 +150,6 @@ def run_active_learning(
     progress_callback: Callable[[list[dict]], None] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Run uncertainty and random online learners from the same bootstrap state."""
-    if rounds < 1:
-        raise ValueError(f"rounds must be positive, got {rounds}")
     if bootstrap_epochs < 0:
         raise ValueError(f"bootstrap_epochs must be non-negative, got {bootstrap_epochs}")
     if not model_seeds:
@@ -137,10 +168,13 @@ def run_active_learning(
             max_length=max_length,
             batch_size=score_batch_size,
         )
-        if rounds * k > len(scoreable):
-            raise ValueError(
-                f"rounds*k={rounds * k} exceeds {len(scoreable)} scoreable pool tokens"
-            )
+        rounds, token_budget = acquisition_schedule(len(scoreable), k, max_pool_percent)
+        CONSOLE.print(
+            f"[bold cyan]acquisition budget[/] [bold]{token_budget}[/] of "
+            f"{len(scoreable)} scoreable tokens "
+            f"([bold]{100 * token_budget / len(scoreable):.2f}%[/]) · "
+            f"{rounds} full rounds of K={k}"
+        )
 
         bootstrap_optimizer = torch.optim.AdamW(
             base_model.parameters(), lr=learning_rate, weight_decay=weight_decay
@@ -173,7 +207,18 @@ def run_active_learning(
             f"[dim]token accuracy[/] [bold]{baseline['token_accuracy']:.4f}[/]"
         )
         for arm in ("uncertainty", "random"):
-            results.append(_result_row(model_seed, arm, 0, 0, baseline))
+            results.append(
+                _result_row(
+                    model_seed,
+                    arm,
+                    0,
+                    0,
+                    baseline,
+                    scoreable_tokens=len(scoreable),
+                    token_budget=token_budget,
+                    total_rounds=rounds,
+                )
+            )
         if progress_callback is not None:
             progress_callback(list(results))
 
@@ -254,7 +299,18 @@ def run_active_learning(
                         "n_replay": len(replay),
                     }
                 )
-                results.append(_result_row(model_seed, arm, round_idx, len(acquired[arm]), metrics))
+                results.append(
+                    _result_row(
+                        model_seed,
+                        arm,
+                        round_idx,
+                        len(acquired[arm]),
+                        metrics,
+                        scoreable_tokens=len(scoreable),
+                        token_budget=token_budget,
+                        total_rounds=rounds,
+                    )
+                )
 
                 for pool_idx, word_idx in chosen[arm]:
                     example = pool_inputs[pool_idx]

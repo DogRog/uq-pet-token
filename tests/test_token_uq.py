@@ -5,6 +5,7 @@ import torch
 
 import uq_pet.active_learning as active_learning
 from uq_pet.active_learning import (
+    acquisition_schedule,
     reveal_pool_items,
     run_active_learning,
     sample_replay,
@@ -187,6 +188,20 @@ def test_replay_is_limited_and_seeded():
     assert sample_replay(items, k=4, ratio=0.0, seed=3) == []
 
 
+def test_acquisition_schedule_uses_full_k_sized_rounds():
+    assert acquisition_schedule(320, k=8, max_pool_percent=50) == (20, 160)
+    assert acquisition_schedule(320, k=16, max_pool_percent=50) == (10, 160)
+    assert acquisition_schedule(320, k=32, max_pool_percent=50) == (5, 160)
+    assert acquisition_schedule(101, k=32, max_pool_percent=100) == (3, 96)
+
+
+def test_acquisition_schedule_rejects_invalid_or_too_small_caps():
+    with pytest.raises(ValueError, match="must be in"):
+        acquisition_schedule(100, k=8, max_pool_percent=0)
+    with pytest.raises(ValueError, match="fewer than one full"):
+        acquisition_schedule(100, k=32, max_pool_percent=1)
+
+
 def test_labels_are_revealed_only_for_selected_keys():
     pool_inputs = [
         {
@@ -234,9 +249,9 @@ def test_run_reports_progress_after_baseline_and_each_complete_round(monkeypatch
             "sentence_id": idx,
             "tokens": [f"word-{idx}"],
         }
-        for idx in range(3)
+        for idx in range(2)
     ]
-    pool_gold = {(idx, 0): 0 for idx in range(3)}
+    pool_gold = {(idx, 0): 0 for idx in range(2)}
 
     monkeypatch.setattr(active_learning, "set_seed", lambda seed: None)
     monkeypatch.setattr(
@@ -275,7 +290,7 @@ def test_run_reports_progress_after_baseline_and_each_complete_round(monkeypatch
         model_seeds=[0],
         uq_metric="entropy",
         k=1,
-        rounds=2,
+        max_pool_percent=100,
         bootstrap_epochs=1,
         update_passes=1,
         replay_ratio=1.0,
@@ -290,4 +305,6 @@ def test_run_reports_progress_after_baseline_and_each_complete_round(monkeypatch
 
     assert [len(snapshot) for snapshot in snapshots] == [2, 4, 6]
     assert [max(row["round"] for row in snapshot) for snapshot in snapshots] == [0, 1, 2]
+    assert {row["percent_acquired"] for row in results} == {0.0, 50.0, 100.0}
+    assert {row["token_budget"] for row in results} == {2}
     assert snapshots[-1] == results

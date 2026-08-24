@@ -18,6 +18,7 @@ grid = importlib.util.module_from_spec(GRID_SPEC)
 GRID_SPEC.loader.exec_module(grid)
 
 SEARCH_SPACE = grid.SEARCH_SPACE
+FIXED = grid.FIXED
 build_runs = grid.build_runs
 params_to_cli_args = grid.params_to_cli_args
 require_wandb_credentials = grid.require_wandb_credentials
@@ -33,7 +34,10 @@ def test_search_config_sampling_is_unique_and_reproducible():
     assert len(first) == 12
     assert len({tuple(config.items()) for config in first}) == 12
     assert SEARCH_SPACE["uq_metric"] == ("entropy", "least_confidence", "margin")
-    assert SEARCH_SPACE["k"] == (8, 16, 32, 64)
+    assert SEARCH_SPACE["k"] == (8, 16, 32)
+    assert "max_pool_percent" not in SEARCH_SPACE
+    assert FIXED["max_pool_percent"] == 100.0
+    assert "rounds" not in FIXED
 
 
 def test_sampled_configs_are_crossed_with_every_checkpoint_and_seed():
@@ -44,6 +48,7 @@ def test_sampled_configs_are_crossed_with_every_checkpoint_and_seed():
         (0, 1, 2),
         wandb_enabled=False,
         wandb_project="test-project",
+        max_pool_percent=50,
     )
 
     assert len(runs) == 12
@@ -51,6 +56,8 @@ def test_sampled_configs_are_crossed_with_every_checkpoint_and_seed():
     assert {run["params"]["checkpoint"] for run in runs} == {"model-a", "model-b"}
     assert {run["params"]["model_seeds"] for run in runs} == {0, 1, 2}
     assert all(run["params"]["wandb_enabled"] is False for run in runs)
+    assert all(run["params"]["max_pool_percent"] == 50 for run in runs)
+    assert all("rounds" not in run["params"] for run in runs)
 
 
 def test_cli_args_use_marimo_names_and_boolean_values():
@@ -123,6 +130,7 @@ def test_parallel_launcher_dry_run_partitions_all_checkpoints():
     assert completed.returncode == 0
     assert "Workers" in completed.stdout
     assert "Total runs" in completed.stdout
+    assert "Pool cap" in completed.stdout
     assert "worker-a" in completed.stdout
     assert "worker-b" in completed.stdout
     assert "distilbert-base-cased" in completed.stdout

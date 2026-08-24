@@ -8,6 +8,7 @@ import torch
 from seqeval.metrics import f1_score, precision_score, recall_score
 from torch.utils.data import DataLoader
 from transformers import AutoConfig, AutoModelForTokenClassification, AutoTokenizer
+from transformers.utils import logging as transformers_logging
 
 from uq_pet.pet_data import NER_TAGS, TokenKey
 
@@ -112,12 +113,17 @@ def load_token_classifier(checkpoint: str, device: torch.device):
             f"checkpoint {checkpoint!r} did not provide a fast tokenizer; "
             "word-to-subword alignment requires one"
         )
-    model = AutoModelForTokenClassification.from_pretrained(
-        checkpoint,
-        num_labels=len(NER_TAGS),
-        id2label=dict(enumerate(NER_TAGS)),
-        label2id={label: idx for idx, label in enumerate(NER_TAGS)},
-    ).to(device)
+    previous_verbosity = transformers_logging.get_verbosity()
+    transformers_logging.set_verbosity_error()
+    try:
+        model = AutoModelForTokenClassification.from_pretrained(
+            checkpoint,
+            num_labels=len(NER_TAGS),
+            id2label=dict(enumerate(NER_TAGS)),
+            label2id={label: idx for idx, label in enumerate(NER_TAGS)},
+        ).to(device)
+    finally:
+        transformers_logging.set_verbosity(previous_verbosity)
     return model, tokenizer
 
 
