@@ -259,7 +259,7 @@ def _(EnvConfig, is_script_mode, mo, wandb):
         env_config = mo.ui.anywidget(env_config_widget)
         env_config_display = mo.accordion({"Environment keys (only needed for W&B)": env_config})
     env_config_display
-    return env_config_widget
+    return (env_config_widget,)
 
 
 @app.cell
@@ -389,11 +389,18 @@ def _(DEFAULT_CHECKPOINTS, UQ_METRICS, default_config, mo):
         .form(submit_button_label="Run experiment")
     )
     params_form
-    return params_form
+    return (params_form,)
 
 
 @app.cell
-def _(ExperimentConfig, cli_arguments, is_batch_mode, is_script_mode, mo, params_form):
+def _(
+    ExperimentConfig,
+    cli_arguments,
+    is_batch_mode,
+    is_script_mode,
+    mo,
+    params_form,
+):
     mo.stop(
         not is_script_mode and params_form.value is None,
         mo.md("*Submit the form to start training.*"),
@@ -418,9 +425,9 @@ def _(
     is_batch_mode,
     is_script_mode,
     make_demo_run,
+    make_learning_chart,
     make_wandb_comparison_media,
     make_wandb_evaluation_log,
-    make_learning_chart,
     mo,
     os,
     pl,

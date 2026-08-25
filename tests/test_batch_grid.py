@@ -14,6 +14,7 @@ GRID_SPEC.loader.exec_module(grid)
 
 SEARCH_SPACE = grid.SEARCH_SPACE
 build_runs = grid.build_runs
+fixed_all_metric_configs = grid.fixed_all_metric_configs
 params_to_cli_args = grid.params_to_cli_args
 printable_command = grid.printable_command
 require_wandb_credentials = grid.require_wandb_credentials
@@ -31,6 +32,29 @@ def test_search_config_sampling_is_unique_and_reproducible():
     assert SEARCH_SPACE["uq_metric"] == ("entropy", "least_confidence", "margin")
     assert SEARCH_SPACE["k"] == (8, 16, 32)
     assert "max_pool_percent" not in SEARCH_SPACE
+
+
+def test_fixed_configs_cross_all_metrics_with_shared_default_hyperparameters():
+    configs = fixed_all_metric_configs()
+
+    assert [config["uq_metric"] for config in configs] == [
+        "entropy",
+        "least_confidence",
+        "margin",
+    ]
+    shared_configs = [
+        {key: value for key, value in config.items() if key != "uq_metric"} for config in configs
+    ]
+    assert shared_configs[0] == shared_configs[1] == shared_configs[2]
+    assert shared_configs[0] == {
+        "k": 32,
+        "bootstrap_epochs": 20,
+        "update_passes": 1,
+        "learning_rate": 5e-5,
+        "batch_size": 8,
+        "replay_ratio": 1.0,
+        "weight_decay": 0.01,
+    }
 
 
 def test_sampled_configs_are_crossed_with_every_checkpoint_and_seed():
@@ -51,6 +75,7 @@ def test_sampled_configs_are_crossed_with_every_checkpoint_and_seed():
     assert all(run["params"]["wandb_enabled"] is False for run in runs)
     assert all(run["params"]["max_pool_percent"] == 50 for run in runs)
     assert all("rounds" not in run["params"] for run in runs)
+    assert all(run["params"]["uq_metric"] in run["run_id"] for run in runs)
 
 
 def test_cli_args_pass_one_json_configuration():

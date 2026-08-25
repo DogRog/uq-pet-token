@@ -44,6 +44,13 @@ SEARCH_SPACE = {
 CONSOLE = Console()
 
 
+def fixed_all_metric_configs() -> list[dict]:
+    """Return one shared default hyperparameter configuration per UQ metric."""
+    defaults = ExperimentConfig()
+    shared = {key: getattr(defaults, key) for key in SEARCH_SPACE if key != "uq_metric"}
+    return [{"uq_metric": metric, **shared} for metric in UQ_METRICS]
+
+
 def sample_search_configs(count: int, rng: random.Random) -> list[dict]:
     """Sample unique acquisition and training configurations with a local seeded RNG."""
     if count < 1:
@@ -94,7 +101,10 @@ def build_runs(
                 )
                 params = config.model_dump()
                 digest = hashlib.sha256(json.dumps(params, sort_keys=True).encode()).hexdigest()[:8]
-                run_id = f"cfg{config_idx:02d}-{_slug(checkpoint)}-seed{seed}-{digest}"
+                run_id = (
+                    f"cfg{config_idx:02d}-{config.uq_metric}-"
+                    f"{_slug(checkpoint)}-seed{seed}-{digest}"
+                )
                 params["wandb_run_name"] = run_id
                 runs.append({"run_id": run_id, "params": params})
     return runs
@@ -124,19 +134,22 @@ def make_sweep_summary(
     seed_count: int,
     total_runs: int,
     *,
-    sampler_seed: int,
+    configuration_mode: str,
+    sampler_seed: int | None,
     wandb_enabled: bool,
     max_pool_percent: float,
 ) -> Panel:
     summary = Table.grid(padding=(0, 2))
     summary.add_column(style="bold cyan", justify="right")
     summary.add_column()
-    summary.add_row("Sampled configs", str(search_config_count))
+    summary.add_row("Configuration mode", configuration_mode)
+    summary.add_row("Configurations", str(search_config_count))
     summary.add_row("Checkpoints", str(checkpoint_count))
     summary.add_row("Model seeds", str(seed_count))
     summary.add_row("Total runs", f"[bold yellow]{total_runs}[/]")
     summary.add_row("Pool cap", f"{max_pool_percent:g}%")
-    summary.add_row("Sampler seed", str(sampler_seed))
+    if sampler_seed is not None:
+        summary.add_row("Sampler seed", str(sampler_seed))
     summary.add_row(
         "W&B",
         "[bold green]enabled[/]" if wandb_enabled else "[dim]disabled[/]",
@@ -235,6 +248,14 @@ def main() -> None:
         help="Local RNG seed for training-configuration sampling (default: 0).",
     )
     parser.add_argument(
+        "--fixed-all-metrics",
+        action="store_true",
+        help=(
+            "Use one shared ExperimentConfig-default hyperparameter configuration across "
+            "all UQ metrics; --count and --seed are ignored."
+        ),
+    )
+    parser.add_argument(
         "--checkpoints",
         type=parse_csv_strings,
         default=DEFAULT_CHECKPOINTS,
@@ -294,7 +315,14 @@ def main() -> None:
             )
             raise SystemExit(2) from None
 
-    search_configs = sample_search_configs(args.count, random.Random(args.seed))
+    if args.fixed_all_metrics:
+        search_configs = fixed_all_metric_configs()
+        configuration_mode = "fixed defaults × all UQ metrics"
+        sampler_seed = None
+    else:
+        search_configs = sample_search_configs(args.count, random.Random(args.seed))
+        configuration_mode = "seeded random sample"
+        sampler_seed = args.seed
     runs = build_runs(
         search_configs,
         args.checkpoints,
@@ -309,7 +337,8 @@ def main() -> None:
             len(args.checkpoints),
             len(args.seeds),
             len(runs),
-            sampler_seed=args.seed,
+            configuration_mode=configuration_mode,
+            sampler_seed=sampler_seed,
             wandb_enabled=args.wandb,
             max_pool_percent=args.max_pool_percent,
         )
@@ -326,11 +355,13 @@ def main() -> None:
         return
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    sweep_dir = args.sweeps_dir / f"bert_token_uq_{stamp}_gridseed{args.seed}"
+    sweep_suffix = "fixed-all-metrics" if args.fixed_all_metrics else f"gridseed{args.seed}"
+    sweep_dir = args.sweeps_dir / f"bert_token_uq_{stamp}_{sweep_suffix}"
     sweep_dir.mkdir(parents=True)
     (sweep_dir / "runs").mkdir()
     manifest = {
-        "sampler_seed": args.seed,
+        "configuration_mode": configuration_mode,
+        "sampler_seed": sampler_seed,
         "search_configs": search_configs,
         "checkpoints": list(args.checkpoints),
         "model_seeds": list(args.seeds),

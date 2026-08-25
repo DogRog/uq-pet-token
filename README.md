@@ -85,6 +85,21 @@ uv run scripts/bert_token_uq_grid.py \
   --launch
 ```
 
+To compare every UQ metric on every default checkpoint and model seed with one shared
+hyperparameter configuration, use the fixed mode. It uses the validated
+`ExperimentConfig` defaults and plans 3 metrics × 5 checkpoints × 5 seeds = 75 runs:
+
+```bash
+# Inspect all 75 commands without training.
+uv run scripts/bert_token_uq_grid.py --fixed-all-metrics
+
+# Execute the same plan sequentially.
+uv run scripts/bert_token_uq_grid.py --fixed-all-metrics --launch
+```
+
+In fixed mode, `--count` and `--seed` are ignored. `--checkpoints`, `--seeds`,
+`--max-pool-percent`, and the W&B options still apply uniformly to every run.
+
 Launched sweeps write a manifest, per-run records, and `combined_results.csv` below
 `results/sweeps/`. Add `--wandb` to enable Weights & Biases for every job; it is off by
 default. Set `WANDB_API_KEY` in the environment or `.env`, and optionally choose a project:
