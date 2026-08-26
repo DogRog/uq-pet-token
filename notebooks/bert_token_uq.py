@@ -79,6 +79,8 @@ def _(alt, pl):
             .agg(
                 pl.col("entity_f1").mean().alias("entity_f1_mean"),
                 pl.col("entity_f1").std().fill_null(0.0).alias("entity_f1_std"),
+                pl.col("entity_macro_f1").mean().alias("entity_macro_f1_mean"),
+                pl.col("entity_macro_f1").std().fill_null(0.0).alias("entity_macro_f1_std"),
                 pl.col("token_accuracy").mean().alias("token_accuracy_mean"),
                 pl.col("token_accuracy").std().fill_null(0.0).alias("token_accuracy_std"),
             )
@@ -89,6 +91,12 @@ def _(alt, pl):
                 (pl.col("entity_f1_mean") + pl.col("entity_f1_std"))
                 .clip(0.0, 1.0)
                 .alias("entity_f1_upper"),
+                (pl.col("entity_macro_f1_mean") - pl.col("entity_macro_f1_std"))
+                .clip(0.0, 1.0)
+                .alias("entity_macro_f1_lower"),
+                (pl.col("entity_macro_f1_mean") + pl.col("entity_macro_f1_std"))
+                .clip(0.0, 1.0)
+                .alias("entity_macro_f1_upper"),
                 (pl.col("token_accuracy_mean") - pl.col("token_accuracy_std"))
                 .clip(0.0, 1.0)
                 .alias("token_accuracy_lower"),
@@ -152,6 +160,14 @@ def _(alt, pl):
             "Entity F1",
             "F1",
         )
+        macro_f1_chart = metric_chart(
+            "entity_macro_f1_mean",
+            "entity_macro_f1_std",
+            "entity_macro_f1_lower",
+            "entity_macro_f1_upper",
+            "Macro entity F1",
+            "Macro F1",
+        )
         accuracy_chart = metric_chart(
             "token_accuracy_mean",
             "token_accuracy_std",
@@ -160,7 +176,12 @@ def _(alt, pl):
             "Token accuracy",
             "Accuracy",
         )
-        return alt.hconcat(entity_chart, accuracy_chart, spacing=35).resolve_scale(color="shared")
+        return alt.hconcat(
+            entity_chart,
+            macro_f1_chart,
+            accuracy_chart,
+            spacing=35,
+        ).resolve_scale(color="shared")
 
     return (make_variance_chart,)
 
@@ -194,6 +215,9 @@ def _(ExperimentConfig):
                 "entity_f1": 0.10
                 + model_seed * 0.001
                 + round_idx * (0.03 if arm == "uncertainty" else 0.02),
+                "entity_macro_f1": 0.08
+                + model_seed * 0.001
+                + round_idx * (0.025 if arm == "uncertainty" else 0.015),
                 "entity_precision": 0.12,
                 "entity_recall": 0.10,
                 "token_accuracy": 0.70 + round_idx * 0.01,

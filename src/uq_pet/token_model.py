@@ -274,6 +274,7 @@ def evaluate_model(
     )
     return {
         "entity_f1": float(f1_score(gold, predictions, average="micro", zero_division=0)),
+        "entity_macro_f1": float(f1_score(gold, predictions, average="macro", zero_division=0)),
         "entity_precision": float(
             precision_score(gold, predictions, average="micro", zero_division=0)
         ),

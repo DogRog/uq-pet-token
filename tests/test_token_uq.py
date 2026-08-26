@@ -6,6 +6,7 @@ import torch
 from rich.console import Console
 
 import uq_pet.active_learning as active_learning
+import uq_pet.token_model as token_model
 from uq_pet.active_learning import (
     _round_progress_table,
     acquisition_schedule,
@@ -18,6 +19,7 @@ from uq_pet.active_learning import (
 )
 from uq_pet.token_model import (
     encode_targets,
+    evaluate_model,
     load_token_classifier,
     score_token_uncertainty,
     scoreable_token_keys,
@@ -165,6 +167,28 @@ def test_available_uncertainty_metrics_return_larger_scores_for_ambiguity():
 def test_unknown_uncertainty_metric_is_rejected():
     with pytest.raises(ValueError, match="unknown UQ metric"):
         token_uncertainty(torch.tensor([0.5, 0.5]), "mystery")
+
+
+def test_evaluate_model_reports_macro_entity_f1(monkeypatch):
+    predictions = [["B-Actor"], ["O"], ["B-Actor"]]
+    monkeypatch.setattr(token_model, "predict_tags", lambda *args, **kwargs: predictions)
+    examples = [
+        {"tokens": ["a"], "ner_tags": [1]},
+        {"tokens": ["b"], "ner_tags": [1]},
+        {"tokens": ["c"], "ner_tags": [3]},
+    ]
+
+    metrics = evaluate_model(
+        object(),
+        object(),
+        examples,
+        max_length=8,
+        batch_size=2,
+        device=torch.device("cpu"),
+    )
+
+    assert metrics["entity_f1"] == pytest.approx(0.4)
+    assert metrics["entity_macro_f1"] == pytest.approx(0.25)
 
 
 def test_scoreable_keys_exclude_truncated_words():

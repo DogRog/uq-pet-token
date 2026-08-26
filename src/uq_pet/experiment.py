@@ -36,6 +36,7 @@ _WANDB_COMMON_FIELDS = (
 _WANDB_HIDDEN_ARM_FIELDS = ("n_new", "n_replay")
 _WANDB_TRACKED_ARM_FIELDS = (
     "entity_f1",
+    "entity_macro_f1",
     "entity_precision",
     "entity_recall",
     "token_accuracy",
@@ -227,7 +228,7 @@ def require_wandb_credentials(environment: Mapping[str, str]) -> None:
 
 
 def make_learning_chart(result_records: list[dict], seed: int, uq_metric: str):
-    """Build the paired entity-F1 and token-accuracy chart for one model seed."""
+    """Build the paired entity-F1, macro-F1, and accuracy chart for one model seed."""
     curve = (
         pl.DataFrame(result_records)
         .filter(pl.col("seed") == seed)
@@ -274,6 +275,7 @@ def make_learning_chart(result_records: list[dict], seed: int, uq_metric: str):
 
     return alt.hconcat(
         metric_chart("entity_f1", "Entity F1", "F1"),
+        metric_chart("entity_macro_f1", "Macro entity F1", "Macro F1"),
         metric_chart("token_accuracy", "Token accuracy", "Accuracy"),
         spacing=35,
     ).resolve_scale(color="shared")

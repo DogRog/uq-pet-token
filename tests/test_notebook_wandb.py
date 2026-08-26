@@ -23,6 +23,7 @@ def result_row(arm, round_idx, accuracy):
         "scoreable_pool_tokens": 160,
         "token_budget": 16,
         "entity_f1": accuracy - 0.1,
+        "entity_macro_f1": accuracy - 0.2,
         "entity_precision": accuracy - 0.05,
         "entity_recall": accuracy - 0.15,
         "token_accuracy": accuracy,
@@ -41,6 +42,7 @@ def test_wandb_evaluation_log_separates_arm_metrics_in_one_step():
     assert payload["evaluation/round"] == 1
     assert payload["evaluation/token_accuracy/least_confidence"] == 0.8
     assert payload["evaluation/token_accuracy/random"] == 0.7
+    assert payload["evaluation/entity_macro_f1/least_confidence"] == pytest.approx(0.6)
     assert "evaluation/token_accuracy" not in payload
     assert "evaluation/arm" not in payload
 
@@ -61,6 +63,10 @@ def test_wandb_metric_configuration_hides_bookkeeping_and_uses_acquisition_x_axi
     assert (("evaluation/n_new/random",), {"hidden": True}) in calls
     assert (
         ("evaluation/token_accuracy/least_confidence",),
+        {"step_metric": "evaluation/percent_acquired"},
+    ) in calls
+    assert (
+        ("evaluation/entity_macro_f1/least_confidence",),
         {"step_metric": "evaluation/percent_acquired"},
     ) in calls
 
