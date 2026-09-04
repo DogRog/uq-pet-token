@@ -14,15 +14,17 @@ def _(mo):
 
 @app.cell
 def _():
-    import marimo as mo
     from pathlib import Path
 
     import altair as alt
+    import marimo as mo
     import polars as pl
+
+    from uq_pet.experiment import summarize_label_pool_share
 
     alt.data_transformers.disable_max_rows()
     alt.renderers.set_embed_options(scaleFactor=2)
-    return Path, alt, mo, pl
+    return Path, alt, mo, pl, summarize_label_pool_share
 
 
 @app.cell
@@ -50,9 +52,7 @@ def _(combined_path, pl):
 
 @app.cell
 def _(mo, results):
-    checkpoint_options = sorted(
-        set(results.get_column("config_checkpoint").unique().to_list())
-    )
+    checkpoint_options = sorted(set(results.get_column("config_checkpoint").unique().to_list()))
     checkpoint_selector = mo.ui.dropdown(
         options=checkpoint_options,
         value="distilbert-base-cased",
@@ -301,7 +301,7 @@ def _(
             kind="warn",
         )
     )
-    mo.vstack([learning_curve_chart])
+    mo.vstack([macro_f1_notice, learning_curve_chart])
     return
 
 
@@ -321,9 +321,9 @@ def _(mo):
             mo.md(r"""
             ## Cumulative NER-tag coverage
 
-            For each tag, coverage is the percentage of all scoreable pool tokens
-            with that tag that have been acquired by the selected budget. Gold labels
-            are used only after acquisition. Bars show the mean across five seeds.
+            Each bar is the acquired count for that gold label as a percentage of
+            all scoreable pool tokens. Bars show the mean across the displayed runs,
+            including zero counts. Gold labels are used only after acquisition.
             """),
             coverage_percent_slider,
         ]
@@ -358,12 +358,12 @@ def _(
     coverage_selections = pl.concat(coverage_selection_frames)
     coverage_round_progress = (
         results.filter(pl.col("run_id").is_in(coverage_run_ids))
-        .select("run_id", "arm", "round", "percent_acquired")
+        .select("run_id", "seed", "arm", "round", "percent_acquired", "scoreable_pool_tokens")
         .unique()
     )
     coverage_selections_with_progress = coverage_selections.join(
         coverage_round_progress,
-        on=["run_id", "arm", "round"],
+        on=["run_id", "seed", "arm", "round"],
         how="left",
         validate="m:1",
     )
@@ -371,49 +371,23 @@ def _(
 
 
 @app.cell
-def _(alt, pl):
+def _(alt, pl, summarize_label_pool_share):
     def make_tag_coverage_chart(
         selections_frame,
         acquisition_percent,
         uq_metric,
     ):
-        tag_totals = selections_frame.group_by(["run_id", "seed", "arm", "label"]).agg(
-            pl.len().alias("n_available")
-        )
-        acquired_tag_totals = (
-            selections_frame.filter(pl.col("percent_acquired") <= acquisition_percent)
-            .group_by(["run_id", "seed", "arm", "label"])
-            .agg(pl.len().alias("n_acquired"))
-        )
-        tag_coverage_by_seed = (
-            tag_totals.join(
-                acquired_tag_totals,
-                on=["run_id", "seed", "arm", "label"],
-                how="left",
-                validate="1:1",
-            )
-            .with_columns(pl.col("n_acquired").fill_null(0))
-            .with_columns(
-                (100 * pl.col("n_acquired") / pl.col("n_available")).alias("coverage_percent"),
-                pl.when(pl.col("arm") == "uncertainty")
-                .then(pl.lit(uq_metric))
-                .otherwise(pl.col("arm"))
-                .alias("arm"),
-            )
-        )
-        tag_coverage_summary = (
-            tag_coverage_by_seed.group_by(["arm", "label"])
-            .agg(
-                pl.col("coverage_percent").mean().alias("coverage_mean"),
-                pl.col("coverage_percent").std().fill_null(0.0).alias("coverage_std"),
-                pl.col("n_acquired").mean().alias("n_acquired_mean"),
-                pl.col("n_available").mean().alias("n_available_mean"),
-            )
-            .sort(["label", "arm"])
+        tag_coverage_summary = summarize_label_pool_share(
+            selections_frame, acquisition_percent
+        ).with_columns(
+            pl.when(pl.col("arm") == "uncertainty")
+            .then(pl.lit(uq_metric))
+            .otherwise(pl.col("arm"))
+            .alias("arm")
         )
         tag_order = (
             tag_coverage_summary.group_by("label")
-            .agg(pl.col("n_available_mean").mean().alias("tag_frequency"))
+            .agg(pl.col("n_acquired_mean").mean().alias("tag_frequency"))
             .sort("tag_frequency", descending=True)
             .get_column("label")
             .to_list()
@@ -434,8 +408,8 @@ def _(alt, pl):
             .mark_bar()
             .encode(
                 x=alt.X(
-                    "coverage_mean:Q",
-                    title="Available tokens of tag acquired (%)",
+                    "pool_share_mean:Q",
+                    title="All scoreable pool tokens (%)",
                     scale=alt.Scale(domain=[0, 100]),
                 ),
                 y=alt.Y("label:N", title="Gold label", sort=tag_order),
@@ -445,13 +419,13 @@ def _(alt, pl):
                     alt.Tooltip("arm:N", title="Arm"),
                     alt.Tooltip("label:N", title="Gold label"),
                     alt.Tooltip(
-                        "coverage_mean:Q",
-                        title="Mean coverage",
+                        "pool_share_mean:Q",
+                        title="Mean pool share",
                         format=".2f",
                     ),
                     alt.Tooltip(
-                        "coverage_std:Q",
-                        title="Coverage std. dev.",
+                        "pool_share_std:Q",
+                        title="Pool-share std. dev.",
                         format=".2f",
                     ),
                     alt.Tooltip(
@@ -460,14 +434,14 @@ def _(alt, pl):
                         format=".1f",
                     ),
                     alt.Tooltip(
-                        "n_available_mean:Q",
-                        title="Available",
+                        "scoreable_pool_tokens_mean:Q",
+                        title="Scoreable pool tokens",
                         format=".1f",
                     ),
                 ],
             )
             .properties(
-                title=f"Tag coverage at {acquisition_percent}% pool acquisition",
+                title=f"Labels revealed by {acquisition_percent}% pool acquisition",
                 width=1000,
                 height=max(320, 28 * len(tag_order)),
             )

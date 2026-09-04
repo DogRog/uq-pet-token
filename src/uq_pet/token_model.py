@@ -2,6 +2,7 @@
 
 import math
 import random
+from contextlib import contextmanager
 
 import numpy as np
 import torch
@@ -11,6 +12,11 @@ from transformers import AutoConfig, AutoModelForTokenClassification, AutoTokeni
 from transformers.utils import logging as transformers_logging
 
 from uq_pet.pet_data import NER_TAGS, TokenKey
+from uq_pet.utils.truncation import (
+    complete_word_positions,
+    evaluation_word_positions,
+    training_word_positions,
+)
 
 UQ_METRICS = ("entropy", "least_confidence", "margin")
 
@@ -32,6 +38,24 @@ def get_device() -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+@contextmanager
+def _training_rng(seed: int):
+    """Isolate each update's randomness, including dropout on accelerators."""
+    python_state = random.getstate()
+    numpy_state = np.random.get_state()
+    mps_state = torch.mps.get_rng_state() if torch.backends.mps.is_available() else None
+    cuda_devices = list(range(torch.cuda.device_count())) if torch.cuda.is_available() else []
+    with torch.random.fork_rng(devices=cuda_devices):
+        try:
+            set_seed(seed)
+            yield
+        finally:
+            random.setstate(python_state)
+            np.random.set_state(numpy_state)
+            if mps_state is not None:
+                torch.mps.set_rng_state(mps_state)
+
+
 def encode_targets(tokenizer, examples: list[dict], max_length: int):
     """Tokenize sentences and supervise the first subword of requested words only."""
     encoding = tokenizer(
@@ -46,16 +70,9 @@ def encode_targets(tokenizer, examples: list[dict], max_length: int):
 
     for batch_idx, example in enumerate(examples):
         targets = example["targets"]
-        found: set[int] = set()
-        previous_word = None
-        for position, word_idx in enumerate(encoding.word_ids(batch_index=batch_idx)):
-            if word_idx is not None and word_idx != previous_word and word_idx in targets:
-                labels[batch_idx, position] = targets[word_idx]
-                found.add(word_idx)
-            previous_word = word_idx
-        missing = set(targets) - found
-        if missing:
-            raise ValueError(f"target words were truncated: {sorted(missing)}")
+        positions = training_word_positions(encoding, batch_idx, targets)
+        for word_idx, target in targets.items():
+            labels[batch_idx, positions[word_idx]] = target
     return encoding, labels
 
 
@@ -71,7 +88,7 @@ def train_items(
     device: torch.device,
     seed: int,
 ) -> float:
-    """Update an existing model and optimizer, returning mean batch loss."""
+    """Update with isolated seeded randomness, returning mean batch loss."""
     if passes < 0:
         raise ValueError(f"passes must be non-negative, got {passes}")
     if not items or passes == 0:
@@ -90,14 +107,15 @@ def train_items(
     losses = []
     model.train()
     optimizer.zero_grad()
-    for _ in range(passes):
-        for encoding, labels in loader:
-            inputs = {name: tensor.to(device) for name, tensor in encoding.items()}
-            loss = model(**inputs, labels=labels.to(device)).loss
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
-            losses.append(float(loss.detach().cpu()))
+    with _training_rng(seed):
+        for _ in range(passes):
+            for encoding, labels in loader:
+                inputs = {name: tensor.to(device) for name, tensor in encoding.items()}
+                loss = model(**inputs, labels=labels.to(device)).loss
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
+                losses.append(float(loss.detach().cpu()))
     model.eval()
     return sum(losses) / len(losses)
 
@@ -143,11 +161,10 @@ def scoreable_token_keys(
             return_tensors="pt",
         )
         for batch_idx, example in enumerate(batch):
-            previous_word = None
-            for word_idx in encoding.word_ids(batch_index=batch_idx):
-                if word_idx is not None and word_idx != previous_word:
-                    keys.add((example["pool_idx"], word_idx))
-                previous_word = word_idx
+            keys.update(
+                (example["pool_idx"], word_idx)
+                for word_idx in complete_word_positions(encoding, batch_idx)
+            )
     return keys
 
 
@@ -199,13 +216,10 @@ def score_token_uncertainty(
         probabilities = model(**inputs).logits.softmax(dim=-1).cpu()
 
         for batch_idx, example in enumerate(batch):
-            previous_word = None
-            for position, word_idx in enumerate(encoding.word_ids(batch_index=batch_idx)):
-                if word_idx is not None and word_idx != previous_word:
-                    key = (example["pool_idx"], word_idx)
-                    if key not in excluded:
-                        scores[key] = token_uncertainty(probabilities[batch_idx, position], metric)
-                previous_word = word_idx
+            for word_idx, position in complete_word_positions(encoding, batch_idx).items():
+                key = (example["pool_idx"], word_idx)
+                if key not in excluded:
+                    scores[key] = token_uncertainty(probabilities[batch_idx, position], metric)
     return scores
 
 
@@ -232,19 +246,20 @@ def predict_tags(
             padding=True,
             return_tensors="pt",
         )
+        word_positions = [
+            evaluation_word_positions(encoding, idx, len(example["tokens"]))
+            for idx, example in enumerate(batch)
+        ]
         inputs = {name: tensor.to(device) for name, tensor in encoding.items()}
         predicted_ids = model(**inputs).logits.argmax(dim=-1).cpu()
 
-        for batch_idx, example in enumerate(batch):
-            tags: list[str | None] = [None] * len(example["tokens"])
-            previous_word = None
-            for position, word_idx in enumerate(encoding.word_ids(batch_index=batch_idx)):
-                if word_idx is not None and word_idx != previous_word:
-                    tags[word_idx] = NER_TAGS[int(predicted_ids[batch_idx, position])]
-                previous_word = word_idx
-            if any(tag is None for tag in tags):
-                raise ValueError("evaluation sentence was truncated; increase max_length")
-            predictions.append([tag for tag in tags if tag is not None])
+        for batch_idx, positions in enumerate(word_positions):
+            predictions.append(
+                [
+                    NER_TAGS[int(predicted_ids[batch_idx, positions[idx]])]
+                    for idx in range(len(positions))
+                ]
+            )
     return predictions
 
 

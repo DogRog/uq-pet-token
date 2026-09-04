@@ -34,8 +34,9 @@ Real runs start from the notebook's **Run experiment** button or that batch mode
 - Exclude truncated pool words and reject truncated evaluation sentences.
 - Clone one bootstrap-trained model and optimizer state into both arms. Thereafter
   each arm keeps its own state across rounds.
-- Each round selects exactly `K` new tokens per arm and uses the same replay ratio,
-  update passes, batch size, and learning rate.
+- Each round selects `K` new tokens per arm, or the remaining token budget in the
+  final round. Both arms use the same replay ratio, update passes, batch size, and
+  learning rate. Scale replay to the actual number of new tokens in that round.
 - Replay is sampled at token level from labels available before the current round.
 - Selection and replay use local seeded RNGs. Global seeding belongs only in
   `token_model.set_seed`.

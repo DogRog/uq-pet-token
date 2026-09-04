@@ -14,7 +14,8 @@ held-out test sentences. For every model seed:
 1. Fine-tune a fresh 15-tag token classifier on the five seed sentences.
 2. Clone the exact fitted weights and optimizer state into uncertainty and random arms.
 3. Evaluate both arms before acquisition (round 0).
-4. At each round, acquire `K` previously unseen pool words:
+4. At each round, acquire `K` previously unseen pool words, or the remaining budget
+   in the final round:
    - uncertainty selects the largest score from the configured UQ metric;
    - random draws uniformly from its remaining word pool.
 5. Reveal only the selected labels.
@@ -24,7 +25,9 @@ held-out test sentences. For every model seed:
 
 The full sentence remains model input, but each online training item labels exactly
 one word. Only its first subword contributes to loss; every other position is `-100`.
-By default, each round replays up to `K` older labelled tokens, including seed tokens.
+By default, each round replays up to one older labelled token per new word, including
+seed tokens. Replay scales down with a smaller final round. A 100% pool budget acquires
+every scoreable word; lower percentage budgets round down only to a whole number of words.
 
 The notebook exposes three token-level UQ metrics, all using the first subword's class
 probabilities and all ranked with larger values meaning more uncertain:
@@ -100,6 +103,35 @@ uv run scripts/bert_token_uq_grid.py --fixed-all-metrics --launch
 In fixed mode, `--count` and `--seed` are ignored. `--checkpoints`, `--seeds`,
 `--max-pool-percent`, and the W&B options still apply uniformly to every run.
 
+## Optuna tuning
+
+The Optuna runner tunes the same discrete acquisition and training search space as the
+grid runner. It makes a deterministic validation subset from the pool and removes those
+sentences from acquisition during tuning. The held-out test split is never passed to a
+trial, so it remains available for one final evaluation of the selected configuration.
+
+The number of trials is required because a default full study would be expensive:
+
+```bash
+uv run scripts/bert_token_uq_optuna.py \
+  --trials 20 \
+  --study-name distilbert-validation \
+  --config-json \
+  '{"checkpoint":"distilbert-base-cased","model_seeds":[0,1],"max_pool_percent":50}'
+```
+
+The objective is the mean, across model seeds, of the normalized acquisition-curve area
+for `uncertainty entity F1 - random entity F1`. The study uses persistent SQLite storage.
+Running the same command and study name resumes it and adds the requested number of
+trials. Changing fixed configuration, validation settings, or the acquisition schedule
+requires a new study name. Studies using the older full-round-only schedule cannot be
+resumed with the smaller-final-round protocol.
+
+Each study writes `study.db`, `trials.json`, `summary.json`, `best_config.json`, and the
+complete per-trial experiment records below `results/optuna/<study-name>/`. After tuning,
+pass the contents of `best_config.json` to the notebook's `--config-json` option to run
+the selected configuration once on the original pool and untouched test split.
+
 Launched sweeps write a manifest, per-run records, and `combined_results.csv` below
 `results/sweeps/`. Add `--wandb` to enable Weights & Biases for every job; it is off by
 default. Set `WANDB_API_KEY` in the environment or `.env`, and optionally choose a project:
@@ -126,6 +158,7 @@ uv run ruff check src tests notebooks scripts
 uv run ruff format --check src tests notebooks scripts
 uv run marimo check notebooks/bert_token_uq.py
 uv run notebooks/bert_token_uq.py
+uv run scripts/bert_token_uq_optuna.py --help
 ```
 
 Running the notebook as a plain script uses small synthetic display data. It validates
@@ -162,9 +195,12 @@ Use `--list` on an `add` command to inspect a repository before installing it, o
 - First subwords are used consistently for scoring, online loss, and evaluation.
 - Continuation subwords, padding, and special tokens are ignored.
 - Truncated pool words are not selectable; truncated test words are an error.
+- A word is truncated if any of its subwords are missing, including at the left boundary.
 - Both arms begin from the same fitted state and receive the same update budget.
 - The uncertainty and random arms keep separate weights and optimizer histories.
 - Selection and replay use deterministic local random generators.
+- Training uses the seed for each arm and round for dropout as well as shuffling,
+  restoring the surrounding RNG states even if an update fails.
 
 ## Layout
 
@@ -172,10 +208,13 @@ Use `--list` on an `add` command to inspect a repository before installing it, o
 | --- | --- |
 | `src/uq_pet/pet_data.py` | PET identity, download, stable split, and private label lookup |
 | `src/uq_pet/token_model.py` | masking, training, UQ metrics, inference, and evaluation |
+| `src/uq_pet/utils/truncation.py` | word alignment and truncation checks |
 | `src/uq_pet/active_learning.py` | acquisition rounds, replay, orchestration, and outputs |
 | `src/uq_pet/experiment.py` | shared configuration, run execution, charts, and W&B records |
 | `notebooks/bert_token_uq.py` | controls, experiment run, tables, and plots |
 | `scripts/bert_token_uq_grid.py` | dry-run-first local sweep generation and execution |
+| `scripts/bert_token_uq_optuna.py` | persistent validation-only Optuna tuning |
+| `src/uq_pet/tuning.py` | shared search space, nested validation split, and objective |
 | `tests/test_token_uq.py` | focused offline invariant tests |
 | `tests/test_batch_grid.py` | deterministic sweep and aggregation tests |
 | `skills-lock.json` | project skill sources and content hashes |

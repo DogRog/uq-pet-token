@@ -115,7 +115,7 @@ def sample_replay(items: list[dict], k: int, ratio: float, *, seed: int) -> list
 
 
 def acquisition_schedule(scoreable_tokens: int, k: int, max_pool_percent: float) -> tuple[int, int]:
-    """Return full acquisition rounds and their token budget."""
+    """Return rounds and budget, allowing a smaller final acquisition round."""
     if scoreable_tokens < 1:
         raise ValueError("the scoreable pool must contain at least one token")
     if k < 1:
@@ -124,13 +124,12 @@ def acquisition_schedule(scoreable_tokens: int, k: int, max_pool_percent: float)
         raise ValueError(f"max_pool_percent must be in (0, 100], got {max_pool_percent}")
 
     requested_tokens = int(scoreable_tokens * max_pool_percent / 100)
-    rounds = requested_tokens // k
-    if rounds < 1:
+    if requested_tokens < 1:
         raise ValueError(
-            f"{max_pool_percent:g}% of {scoreable_tokens} scoreable tokens "
-            f"is fewer than one full k={k} acquisition round"
+            f"{max_pool_percent:g}% of {scoreable_tokens} scoreable tokens is fewer than one token"
         )
-    return rounds, rounds * k
+    rounds = (requested_tokens + k - 1) // k
+    return rounds, requested_tokens
 
 
 def _result_row(
@@ -203,7 +202,8 @@ def run_active_learning(
             f"[bold cyan]acquisition budget[/] [bold]{token_budget}[/] of "
             f"{len(scoreable)} scoreable tokens "
             f"([bold]{100 * token_budget / len(scoreable):.2f}%[/]) · "
-            f"{rounds} full rounds of K={k}"
+            f"{rounds} rounds of up to K={k} "
+            f"(final round: {token_budget - (rounds - 1) * k})"
         )
 
         bootstrap_optimizer = torch.optim.AdamW(
@@ -274,6 +274,7 @@ def run_active_learning(
         }
 
         for round_idx in range(1, rounds + 1):
+            round_k = min(k, token_budget - (round_idx - 1) * k)
             round_results = {}
             uq_scores = score_token_uncertainty(
                 models["uncertainty"],
@@ -286,10 +287,10 @@ def run_active_learning(
                 device=device,
             )
             chosen = {
-                "uncertainty": select_top_k(uq_scores, k),
+                "uncertainty": select_top_k(uq_scores, round_k),
                 "random": select_random(
                     scoreable - acquired["random"],
-                    k,
+                    round_k,
                     seed=model_seed * 10_000 + round_idx,
                 ),
             }
@@ -297,7 +298,7 @@ def run_active_learning(
             for arm_idx, arm in enumerate(("uncertainty", "random")):
                 replay = sample_replay(
                     replay_banks[arm],
-                    k,
+                    round_k,
                     replay_ratio,
                     seed=model_seed * 100_000 + round_idx * 10 + arm_idx,
                 )

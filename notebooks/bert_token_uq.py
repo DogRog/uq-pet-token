@@ -4,25 +4,13 @@ __generated_with = "0.24.0"
 app = marimo.App(width="full")
 
 
-@app.cell(hide_code=True)
+@app.cell
 def _():
     import marimo as mo
     from dotenv import load_dotenv
 
     load_dotenv(".env")
 
-    mo.md(r"""
-    # BERT token-level active learning
-
-    Compare online updates from the **K most uncertain words** with the same number
-    of **random words**. Both arms start from one seed-trained model, retain their
-    weights and optimizer state, and use masked token loss with limited replay.
-    """)
-    return (mo,)
-
-
-@app.cell
-def _():
     import os
     from pathlib import Path
 
@@ -31,6 +19,7 @@ def _():
     import wandb
     from wigglystuff import EnvConfig
 
+    from uq_pet.active_learning import acquisition_schedule
     from uq_pet.experiment import (
         DEFAULT_CHECKPOINTS,
         ExperimentConfig,
@@ -40,6 +29,7 @@ def _():
         make_wandb_comparison_media,
         make_wandb_evaluation_log,
         require_wandb_credentials,
+        summarize_label_pool_share,
     )
     from uq_pet.pet_data import RESULTS_DIR
     from uq_pet.token_model import UQ_METRICS
@@ -52,15 +42,18 @@ def _():
         Path,
         RESULTS_DIR,
         UQ_METRICS,
+        acquisition_schedule,
         alt,
         configure_wandb_metrics,
         execute_experiment,
         make_learning_chart,
         make_wandb_comparison_media,
         make_wandb_evaluation_log,
+        mo,
         os,
         pl,
         require_wandb_credentials,
+        summarize_label_pool_share,
         wandb,
     )
 
@@ -187,14 +180,14 @@ def _(alt, pl):
 
 
 @app.cell
-def _(ExperimentConfig):
+def _(ExperimentConfig, acquisition_schedule):
     default_config = ExperimentConfig().model_dump()
 
     def make_demo_run(config):
-        scoreable_tokens = 96
-        requested_tokens = int(scoreable_tokens * config["max_pool_percent"] / 100)
-        rounds = requested_tokens // config["k"]
-        token_budget = rounds * config["k"]
+        scoreable_tokens = 99
+        rounds, token_budget = acquisition_schedule(
+            scoreable_tokens, config["k"], config["max_pool_percent"]
+        )
         run_config = {
             **config,
             "scoreable_pool_tokens": scoreable_tokens,
@@ -208,8 +201,10 @@ def _(ExperimentConfig):
                 "arm": arm,
                 "round": round_idx,
                 "total_rounds": rounds,
-                "n_acquired": round_idx * config["k"],
-                "percent_acquired": 100 * round_idx * config["k"] / scoreable_tokens,
+                "n_acquired": min(round_idx * config["k"], token_budget),
+                "percent_acquired": 100
+                * min(round_idx * config["k"], token_budget)
+                / scoreable_tokens,
                 "scoreable_pool_tokens": scoreable_tokens,
                 "token_budget": token_budget,
                 "entity_f1": 0.10
@@ -222,8 +217,15 @@ def _(ExperimentConfig):
                 "entity_recall": 0.10,
                 "token_accuracy": 0.70 + round_idx * 0.01,
                 "train_loss": 1.0 / (round_idx + 1),
-                "n_new": 0 if round_idx == 0 else config["k"],
-                "n_replay": 0 if round_idx == 0 else config["k"],
+                "n_new": 0
+                if round_idx == 0
+                else min(config["k"], token_budget - (round_idx - 1) * config["k"]),
+                "n_replay": 0
+                if round_idx == 0
+                else round(
+                    min(config["k"], token_budget - (round_idx - 1) * config["k"])
+                    * config["replay_ratio"]
+                ),
             }
             for model_seed in config["model_seeds"]
             for arm in ("uncertainty", "random")
@@ -233,19 +235,19 @@ def _(ExperimentConfig):
             {
                 "seed": model_seed,
                 "arm": arm,
-                "round": 1,
+                "round": idx // config["k"] + 1,
                 "pool_idx": idx,
                 "word_idx": 0,
                 "document_name": "script-demo",
                 "sentence_id": idx,
-                "token": token,
-                "label": label,
+                "token": "check" if idx % 2 == 0 else "form",
+                "label": "B-Activity" if idx % 2 == 0 else "O",
                 "uq_metric": config["uq_metric"] if arm == "uncertainty" else None,
                 "uq_score": 0.8 if arm == "uncertainty" else None,
             }
             for model_seed in config["model_seeds"]
             for arm in ("uncertainty", "random")
-            for idx, (token, label) in enumerate((("check", "B-Activity"), ("form", "O")))
+            for idx in range(token_budget)
         ]
         summary = {
             "mode": "script demo",
@@ -330,7 +332,7 @@ def _(DEFAULT_CHECKPOINTS, UQ_METRICS, default_config, mo):
                 stop=1000,
                 step=1,
                 value=default_config["k"],
-                label="New tokens per round",
+                label="Maximum new tokens per round",
             ),
             max_pool_percent=mo.ui.number(
                 start=0.1,
@@ -568,11 +570,12 @@ def _(config, dataset_summary, mo, run_dir):
             **{config["bootstrap_epochs"]} epochs** with model seed(s)
             **{seed_description}**. Acquisition was capped at
             **{config["max_pool_percent"]:g}%** of the scoreable pool. This produced
-            **{config["rounds"]} full rounds** of **{config["k"]} new tokens per arm**
+            **{config["rounds"]} rounds** of **up to {config["k"]} new tokens per arm**
             and an effective endpoint of **{config["effective_pool_percent"]:.2f}%**.
             Each round trained for
             **{config["update_passes"]} pass(es)**, and replayed
-            **{config["replay_ratio"]:g}× K** older labels. The uncertainty arm used
+            up to **{config["replay_ratio"]:g} older labels per new token**, including
+            in the smaller final round when needed. The uncertainty arm used
             **{config["uq_metric"].replace("_", " ")}** scoring.
             """),
             mo.ui.table([dataset_summary], selection=None),
@@ -635,25 +638,84 @@ def _(config, mo, pl, results_df):
     return
 
 
+@app.cell(hide_code=True)
+def _(config, mo):
+    selection_coverage_slider = mo.ui.slider(
+        start=0.0,
+        stop=float(config["effective_pool_percent"]),
+        step=0.1,
+        value=float(config["effective_pool_percent"]),
+        label="Scoreable pool acquired (%)",
+        show_value=True,
+        full_width=True,
+    )
+    mo.vstack(
+        [
+            mo.md(r"""
+            ## Cumulative NER-tag coverage
+
+            Move the slider to compare the cumulative label mix at the same
+            acquisition budget. Each bar is the acquired count for that gold label
+            as a percentage of all scoreable pool tokens.
+            """),
+            selection_coverage_slider,
+        ]
+    )
+    return (selection_coverage_slider,)
+
+
 @app.cell
-def _(alt, config, pl, selections_df):
-    label_counts = (
-        selections_df.with_columns(
-            pl.when(pl.col("arm") == "uncertainty")
-            .then(pl.lit(config["uq_metric"]))
-            .otherwise(pl.col("arm"))
-            .alias("arm")
-        )
-        .group_by(["arm", "label"])
-        .agg(pl.len().alias("count"))
+def _(
+    alt,
+    config,
+    pl,
+    results_df,
+    selection_coverage_slider,
+    selections_df,
+    summarize_label_pool_share,
+):
+    selection_round_progress = results_df.select(
+        "seed",
+        "arm",
+        "round",
+        "percent_acquired",
+        "scoreable_pool_tokens",
+    ).unique()
+    selections_with_progress = selections_df.join(
+        selection_round_progress,
+        on=["seed", "arm", "round"],
+        how="left",
+        validate="m:1",
+    ).with_columns(pl.lit("interactive").alias("run_id"))
+    label_share_summary = summarize_label_pool_share(
+        selections_with_progress, selection_coverage_slider.value
+    ).with_columns(
+        pl.when(pl.col("arm") == "uncertainty")
+        .then(pl.lit(config["uq_metric"]))
+        .otherwise(pl.col("arm"))
+        .alias("arm")
+    )
+    selection_label_order = (
+        selections_df.group_by("label")
+        .agg(pl.len().alias("endpoint_count"))
+        .sort("endpoint_count", descending=True)
+        .get_column("label")
+        .to_list()
     )
     arm_order = ["random", config["uq_metric"]]
     label_chart = (
-        alt.Chart(label_counts)
+        alt.Chart(label_share_summary)
         .mark_bar()
         .encode(
-            x=alt.X("count:Q", title="Acquired tokens"),
-            y=alt.Y("label:N", title="Gold label", sort="-x"),
+            x=alt.X(
+                "pool_share_mean:Q",
+                title="All scoreable pool tokens (%)",
+            ),
+            y=alt.Y(
+                "label:N",
+                title="Gold label",
+                sort=selection_label_order,
+            ),
             yOffset=alt.YOffset("arm:N", sort=arm_order),
             color=alt.Color(
                 "arm:N",
@@ -667,13 +729,27 @@ def _(alt, config, pl, selections_df):
             tooltip=[
                 alt.Tooltip("arm:N", title="Arm"),
                 alt.Tooltip("label:N", title="Gold label"),
-                alt.Tooltip("count:Q", title="Count", format=".0f"),
+                alt.Tooltip(
+                    "pool_share_mean:Q",
+                    title="Mean pool share",
+                    format=".3f",
+                ),
+                alt.Tooltip(
+                    "pool_share_std:Q",
+                    title="Pool-share std. dev.",
+                    format=".3f",
+                ),
+                alt.Tooltip(
+                    "n_acquired_mean:Q",
+                    title="Mean acquired",
+                    format=".1f",
+                ),
             ],
         )
         .properties(
-            title="Labels revealed after acquisition",
-            width=850,
-            height=380,
+            title=(f"Labels revealed by {selection_coverage_slider.value:.1f}% pool acquisition"),
+            width=1000,
+            height=max(380, 28 * len(selection_label_order)),
         )
     )
     label_chart

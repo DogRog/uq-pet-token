@@ -26,21 +26,12 @@ from uq_pet.experiment import (
     require_wandb_credentials,
 )
 from uq_pet.token_model import UQ_METRICS
+from uq_pet.tuning import SEARCH_SPACE
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 NOTEBOOK_PATH = PROJECT_ROOT / "notebooks" / "bert_token_uq.py"
 SWEEPS_DIR = PROJECT_ROOT / "results" / "sweeps"
 
-SEARCH_SPACE = {
-    "uq_metric": UQ_METRICS,
-    "k": (8, 16, 32),
-    "bootstrap_epochs": (10, 20, 30),
-    "update_passes": (1, 2, 4),
-    "learning_rate": (2e-5, 3e-5, 5e-5),
-    "batch_size": (4, 8, 16),
-    "replay_ratio": (0, 0.5, 1.0, 2.0),
-    "weight_decay": (0.0, 0.01),
-}
 CONSOLE = Console()
 
 

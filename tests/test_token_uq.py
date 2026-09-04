@@ -28,12 +28,16 @@ from uq_pet.token_model import (
 
 
 class FakeEncoding(dict):
-    def __init__(self, input_ids: torch.Tensor, word_ids: list[list[int | None]]):
+    def __init__(self, input_ids, word_ids, overflow_word_ids):
         super().__init__(
             input_ids=input_ids,
             attention_mask=(input_ids != 0).long(),
         )
         self.word_id_rows = word_ids
+        self.encodings = [
+            SimpleNamespace(overflowing=[SimpleNamespace(word_ids=overflow)])
+            for overflow in overflow_word_ids
+        ]
 
     def word_ids(self, batch_index: int):
         return self.word_id_rows[batch_index]
@@ -45,6 +49,7 @@ class FakeTokenizer:
     def __call__(self, batch_tokens, *, max_length, **kwargs):
         rows = []
         word_rows = []
+        overflow_rows = []
         for tokens in batch_tokens:
             ids = [9]
             word_ids = [None]
@@ -58,13 +63,14 @@ class FakeTokenizer:
             word_ids.append(None)
             rows.append(ids[:max_length])
             word_rows.append(word_ids[:max_length])
+            overflow_rows.append(word_ids[max_length:])
 
         width = max(len(row) for row in rows)
         for ids, word_ids in zip(rows, word_rows, strict=True):
             padding = width - len(ids)
             ids.extend([0] * padding)
             word_ids.extend([None] * padding)
-        return FakeEncoding(torch.tensor(rows), word_rows)
+        return FakeEncoding(torch.tensor(rows), word_rows, overflow_rows)
 
 
 class FakeModel:
@@ -245,18 +251,22 @@ def test_replay_is_limited_and_seeded():
     assert sample_replay(items, k=4, ratio=0.0, seed=3) == []
 
 
-def test_acquisition_schedule_uses_full_k_sized_rounds():
+def test_acquisition_schedule_includes_the_remaining_budget():
     assert acquisition_schedule(320, k=8, max_pool_percent=50) == (20, 160)
     assert acquisition_schedule(320, k=16, max_pool_percent=50) == (10, 160)
     assert acquisition_schedule(320, k=32, max_pool_percent=50) == (5, 160)
-    assert acquisition_schedule(101, k=32, max_pool_percent=100) == (3, 96)
+    assert acquisition_schedule(101, k=32, max_pool_percent=100) == (4, 101)
+    assert acquisition_schedule(5901, k=32, max_pool_percent=100) == (185, 5901)
+    assert acquisition_schedule(101, k=32, max_pool_percent=50) == (2, 50)
+    assert acquisition_schedule(100, k=32, max_pool_percent=1) == (1, 1)
+    assert acquisition_schedule(13, k=32, max_pool_percent=100) == (1, 13)
 
 
 def test_acquisition_schedule_rejects_invalid_or_too_small_caps():
     with pytest.raises(ValueError, match="must be in"):
         acquisition_schedule(100, k=8, max_pool_percent=0)
-    with pytest.raises(ValueError, match="fewer than one full"):
-        acquisition_schedule(100, k=32, max_pool_percent=1)
+    with pytest.raises(ValueError, match="fewer than one token"):
+        acquisition_schedule(100, k=32, max_pool_percent=0.5)
 
 
 def test_labels_are_revealed_only_for_selected_keys():
@@ -293,7 +303,13 @@ def test_write_run_records_config_results_and_selections(tmp_path):
     assert "word" in (run_dir / "selections.json").read_text()
 
 
-def test_run_reports_progress_after_baseline_and_each_complete_round(monkeypatch):
+@pytest.mark.parametrize(
+    ("pool_size", "k", "max_pool_percent", "round_sizes"),
+    [(2, 1, 100, [1, 1]), (5, 2, 100, [2, 2, 1]), (5, 2, 60, [2, 1]), (5, 8, 100, [5])],
+)
+def test_run_reports_progress_after_baseline_and_each_complete_round(
+    monkeypatch, pool_size, k, max_pool_percent, round_sizes
+):
     class TinyModel(torch.nn.Module):
         def __init__(self):
             super().__init__()
@@ -306,9 +322,9 @@ def test_run_reports_progress_after_baseline_and_each_complete_round(monkeypatch
             "sentence_id": idx,
             "tokens": [f"word-{idx}"],
         }
-        for idx in range(2)
+        for idx in range(pool_size)
     ]
-    pool_gold = {(idx, 0): 0 for idx in range(2)}
+    pool_gold = {(idx, 0): 0 for idx in range(pool_size)}
 
     monkeypatch.setattr(active_learning, "set_seed", lambda seed: None)
     monkeypatch.setattr(
@@ -321,7 +337,14 @@ def test_run_reports_progress_after_baseline_and_each_complete_round(monkeypatch
         "scoreable_token_keys",
         lambda *args, **kwargs: set(pool_gold),
     )
-    monkeypatch.setattr(active_learning, "train_items", lambda *args, **kwargs: 0.5)
+    updates = []
+
+    def fake_train(model, optimizer, tokenizer, items, **kwargs):
+        if "key" in items[0]:
+            updates.append(items)
+        return 0.5
+
+    monkeypatch.setattr(active_learning, "train_items", fake_train)
     monkeypatch.setattr(
         active_learning,
         "evaluate_model",
@@ -338,16 +361,16 @@ def test_run_reports_progress_after_baseline_and_each_complete_round(monkeypatch
 
     monkeypatch.setattr(active_learning, "score_token_uncertainty", fake_scores)
     snapshots = []
-    results, _ = run_active_learning(
-        [{"tokens": ["seed"], "ner_tags": [0]}],
+    results, selections = run_active_learning(
+        [{"tokens": ["seed"] * 10, "ner_tags": [0] * 10}],
         pool_inputs,
         pool_gold,
         [],
         checkpoint="fake",
         model_seeds=[0],
         uq_metric="entropy",
-        k=1,
-        max_pool_percent=100,
+        k=k,
+        max_pool_percent=max_pool_percent,
         bootstrap_epochs=1,
         update_passes=1,
         replay_ratio=1.0,
@@ -360,8 +383,29 @@ def test_run_reports_progress_after_baseline_and_each_complete_round(monkeypatch
         progress_callback=snapshots.append,
     )
 
-    assert [len(snapshot) for snapshot in snapshots] == [2, 4, 6]
-    assert [max(row["round"] for row in snapshot) for snapshot in snapshots] == [0, 1, 2]
-    assert {row["percent_acquired"] for row in results} == {0.0, 50.0, 100.0}
-    assert {row["token_budget"] for row in results} == {2}
+    assert [len(snapshot) for snapshot in snapshots] == [
+        2 * (idx + 1) for idx in range(len(round_sizes) + 1)
+    ]
+    assert [max(row["round"] for row in snapshot) for snapshot in snapshots] == list(
+        range(len(round_sizes) + 1)
+    )
+    assert {row["token_budget"] for row in results} == {sum(round_sizes)}
     assert snapshots[-1] == results
+    for arm_idx, arm in enumerate(("uncertainty", "random")):
+        rows = [row for row in results if row["arm"] == arm]
+        assert [row["n_new"] for row in rows] == [0, *round_sizes]
+        assert [row["n_replay"] for row in rows] == [0, *round_sizes]
+        assert rows[-1]["n_acquired"] == sum(round_sizes)
+        assert rows[-1]["percent_acquired"] == pytest.approx(100 * sum(round_sizes) / pool_size)
+        selected = [row for row in selections if row["arm"] == arm]
+        assert len({(row["pool_idx"], row["word_idx"]) for row in selected}) == len(selected)
+        assert len(selected) == sum(round_sizes)
+        known_keys = {("seed", 0, idx) for idx in range(10)}
+        for items, n_new in zip(updates[arm_idx::2], round_sizes, strict=True):
+            new_keys = {item["key"] for item in items[:n_new]}
+            replay_keys = {item["key"] for item in items[n_new:]}
+            assert len(items) == 2 * n_new
+            assert len(new_keys) == n_new
+            assert not new_keys & known_keys
+            assert replay_keys <= known_keys
+            known_keys.update(new_keys)
