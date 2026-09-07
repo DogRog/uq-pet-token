@@ -488,25 +488,36 @@ def _(
             configure_wandb_metrics(wandb_run, config["uq_metric"])
 
         wandb_rows_logged = [0]
+        seed_output_indices = {seed: index for index, seed in enumerate(config["model_seeds"])}
+
+        def make_live_seed_panel(progress_records, model_seed):
+            latest = next(
+                (row for row in reversed(progress_records) if row["seed"] == model_seed),
+                None,
+            )
+            status = "Waiting for round 0."
+            chart = mo.md("Chart will appear after round 0.")
+            if latest is not None:
+                status = (
+                    f"Round {latest['round']} of {latest['total_rounds']} · "
+                    f"{latest['percent_acquired']:.2f}% acquired"
+                )
+                if latest["round"] == latest["total_rounds"]:
+                    status += " · Complete"
+                chart = make_learning_chart(progress_records, model_seed, config["uq_metric"])
+            return mo.vstack(
+                [
+                    mo.md(f"### Live results — seed {model_seed}\n\n{status}"),
+                    mo.vstack([chart]).style({"height": "420px", "overflow": "auto"}),
+                ]
+            )
 
         def update_live_chart(progress_records):
             latest = progress_records[-1]
             if not is_script_mode:
-                seed_position = config["model_seeds"].index(latest["seed"]) + 1
-                mo.output.replace(
-                    mo.vstack(
-                        [
-                            mo.md(
-                                f"### Live results — seed {latest['seed']} "
-                                f"({seed_position} of {len(config['model_seeds'])}), "
-                                f"round {latest['round']} of {latest['total_rounds']} · "
-                                f"{latest['percent_acquired']:.2f}% acquired"
-                            ),
-                            make_learning_chart(
-                                progress_records, latest["seed"], config["uq_metric"]
-                            ),
-                        ]
-                    )
+                mo.output.replace_at_index(
+                    make_live_seed_panel(progress_records, latest["seed"]),
+                    idx=seed_output_indices[latest["seed"]],
                 )
             if wandb_run is not None:
                 new_rows = progress_records[wandb_rows_logged[0] :]
@@ -515,9 +526,9 @@ def _(
                 wandb_rows_logged[0] = len(progress_records)
 
         if not is_script_mode:
-            mo.output.replace(
-                mo.md("Training seed models; the chart will appear after a seed completes round 0.")
-            )
+            mo.output.clear()
+            for model_seed in config["model_seeds"]:
+                mo.output.append(make_live_seed_panel([], model_seed))
         try:
             results_root = Path(os.environ.get("UQ_PET_RESULTS_DIR", RESULTS_DIR))
             config, dataset_summary, result_records, selection_records, run_dir = (

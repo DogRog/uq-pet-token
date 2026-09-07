@@ -266,9 +266,23 @@ def summarize_label_pool_share(
 
 def make_learning_chart(result_records: list[dict], seed: int, uq_metric: str):
     """Build the paired entity-F1, macro-F1, and accuracy chart for one model seed."""
-    curve = (
+    records = (
         pl.DataFrame(result_records)
-        .filter(pl.col("seed") == seed)
+        if result_records
+        else pl.DataFrame(
+            schema={
+                "seed": pl.Int64,
+                "arm": pl.String,
+                "percent_acquired": pl.Float64,
+                "n_acquired": pl.Int64,
+                "entity_f1": pl.Float64,
+                "entity_macro_f1": pl.Float64,
+                "token_accuracy": pl.Float64,
+            }
+        )
+    )
+    curve = (
+        records.filter(pl.col("seed") == seed)
         .with_columns(
             pl.when(pl.col("arm") == "uncertainty")
             .then(pl.lit(uq_metric))
