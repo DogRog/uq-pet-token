@@ -73,82 +73,59 @@ uv run notebooks/bert_token_uq.py --config-json \
   '{"checkpoint":"microsoft/deberta-v3-base","model_seeds":[0],"update_passes":2,"learning_rate":0.00003}'
 ```
 
-The local sweep launcher samples acquisition and training configurations and crosses each one with the
-requested checkpoints and model seeds. It is a dry run unless `--launch` is present:
+## Hyperparameter search
+
+All search logic lives in `scripts/bert_token_uq_search.py`. Choose Optuna's sampler
+in the JSON configuration: `"sampler":"tpe"` (default), `"sampler":"grid"`, or
+`"sampler":"random"`. Each uses the same discrete `SEARCH_SPACE`, validation split,
+objective, persistent SQLite study, and trial outputs.
 
 ```bash
-# Four configurations × five checkpoints × five seeds = 100 printed commands.
-uv run scripts/bert_token_uq_grid.py
-
-# A small real smoke sweep: one configuration × two checkpoints × one seed.
-uv run scripts/bert_token_uq_grid.py \
-  --count 1 \
-  --checkpoints distilbert-base-cased,bert-base-cased \
-  --seeds 0 \
-  --launch
-```
-
-To compare every UQ metric on every default checkpoint and model seed with one shared
-hyperparameter configuration, use the fixed mode. It uses the validated
-`ExperimentConfig` defaults and plans 3 metrics × 5 checkpoints × 5 seeds = 75 runs:
-
-```bash
-# Inspect all 75 commands without training.
-uv run scripts/bert_token_uq_grid.py --fixed-all-metrics
-
-# Execute the same plan sequentially.
-uv run scripts/bert_token_uq_grid.py --fixed-all-metrics --launch
-```
-
-In fixed mode, `--count` and `--seed` are ignored. `--checkpoints`, `--seeds`,
-`--max-pool-percent`, and the W&B options still apply uniformly to every run.
-
-## Optuna tuning
-
-The Optuna runner tunes the same discrete acquisition and training search space as the
-grid runner. It makes a deterministic validation subset from the pool and removes those
-sentences from acquisition during tuning. The held-out test split is never passed to a
-trial, so it remains available for one final evaluation of the selected configuration.
-
-The number of trials is required because a default full study would be expensive:
-
-```bash
-uv run scripts/bert_token_uq_optuna.py \
+uv run scripts/bert_token_uq_search.py \
   --trials 20 \
-  --study-name distilbert-validation \
+  --study-name distilbert-tpe \
   --config-json \
-  '{"checkpoint":"distilbert-base-cased","model_seeds":[0,1],"max_pool_percent":50}'
+  '{"sampler":"tpe","checkpoint":"distilbert-base-cased","model_seeds":[0,1],"max_pool_percent":50}'
+
+uv run scripts/bert_token_uq_search.py \
+  --trials 20 --study-name distilbert-grid \
+  --config-json '{"sampler":"grid"}'
+
+uv run scripts/bert_token_uq_search.py \
+  --trials 20 --study-name distilbert-random \
+  --config-json '{"sampler":"random"}'
 ```
 
-The objective is the mean, across model seeds, of the normalized acquisition-curve area
-for `uncertainty entity F1 - random entity F1`. The study uses persistent SQLite storage.
-Running the same command and study name resumes it and adds the requested number of
-trials. Changing fixed configuration, validation settings, or the acquisition schedule
-requires a new study name. Studies using the older full-round-only schedule cannot be
-resumed with the smaller-final-round protocol.
+TPE adapts suggestions using previous trial results. Random search samples independently
+and can repeat configurations. Grid search enumerates combinations in a seeded shuffled
+order, stopping at `--trials`, the optional `--timeout`, or grid exhaustion. The full
+current grid contains 5,832 combinations; a smaller trial count explores only part of it.
+`--sampler-seed` controls the sampler seed. Trial count is always required, and a valid
+command starts real training immediately.
 
-Each study writes `study.db`, `trials.json`, `summary.json`, `best_config.json`, and the
-complete per-trial experiment records below `results/optuna/<study-name>/`. After tuning,
-pass the contents of `best_config.json` to the notebook's `--config-json` option to run
-the selected configuration once on the original pool and untouched test split.
+Search withholds a deterministic validation subset from the pool and removes those
+sentences from acquisition. The held-out test split is never passed to a trial. The
+objective is the mean across model seeds of the normalized acquisition-curve area for
+`uncertainty entity F1 - random entity F1`. Each trial uses one checkpoint and the
+configured model seeds. Search trials disable W&B logging.
 
-Launched sweeps write a manifest, per-run records, and `combined_results.csv` below
-`results/sweeps/`. Add `--wandb` to enable Weights & Biases for every job; it is off by
-default. Set `WANDB_API_KEY` in the environment or `.env`, and optionally choose a project:
+Running the same command and study name resumes the study for up to `--trials` additional
+trials. An exhausted grid exits without loading data or training. Changing the sampler,
+sampler seed, fixed experiment settings, search space, validation settings, or acquisition
+schedule requires a new study name. Compatible older TPE studies are recognized as TPE.
+The SQLite database retains trial history, but restarting a process reinitializes the
+sampler RNG; a resumed TPE/random sequence need not match one uninterrupted run.
 
-```bash
-uv run scripts/bert_token_uq_grid.py \
-  --count 1 \
-  --wandb \
-  --wandb-project uq-pet-token-uq \
-  --launch
-```
+Each study writes `study.db`, `trials.json`, `summary.json`, `best_config.json`, and
+per-trial settings, evaluations, and selected tokens below
+`results/optuna/<study-name>/`. The summary and trial records include the search context.
+After selecting a configuration, pass the contents of `best_config.json` to the notebook's
+`--config-json` option for evaluation on the original pool and untouched test split.
+The exported best configuration contains experiment settings only.
 
-For online W&B launches, the launcher checks `WANDB_API_KEY` before creating the sweep
-or starting its first job. `WANDB_MODE=offline` intentionally bypasses that key check.
-
-The first real run downloads `distilbert-base-cased` if it is not already cached. It
-does not require an API key.
+This replaces the separate grid/Optuna scripts and the earlier `sweep`/`tune` commands.
+The old balanced sweep, fixed-all-metrics, and sweep W&B flags are removed; use the
+notebook for individual final evaluations and W&B logging.
 
 ## Checks
 
@@ -158,7 +135,7 @@ uv run ruff check src tests notebooks scripts
 uv run ruff format --check src tests notebooks scripts
 uv run marimo check notebooks/bert_token_uq.py
 uv run notebooks/bert_token_uq.py
-uv run scripts/bert_token_uq_optuna.py --help
+uv run scripts/bert_token_uq_search.py --help
 ```
 
 Running the notebook as a plain script uses small synthetic display data. It validates
@@ -212,9 +189,6 @@ Use `--list` on an `add` command to inspect a repository before installing it, o
 | `src/uq_pet/active_learning.py` | acquisition rounds, replay, orchestration, and outputs |
 | `src/uq_pet/experiment.py` | shared configuration, run execution, charts, and W&B records |
 | `notebooks/bert_token_uq.py` | controls, experiment run, tables, and plots |
-| `scripts/bert_token_uq_grid.py` | dry-run-first local sweep generation and execution |
-| `scripts/bert_token_uq_optuna.py` | persistent validation-only Optuna tuning |
-| `src/uq_pet/tuning.py` | shared search space, nested validation split, and objective |
+| `scripts/bert_token_uq_search.py` | Optuna TPE/grid/random search, validation split, objective, and outputs |
 | `tests/test_token_uq.py` | focused offline invariant tests |
-| `tests/test_batch_grid.py` | deterministic sweep and aggregation tests |
 | `skills-lock.json` | project skill sources and content hashes |
