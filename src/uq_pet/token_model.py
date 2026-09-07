@@ -1,5 +1,6 @@
 """Token-classifier training, uncertainty scoring, and held-out evaluation."""
 
+import logging
 import math
 import random
 from contextlib import contextmanager
@@ -20,6 +21,13 @@ from uq_pet.utils.truncation import (
 )
 
 UQ_METRICS = ("entropy", "least_confidence", "margin")
+
+# Applied in each seed process before model downloads begin.
+logging.getLogger("huggingface_hub.utils._http").addFilter(
+    lambda record: (
+        "You are sending unauthenticated requests to the HF Hub." not in record.getMessage()
+    )
+)
 
 
 def set_seed(seed: int) -> None:
