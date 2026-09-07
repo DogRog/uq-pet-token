@@ -223,8 +223,13 @@ def run_active_learning(
         CONSOLE.rule(f"[bold cyan]Seed {model_seed} · bootstrap[/]")
         set_seed(model_seed)
         base_model, tokenizer = load_token_classifier(checkpoint, device)
+        tokenization_cache = {}
         pool_batches = prepare_inference_batches(
-            tokenizer, pool_inputs, max_length=max_length, batch_size=score_batch_size
+            tokenizer,
+            pool_inputs,
+            max_length=max_length,
+            batch_size=score_batch_size,
+            device=device,
         )
         test_batches = prepare_inference_batches(
             tokenizer,
@@ -232,6 +237,7 @@ def run_active_learning(
             max_length=max_length,
             batch_size=score_batch_size,
             evaluation=True,
+            device=device,
         )
         scoreable = scoreable_token_keys(
             tokenizer,
@@ -262,6 +268,7 @@ def run_active_learning(
             max_length=max_length,
             device=device,
             seed=model_seed,
+            tokenization_cache=tokenization_cache,
         )
         baseline = evaluate_model(
             base_model,
@@ -360,6 +367,7 @@ def run_active_learning(
                     max_length=max_length,
                     device=device,
                     seed=model_seed * 100_000 + round_idx * 10 + arm_idx,
+                    tokenization_cache=tokenization_cache,
                 )
                 acquired[arm].update(chosen[arm])
                 replay_banks[arm].extend(new_items)

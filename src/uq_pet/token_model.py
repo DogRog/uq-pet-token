@@ -65,7 +65,9 @@ def _training_rng(seed: int):
                 torch.mps.set_rng_state(mps_state)
 
 
-def encode_targets(tokenizer, examples: list[dict], max_length: int):
+def encode_targets(tokenizer, examples: list[dict], max_length: int, cache: dict | None = None):
+    if cache is not None:
+        return _cached_targets(tokenizer, examples, max_length, cache)
     """Tokenize sentences and supervise the first subword of requested words only."""
     encoding = tokenizer(
         [example["tokens"] for example in examples],
@@ -85,6 +87,38 @@ def encode_targets(tokenizer, examples: list[dict], max_length: int):
     return encoding, labels
 
 
+def _cached_targets(tokenizer, examples, max_length, cache):
+    # Cache label-free sentence encodings; supervision is rebuilt for every batch.
+    entries = []
+    for example in examples:
+        key = (max_length, tuple(example["tokens"]))
+        if key not in cache:
+            encoding = tokenizer(
+                [example["tokens"]],
+                is_split_into_words=True,
+                truncation=True,
+                max_length=max_length,
+                padding=False,
+            )
+            cache[key] = (
+                {name: values[0] for name, values in encoding.items()},
+                complete_word_positions(encoding, 0),
+            )
+        entries.append(cache[key])
+    inputs = tokenizer.pad([entry[0] for entry in entries], return_tensors="pt")
+    labels = torch.full(inputs["input_ids"].shape, -100, dtype=torch.long)
+    for idx, (example, (encoding, positions)) in enumerate(zip(examples, entries, strict=True)):
+        missing = example["targets"].keys() - positions.keys()
+        if missing:
+            raise ValueError(f"target words were truncated: {sorted(missing)}")
+        offset = (
+            labels.shape[1] - len(encoding["input_ids"]) if tokenizer.padding_side == "left" else 0
+        )
+        for word, label in example["targets"].items():
+            labels[idx, positions[word] + offset] = label
+    return inputs, labels
+
+
 def train_items(
     model,
     optimizer,
@@ -96,6 +130,7 @@ def train_items(
     max_length: int,
     device: torch.device,
     seed: int,
+    tokenization_cache: dict | None = None,
 ) -> float:
     """Update with isolated seeded randomness, returning mean batch loss."""
     if passes < 0:
@@ -104,7 +139,7 @@ def train_items(
         return float("nan")
 
     def collate(batch):
-        return encode_targets(tokenizer, batch, max_length)
+        return encode_targets(tokenizer, batch, max_length, tokenization_cache)
 
     loader = DataLoader(
         list(items),
@@ -157,7 +192,7 @@ def load_token_classifier(checkpoint: str, device: torch.device):
 
 @dataclass
 class InferenceBatch:
-    """CPU inputs and first-subword alignment reused across acquisition rounds."""
+    """Device inputs and first-subword alignment reused across acquisition rounds."""
 
     inputs: dict[str, torch.Tensor]
     word_positions: list[dict[int, int]]
@@ -170,6 +205,7 @@ def prepare_inference_batches(
     max_length: int,
     batch_size: int,
     evaluation: bool = False,
+    device: torch.device | None = None,
 ) -> list[InferenceBatch]:
     """Tokenize fixed batches once, without retaining or reading any labels."""
     batches = []
@@ -189,7 +225,9 @@ def prepare_inference_batches(
             else complete_word_positions(encoding, idx)
             for idx, example in enumerate(batch)
         ]
-        batches.append(InferenceBatch(dict(encoding), positions))
+        batches.append(
+            InferenceBatch({name: value.to(device) for name, value in encoding.items()}, positions)
+        )
     return batches
 
 

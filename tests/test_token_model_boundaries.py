@@ -339,3 +339,33 @@ def test_training_restores_rng_states_even_on_error(tokenizer, device_name, fail
     assert torch.equal(torch.get_rng_state(), cpu_state)
     if backend is not None:
         assert torch.equal(backend.get_rng_state(), device_state)
+
+
+@pytest.mark.parametrize("padding_side", ["left", "right"])
+def test_training_cache_preserves_padding_labels_and_reuses_text(tokenizer, padding_side):
+    tokenizer.padding_side = padding_side
+    cache = {}
+    batches = [
+        [{"tokens": ["a", "splitting"], "targets": {1: 2}}, {"tokens": ["a"], "targets": {0: 1}}],
+        [{"tokens": ["a", "splitting"], "targets": {0: 3}}],
+    ]
+    for examples in batches:
+        expected_inputs, expected_labels = encode_targets(tokenizer, examples, 8)
+        inputs, labels = encode_targets(tokenizer, examples, 8, cache)
+        assert torch.equal(labels, expected_labels)
+        assert all(torch.equal(inputs[name], value) for name, value in expected_inputs.items())
+    assert len(cache) == 2
+    with pytest.raises(ValueError, match="truncated"):
+        encode_targets(tokenizer, batches[0][:1], 3, cache)
+
+
+def test_prepared_inference_inputs_use_requested_device(tokenizer):
+    batches = prepare_inference_batches(
+        tokenizer,
+        [{"tokens": ["a"]}],
+        max_length=8,
+        batch_size=1,
+        device=torch.device("meta"),
+    )
+    assert all(value.device.type == "meta" for value in batches[0].inputs.values())
+    assert batches[0].word_positions == [{0: 1}]

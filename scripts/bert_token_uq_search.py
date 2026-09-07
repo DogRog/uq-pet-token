@@ -55,11 +55,11 @@ def _quiet_search_output():
 SEARCH_SPACE = {
     "uq_metric": UQ_METRICS,
     "k": (8, 16, 32),
-    "bootstrap_epochs": (10, 20, 30),
+    "bootstrap_epochs": (10,),
     "update_passes": (1, 2, 4),
-    "learning_rate": (2e-5, 3e-5, 5e-5),
-    "batch_size": (4, 8, 16),
-    "replay_ratio": (0, 0.5, 1.0, 2.0),
+    "learning_rate": (2e-5, 5e-5),
+    "batch_size": (8, 16),
+    "replay_ratio": (0, 1.0, 2.0),
     "weight_decay": (0.0, 0.01),
 }
 
