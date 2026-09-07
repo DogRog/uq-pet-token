@@ -104,6 +104,26 @@ in the JSON configuration: `"sampler":"tpe"` (default), `"sampler":"grid"`, or
 `"sampler":"random"`. Each uses the same discrete `SEARCH_SPACE`, validation split,
 objective, persistent SQLite study, and trial outputs.
 
+All launch settings can live alongside experiment settings in one JSON file. The
+included DistilBERT configuration runs up to 100 additional TPE trials, each with
+five parallel seeds and a 100% acquisition budget over the tuning pool:
+
+```bash
+uv run scripts/bert_token_uq_search.py --config configs/distilbert_tpe_5_seeds.json
+```
+
+The file includes `trials`, `study_name`, `studies_dir`, `validation_fraction`,
+`validation_seed`, `sampler_seed`, and `timeout` (`null` means no time limit), plus
+`sampler` and experiment settings such as `checkpoint`, `model_seeds`, and
+`seed_workers`. Relative paths resolve from the working directory. `trials` is
+required; other omitted fields retain their defaults. Settings in `SEARCH_SPACE`
+are still chosen by Optuna per trial, overriding any fixed values for those fields.
+
+`--config-json` accepts the same configuration inline. Choose either `--config`
+or `--config-json`; explicit launch flags override values from either JSON source.
+For example, `--config configs/distilbert_tpe_5_seeds.json --trials 20` runs up to
+20 additional trials. Existing commands remain supported:
+
 ```bash
 uv run scripts/bert_token_uq_search.py \
   --trials 20 \
@@ -122,9 +142,9 @@ uv run scripts/bert_token_uq_search.py \
 
 TPE adapts suggestions using previous trial results. Random search samples independently
 and can repeat configurations. Grid search enumerates combinations in a seeded shuffled
-order, stopping at `--trials`, the optional `--timeout`, or grid exhaustion. The full
+order, stopping at `trials`, the optional `timeout`, or grid exhaustion. The full
 current grid contains 5,832 combinations; a smaller trial count explores only part of it.
-`--sampler-seed` controls the sampler seed. Trial count is always required, and a valid
+`sampler_seed` controls the sampler seed. Trial count is always required, and a valid
 command starts real training immediately.
 
 Search withholds a deterministic validation subset from the pool and removes those
@@ -133,16 +153,18 @@ objective is the mean across model seeds of the normalized acquisition-curve are
 `uncertainty entity F1 - random entity F1`. Each trial uses one checkpoint and the
 configured model seeds. Search trials disable W&B logging.
 
-Running the same command and study name resumes the study for up to `--trials` additional
+Running the same command and study name resumes the study for up to `trials` additional
 trials. An exhausted grid exits without loading data or training. Changing the sampler,
 sampler seed, fixed experiment settings, search space, validation settings, or acquisition
 schedule requires a new study name. Compatible older TPE studies are recognized as TPE.
 The SQLite database retains trial history, but restarting a process reinitializes the
 sampler RNG; a resumed TPE/random sequence need not match one uninterrupted run.
 
-Each study writes `study.db`, `trials.json`, `summary.json`, `best_config.json`, and
+Each study writes `study.db`, `search_config.json`, `trials.json`, `summary.json`, `best_config.json`, and
 per-trial settings, evaluations, and selected tokens below
 `results/optuna/<study-name>/`. The summary and trial records include the search context.
+`search_config.json` records the resolved settings from the latest accepted invocation,
+including CLI overrides.
 After selecting a configuration, pass the contents of `best_config.json` to the notebook's
 `--config-json` option for evaluation on the original pool and untouched test split.
 The exported best configuration contains experiment settings only.

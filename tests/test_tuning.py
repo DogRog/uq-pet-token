@@ -1,4 +1,6 @@
+import argparse
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -123,7 +125,7 @@ def test_optuna_suggestions_use_shared_discrete_search_space():
 
 @pytest.mark.parametrize("name", ["tpe", "grid", "random"])
 def test_search_config_chooses_optuna_sampler(name):
-    config = search.SearchConfig.model_validate({"sampler": name, "model_seeds": [3]})
+    config = search.SearchConfig.model_validate({"trials": 1, "sampler": name, "model_seeds": [3]})
     expected = {
         "tpe": search.optuna.samplers.TPESampler,
         "grid": search.optuna.samplers.GridSampler,
@@ -132,6 +134,69 @@ def test_search_config_chooses_optuna_sampler(name):
     assert isinstance(search.make_sampler(config.sampler, 7), expected[name])
     assert "sampler" not in config.experiment_config().active_learning_kwargs()
     assert config.experiment_config().model_seeds == [3]
+
+
+def test_file_config_and_explicit_overrides(tmp_path):
+    config_path = tmp_path / "search.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "trials": 12,
+                "study_name": "from-file",
+                "studies_dir": "custom/results",
+                "validation_fraction": 0.3,
+                "validation_seed": 15,
+                "sampler_seed": 9,
+                "timeout": 3600,
+                "sampler": "random",
+                "checkpoint": "distilbert-base-cased",
+                "model_seeds": [0, 1, 2, 3, 4],
+                "seed_workers": 5,
+            }
+        )
+    )
+    parser = argparse.ArgumentParser()
+    search.configure_parser(parser)
+    config = search.load_search_config(parser.parse_args(["--config", str(config_path)]), parser)
+    assert config.model_dump(include=set(json.loads(config_path.read_text()))) == {
+        **json.loads(config_path.read_text()),
+        "studies_dir": Path("custom/results"),
+    }
+    overridden = search.load_search_config(
+        parser.parse_args(["--config", str(config_path), "--trials", "2", "--sampler-seed", "11"]),
+        parser,
+    )
+    assert overridden.trials == 2
+    assert overridden.sampler_seed == 11
+    assert overridden.study_name == "from-file"
+    assert overridden.timeout == 3600
+    assert set(config.experiment_config().model_dump()) == set(search.ExperimentConfig.model_fields)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "{",
+        "[]",
+        "{}",
+        '{"trials":0}',
+        '{"trials":1,"unknown":true}',
+        '{"trials":1,"validation_fraction":1}',
+        '{"trials":1,"timeout":0}',
+        '{"trials":1,"timeout":Infinity}',
+        '{"trials":1,"study_name":"---"}',
+        '{"trials":1,"sampler_seed":-1}',
+        '{"trials":1,"validation_seed":-1}',
+    ],
+)
+def test_invalid_file_config_stops_before_creating_outputs(tmp_path, payload):
+    config_path = tmp_path / "search.json"
+    config_path.write_text(payload)
+    parser = argparse.ArgumentParser()
+    search.configure_parser(parser)
+    with pytest.raises(SystemExit, match="2"):
+        search.run(parser.parse_args(["--config", str(config_path)]), parser)
+    assert list(tmp_path.iterdir()) == [config_path]
 
 
 def run_search(tmp_path, sampler, trials=2, seed_workers=1):
@@ -223,6 +288,46 @@ def test_all_samplers_share_validation_and_outputs(tmp_path, fake_experiment, sa
         assert json.loads((output / "selections.json").read_text()) == []
         config = json.loads((output / "config.json").read_text())
         assert config["search_context"]["sampler"] == sampler
+
+
+def test_file_only_search_launch_and_resume(tmp_path, fake_experiment, monkeypatch):
+    config_path = tmp_path / "search.json"
+    settings = {
+        "trials": 2,
+        "study_name": "file-study",
+        "studies_dir": str(tmp_path / "outputs"),
+        "sampler": "tpe",
+        "sampler_seed": 13,
+        "validation_seed": 19,
+        "timeout": 60,
+        "model_seeds": [0, 1, 2, 3, 4],
+        "seed_workers": 5,
+    }
+    config_path.write_text(json.dumps(settings))
+    optimize_calls = []
+    original_optimize = search.optuna.Study.optimize
+
+    def optimize(study, objective, **kwargs):
+        optimize_calls.append(kwargs)
+        return original_optimize(study, objective, **kwargs)
+
+    monkeypatch.setattr(search.optuna.Study, "optimize", optimize)
+    parser = argparse.ArgumentParser()
+    search.configure_parser(parser)
+    search.run(parser.parse_args(["--config", str(config_path)]), parser)
+    root = tmp_path / "outputs" / "file-study"
+    saved = json.loads((root / "search_config.json").read_text())
+    assert all(saved[key] == value for key, value in settings.items())
+    assert optimize_calls == [{"n_trials": 2, "timeout": 60, "gc_after_trial": True}]
+    summary = json.loads((root / "summary.json").read_text())
+    assert summary["context"]["sampler_seed"] == 13
+    assert summary["context"]["validation_seed"] == 19
+    best = search.ExperimentConfig.model_validate_json((root / "best_config.json").read_text())
+    assert best.model_seeds == [0, 1, 2, 3, 4]
+    assert best.seed_workers == 5
+    search.run(parser.parse_args(["--config", str(config_path), "--trials", "1"]), parser)
+    assert len(fake_experiment) == 3
+    assert json.loads((root / "summary.json").read_text())["completed_trials"] == 3
 
 
 def test_search_resumes_when_only_seed_concurrency_changes(tmp_path, fake_experiment):

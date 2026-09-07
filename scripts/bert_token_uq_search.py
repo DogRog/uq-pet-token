@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 import optuna
+from pydantic import Field, field_validator
 from rich.console import Console
 from rich.table import Table
 
@@ -135,12 +136,28 @@ def mean_entity_f1_gap_auc(results: Sequence[Mapping[str, object]]) -> float:
 
 
 class SearchConfig(ExperimentConfig):
-    """Experiment settings plus the Optuna search strategy."""
+    """All experiment and launch settings for one Optuna search invocation."""
 
+    trials: int = Field(ge=1)
     sampler: Literal["tpe", "grid", "random"] = "tpe"
+    study_name: str = "bert-token-uq"
+    studies_dir: Path = DEFAULT_STUDIES_DIR
+    validation_fraction: float = Field(default=0.2, gt=0, lt=1)
+    validation_seed: int = Field(default=1729, ge=0)
+    sampler_seed: int = Field(default=0, ge=0)
+    timeout: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+
+    @field_validator("study_name")
+    @classmethod
+    def validate_study_name(cls, value):
+        if not _slug(value):
+            raise ValueError("study_name must contain at least one letter or number")
+        return value
 
     def experiment_config(self) -> ExperimentConfig:
-        return ExperimentConfig.model_validate(self.model_dump(exclude={"sampler"}))
+        return ExperimentConfig.model_validate(
+            self.model_dump(include=set(ExperimentConfig.model_fields))
+        )
 
 
 def make_sampler(name: str, seed: int) -> optuna.samplers.BaseSampler:
@@ -286,68 +303,79 @@ def _make_objective(
 
 
 def configure_parser(parser: argparse.ArgumentParser) -> None:
+    config_source = parser.add_mutually_exclusive_group()
+    config_source.add_argument(
+        "--config", type=Path, help="JSON file containing all search and experiment settings."
+    )
+    config_source.add_argument(
+        "--config-json",
+        help="Inline JSON with the same settings as --config; tuned fields are overwritten.",
+    )
     parser.add_argument(
         "--trials",
         type=int,
-        required=True,
-        help="Number of additional trials to run; required to avoid accidental long studies.",
-    )
-    parser.add_argument(
-        "--config-json",
-        default="{}",
-        help="Experiment settings plus sampler (tpe, grid, random) as JSON; tuned fields are overwritten.",
+        default=argparse.SUPPRESS,
+        help="Override additional trials; trials must be supplied in JSON or with this flag.",
     )
     parser.add_argument(
         "--study-name",
-        default="bert-token-uq",
+        default=argparse.SUPPRESS,
         help="Persistent Optuna study name (default: bert-token-uq).",
     )
     parser.add_argument(
         "--studies-dir",
         type=Path,
-        default=DEFAULT_STUDIES_DIR,
+        default=argparse.SUPPRESS,
         help="Directory containing study databases and trial artifacts.",
     )
     parser.add_argument(
         "--validation-fraction",
         type=float,
-        default=0.2,
+        default=argparse.SUPPRESS,
         help="Fraction of pool sentences withheld from acquisition for validation.",
     )
     parser.add_argument(
         "--validation-seed",
         type=int,
-        default=1729,
+        default=argparse.SUPPRESS,
         help="Local RNG seed for the nested validation split.",
     )
     parser.add_argument(
         "--sampler-seed",
         type=int,
-        default=0,
+        default=argparse.SUPPRESS,
         help="Seed for the selected Optuna sampler.",
     )
     parser.add_argument(
         "--timeout",
         type=float,
-        default=None,
+        default=argparse.SUPPRESS,
         help="Optional study timeout in seconds.",
     )
 
 
-def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
-    if args.trials < 1:
-        parser.error("--trials must be positive")
-    if args.timeout is not None and args.timeout <= 0:
-        parser.error("--timeout must be positive")
-    if not 0 < args.validation_fraction < 1:
-        parser.error("--validation-fraction must be in (0, 1)")
-    if not _slug(args.study_name):
-        parser.error("--study-name must contain at least one letter or number")
+def load_search_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> SearchConfig:
+    """Validate JSON and explicit CLI overrides before any experiment side effects."""
     try:
-        search_config = SearchConfig.model_validate_json(args.config_json)
-        base_config = search_config.experiment_config()
-    except ValueError as error:
+        payload = args.config.read_text() if args.config is not None else args.config_json or "{}"
+        settings = json.loads(payload)
+        if not isinstance(settings, dict):
+            raise ValueError("search configuration must be a JSON object")
+        settings.update(
+            {
+                key: value
+                for key, value in vars(args).items()
+                if key not in {"config", "config_json"}
+            }
+        )
+        return SearchConfig.model_validate(settings)
+    except (OSError, ValueError) as error:
         parser.error(str(error))
+
+
+def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    search_config = load_search_config(args, parser)
+    base_config = search_config.experiment_config()
     base_config = ExperimentConfig.model_validate(
         {
             **base_config.model_dump(),
@@ -356,13 +384,13 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         }
     )
 
-    study_root = args.studies_dir / _slug(args.study_name)
+    study_root = search_config.studies_dir / _slug(search_config.study_name)
     study_root.mkdir(parents=True, exist_ok=True)
     (study_root / "trials").mkdir(exist_ok=True)
     storage = f"sqlite:///{study_root / 'study.db'}"
-    sampler = make_sampler(search_config.sampler, args.sampler_seed)
+    sampler = make_sampler(search_config.sampler, search_config.sampler_seed)
     study = optuna.create_study(
-        study_name=args.study_name,
+        study_name=search_config.study_name,
         storage=storage,
         direction="maximize",
         sampler=sampler,
@@ -370,9 +398,9 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     )
     context = _study_context(
         base_config,
-        validation_fraction=args.validation_fraction,
-        validation_seed=args.validation_seed,
-        sampler_seed=args.sampler_seed,
+        validation_fraction=search_config.validation_fraction,
+        validation_seed=search_config.validation_seed,
+        sampler_seed=search_config.sampler_seed,
         sampler=search_config.sampler,
     )
     fingerprint = _context_fingerprint(context)
@@ -395,6 +423,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         )
     study.set_user_attr("context", context)
     study.set_user_attr("context_fingerprint", fingerprint)
+    (study_root / "search_config.json").write_text(search_config.model_dump_json(indent=2))
 
     if isinstance(sampler, optuna.samplers.GridSampler) and sampler.is_exhausted(study):
         _write_study_outputs(study, study_root, base_config)
@@ -406,17 +435,17 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     tuning_pool_inputs, tuning_pool_gold, validation_examples = make_tuning_split(
         pool_inputs,
         pool_gold,
-        validation_fraction=args.validation_fraction,
-        seed=args.validation_seed,
+        validation_fraction=search_config.validation_fraction,
+        seed=search_config.validation_seed,
     )
     device = get_device()
 
     overview = Table.grid(padding=(0, 2))
     overview.add_column(style="bold cyan", justify="right")
     overview.add_column()
-    overview.add_row("Study", args.study_name)
+    overview.add_row("Study", search_config.study_name)
     overview.add_row("Sampler", search_config.sampler)
-    overview.add_row("Additional trials", str(args.trials))
+    overview.add_row("Additional trials", str(search_config.trials))
     overview.add_row("Acquisition pool", f"{len(tuning_pool_inputs)} sentences")
     overview.add_row("Validation", f"{len(validation_examples)} sentences")
     overview.add_row("Test split", "untouched")
@@ -436,8 +465,8 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     try:
         study.optimize(
             objective,
-            n_trials=args.trials,
-            timeout=args.timeout,
+            n_trials=search_config.trials,
+            timeout=search_config.timeout,
             gc_after_trial=True,
         )
     finally:
