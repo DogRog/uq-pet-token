@@ -15,7 +15,7 @@ import optuna
 from datasets.utils import logging as datasets_logging
 from pydantic import Field, field_validator
 from rich.console import Console
-from rich.progress import Progress
+from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 from transformers.utils import logging as transformers_logging
 
@@ -291,25 +291,35 @@ def _make_objective(
     progress: Progress,
     task_id: int,
 ):
+    seed_tasks = {
+        seed: progress.add_task(f"Seed {seed} · waiting / bootstrap", total=1)
+        for seed in base_config.model_seeds
+    }
+
     def objective(trial: optuna.Trial) -> float:
         completed_trials = progress.tasks[task_id].completed
-        trial_label = f"Trial {int(completed_trials) + 1}/{int(progress.tasks[task_id].total)}"
-        progress.update(task_id, description=f"{trial_label} · loading / bootstrap")
+        trial_label = f"Trials {int(completed_trials) + 1}/{int(progress.tasks[task_id].total)}"
+        progress.update(task_id, description=trial_label)
+        for seed, seed_task in seed_tasks.items():
+            progress.reset(seed_task, total=1, description=f"Seed {seed} · waiting / bootstrap")
+        seed_fractions = dict.fromkeys(seed_tasks, 0.0)
         config = ExperimentConfig.model_validate(
             {**base_config.model_dump(), **suggest_search_config(trial)}
         )
 
         def update_progress(rows):
             row = rows[-1]
-            # Two rows per complete round, including each seed's baseline.
-            fraction = len(rows) / (2 * (row["total_rounds"] + 1) * len(config.model_seeds))
+            seed = row["seed"]
+            progress.update(
+                seed_tasks[seed],
+                total=row["total_rounds"],
+                completed=row["round"],
+                description=f"Seed {seed} · round {row['round']}/{row['total_rounds']}",
+            )
+            seed_fractions[seed] = (row["round"] + 1) / (row["total_rounds"] + 1)
             progress.update(
                 task_id,
-                completed=completed_trials + fraction,
-                description=(
-                    f"{trial_label} · seed {row['seed']} · "
-                    f"round {row['round']}/{row['total_rounds']}"
-                ),
+                completed=completed_trials + sum(seed_fractions.values()) / len(seed_fractions),
             )
 
         results, selections = run_active_learning(
@@ -494,7 +504,14 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     overview.add_row("Device", str(device))
     overview.add_row("Output", str(study_root))
 
-    with Progress(console=CONSOLE, transient=True) as progress:
+    with Progress(
+        TextColumn("{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        console=CONSOLE,
+        transient=True,
+    ) as progress:
         task_id = progress.add_task("Preparing search", total=search_config.trials)
         objective = _make_objective(
             base_config=base_config,

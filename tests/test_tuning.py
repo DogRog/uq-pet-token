@@ -365,8 +365,8 @@ def test_search_progress_replaces_round_logs_and_defers_summary(
     assert rendered.count("Best config:") == 1
     assert "Trials completed this invocation" in rendered
     paired = [item for item in updates if "round " in item.get("description", "")]
-    assert [item["completed"] for item in paired] == [0.5, 1.0, 1.5, 2.0]
-    assert "Trial 2/2 · seed 0 · round 1/1" in paired[-1]["description"]
+    assert [item["completed"] for item in paired] == [0, 1, 0, 1]
+    assert "Seed 0 · round 1/1" in paired[-1]["description"]
     assert search.active_learning.CONSOLE.quiet is False
 
 
@@ -444,3 +444,47 @@ def test_legacy_tpe_context_can_resume(tmp_path, fake_experiment):
     run_search(tmp_path, "tpe", trials=1)
     assert len(fake_experiment) == 2
     assert study.user_attrs["context"]["sampler"] == "tpe"
+
+
+def test_interleaved_seed_progress_keeps_separate_rows(tmp_path, fake_experiment, monkeypatch):
+    original_config = search.SearchConfig.experiment_config
+    monkeypatch.setattr(
+        search.SearchConfig,
+        "experiment_config",
+        lambda config: original_config(config).model_copy(update={"model_seeds": [0, 1, 2]}),
+    )
+    original_train = search.run_active_learning
+
+    def interleaved(*args, **kwargs):
+        publish = kwargs.pop("progress_callback")
+        rows, selections = original_train(*args, **kwargs, progress_callback=lambda rows: None)
+        stream = []
+        for round_idx in (0, 1):
+            for seed in (2, 0, 1):
+                stream.extend(
+                    row for row in rows if row["seed"] == seed and row["round"] == round_idx
+                )
+                publish(list(stream))
+        return rows, selections
+
+    monkeypatch.setattr(search, "run_active_learning", interleaved)
+    original_update = search.Progress.update
+    seed_ids = {}
+
+    def update(progress, task_id, **kwargs):
+        before = {task.id: (task.description, task.completed) for task in progress.tasks}
+        result = original_update(progress, task_id, **kwargs)
+        description = kwargs.get("description", "")
+        if description.startswith("Seed ") and "round" in description:
+            seed = int(description.split()[1])
+            assert seed_ids.setdefault(seed, task_id) == task_id
+            assert all(
+                (task.description, task.completed) == before[task.id]
+                for task in progress.tasks
+                if task.id != task_id
+            )
+        return result
+
+    monkeypatch.setattr(search.Progress, "update", update)
+    run_search(tmp_path, "tpe", trials=2)
+    assert list(sorted(seed_ids, key=seed_ids.get)) == [0, 1, 2]
