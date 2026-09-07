@@ -26,6 +26,7 @@ from uq_pet.token_model import (
     set_seed,
     train_items,
 )
+from uq_pet.utils.checkpoints import checkpoint_signature, load_checkpoint, save_round
 
 CONSOLE = Console()
 
@@ -182,6 +183,7 @@ def run_active_learning(
     max_length: int,
     device: torch.device,
     seed_workers: int = 1,
+    checkpoint_dir: Path | None = None,
     progress_callback: Callable[[list[dict]], None] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Run uncertainty and random online learners from the same bootstrap state."""
@@ -193,24 +195,24 @@ def run_active_learning(
         raise ValueError("seed_workers must be positive")
     if len(model_seeds) != len(set(model_seeds)):
         raise ValueError("model seeds must be unique")
+    settings = {
+        "checkpoint": checkpoint,
+        "uq_metric": uq_metric,
+        "k": k,
+        "max_pool_percent": max_pool_percent,
+        "bootstrap_epochs": bootstrap_epochs,
+        "update_passes": update_passes,
+        "replay_ratio": replay_ratio,
+        "learning_rate": learning_rate,
+        "weight_decay": weight_decay,
+        "batch_size": batch_size,
+        "score_batch_size": score_batch_size,
+        "max_length": max_length,
+    }
     if seed_workers > 1 and len(model_seeds) > 1:
         return _run_concurrent_seeds(
             (seed_examples, pool_inputs, pool_gold, test_examples),
-            {
-                "checkpoint": checkpoint,
-                "uq_metric": uq_metric,
-                "k": k,
-                "max_pool_percent": max_pool_percent,
-                "bootstrap_epochs": bootstrap_epochs,
-                "update_passes": update_passes,
-                "replay_ratio": replay_ratio,
-                "learning_rate": learning_rate,
-                "weight_decay": weight_decay,
-                "batch_size": batch_size,
-                "score_batch_size": score_batch_size,
-                "max_length": max_length,
-                "device": device,
-            },
+            {**settings, "device": device, "checkpoint_dir": checkpoint_dir},
             model_seeds=model_seeds,
             seed_workers=min(seed_workers, len(model_seeds)),
             progress_callback=progress_callback,
@@ -220,6 +222,25 @@ def run_active_learning(
     selections: list[dict] = []
 
     for model_seed in model_seeds:
+        result_start, selection_start = len(results), len(selections)
+        state_path = (
+            checkpoint_dir / f"seed_{model_seed}.pt" if checkpoint_dir is not None else None
+        )
+        signature = (
+            checkpoint_signature(settings, model_seed, seed_examples, pool_inputs, test_examples)
+            if state_path is not None
+            else None
+        )
+        saved = load_checkpoint(state_path, signature, pool_gold)
+        if saved is not None:
+            selections.extend(saved["selections"])
+            for start in range(0, len(saved["results"]), 2):
+                results.extend(saved["results"][start : start + 2])
+                if progress_callback is not None:
+                    progress_callback(list(results))
+            if saved["round"] == results[-1]["total_rounds"]:
+                del saved
+                continue
         CONSOLE.rule(f"[bold cyan]Seed {model_seed} · bootstrap[/]")
         set_seed(model_seed)
         base_model, tokenizer = load_token_classifier(checkpoint, device)
@@ -249,67 +270,74 @@ def run_active_learning(
             f"(final round: {token_budget - (rounds - 1) * k})"
         )
 
-        bootstrap_optimizer = torch.optim.AdamW(
-            base_model.parameters(), lr=learning_rate, weight_decay=weight_decay
-        )
-        bootstrap_loss = train_items(
-            base_model,
-            bootstrap_optimizer,
-            tokenizer,
-            full_sentence_items(seed_examples),
-            passes=bootstrap_epochs,
-            batch_size=batch_size,
-            max_length=max_length,
-            device=device,
-            seed=model_seed,
-        )
-        baseline = evaluate_model(
-            base_model,
-            tokenizer,
-            test_examples,
-            max_length=max_length,
-            batch_size=score_batch_size,
-            device=device,
-            prepared_batches=test_batches,
-        )
-        baseline["train_loss"] = bootstrap_loss
-        baseline["n_new"] = 0
-        baseline["n_replay"] = 0
-        CONSOLE.print(
-            "[bold green]baseline[/] "
-            f"[dim]entity F1[/] [bold]{baseline['entity_f1']:.4f}[/]  "
-            f"[dim]token accuracy[/] [bold]{baseline['token_accuracy']:.4f}[/]"
-        )
-        for arm in ("uncertainty", "random"):
-            results.append(
-                _result_row(
-                    model_seed,
-                    arm,
-                    0,
-                    0,
-                    baseline,
-                    scoreable_tokens=len(scoreable),
-                    token_budget=token_budget,
-                    total_rounds=rounds,
-                )
+        if saved is None:
+            bootstrap_optimizer = torch.optim.AdamW(
+                base_model.parameters(), lr=learning_rate, weight_decay=weight_decay
             )
-        if progress_callback is not None:
-            progress_callback(list(results))
+            bootstrap_loss = train_items(
+                base_model,
+                bootstrap_optimizer,
+                tokenizer,
+                full_sentence_items(seed_examples),
+                passes=bootstrap_epochs,
+                batch_size=batch_size,
+                max_length=max_length,
+                device=device,
+                seed=model_seed,
+            )
+            baseline = evaluate_model(
+                base_model,
+                tokenizer,
+                test_examples,
+                max_length=max_length,
+                batch_size=score_batch_size,
+                device=device,
+                prepared_batches=test_batches,
+            )
+            baseline["train_loss"] = bootstrap_loss
+            baseline["n_new"] = 0
+            baseline["n_replay"] = 0
+            CONSOLE.print(
+                "[bold green]baseline[/] "
+                f"[dim]entity F1[/] [bold]{baseline['entity_f1']:.4f}[/]  "
+                f"[dim]token accuracy[/] [bold]{baseline['token_accuracy']:.4f}[/]"
+            )
+            for arm in ("uncertainty", "random"):
+                results.append(
+                    _result_row(
+                        model_seed,
+                        arm,
+                        0,
+                        0,
+                        baseline,
+                        scoreable_tokens=len(scoreable),
+                        token_budget=token_budget,
+                        total_rounds=rounds,
+                    )
+                )
+
+            bootstrap_optimizer_state = copy.deepcopy(bootstrap_optimizer.state_dict())
+            del bootstrap_optimizer
 
         models = {
             "uncertainty": copy.deepcopy(base_model),
             "random": copy.deepcopy(base_model),
         }
-        bootstrap_optimizer_state = copy.deepcopy(bootstrap_optimizer.state_dict())
-        del base_model, bootstrap_optimizer
+        del base_model
         optimizers = {}
         for arm, model in models.items():
             optimizer = torch.optim.AdamW(
                 model.parameters(), lr=learning_rate, weight_decay=weight_decay
             )
-            optimizer.load_state_dict(copy.deepcopy(bootstrap_optimizer_state))
+            if saved is None:
+                optimizer.load_state_dict(copy.deepcopy(bootstrap_optimizer_state))
+            else:
+                model.load_state_dict(saved["models"][arm])
+                model.eval()
+                optimizer.load_state_dict(saved["optimizers"][arm])
             optimizers[arm] = optimizer
-        del bootstrap_optimizer_state
+        if saved is None:
+            del bootstrap_optimizer_state
 
         acquired = {"uncertainty": set(), "random": set()}
         replay_banks = {
@@ -317,7 +345,30 @@ def run_active_learning(
             "random": seed_replay_items(seed_examples),
         }
 
-        for round_idx in range(1, rounds + 1):
+        resumed = saved is not None
+        last_round = saved["round"] if resumed else 0
+        for arm in models:
+            keys = [
+                (row["pool_idx"], row["word_idx"])
+                for row in selections[selection_start:]
+                if row["arm"] == arm
+            ]
+            acquired[arm].update(keys)
+            replay_banks[arm].extend(reveal_pool_items(keys, pool_inputs, pool_gold))
+        del saved
+
+        if not resumed:
+            save_round(
+                state_path,
+                signature,
+                results[result_start:],
+                selections[selection_start:],
+                models,
+                optimizers,
+            )
+            if progress_callback is not None:
+                progress_callback(list(results))
+        for round_idx in range(last_round + 1, rounds + 1):
             round_k = min(k, token_budget - (round_idx - 1) * k)
             round_results = {}
             uq_scores = score_token_uncertainty(
@@ -409,9 +460,17 @@ def run_active_learning(
                             else None,
                         }
                     )
-            CONSOLE.print(_round_progress_table(round_results, uq_metric))
+            save_round(
+                state_path,
+                signature,
+                results[result_start:],
+                selections[selection_start:],
+                models,
+                optimizers,
+            )
             if progress_callback is not None:
                 progress_callback(list(results))
+            CONSOLE.print(_round_progress_table(round_results, uq_metric))
 
         del models, optimizers, model, optimizer, tokenizer, pool_batches, test_batches
         if torch.backends.mps.is_available():
