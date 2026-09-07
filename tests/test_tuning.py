@@ -326,7 +326,7 @@ def test_file_only_search_launch_and_resume(tmp_path, fake_experiment, monkeypat
     saved = json.loads((root / "search_config.json").read_text())
     assert all(saved[key] == value for key, value in settings.items())
     assert len(optimize_calls) == 1
-    assert {key: value for key, value in optimize_calls[0].items() if key != "callbacks"} == {
+    assert optimize_calls[0] == {
         "n_trials": 2,
         "timeout": 60,
         "gc_after_trial": True,
@@ -444,70 +444,3 @@ def test_legacy_tpe_context_can_resume(tmp_path, fake_experiment):
     run_search(tmp_path, "tpe", trials=1)
     assert len(fake_experiment) == 2
     assert study.user_attrs["context"]["sampler"] == "tpe"
-
-
-@pytest.mark.parametrize("sampler", ["tpe", "random", "grid"])
-def test_interrupted_trial_retries_same_parameters_and_checkpoints(
-    tmp_path, fake_experiment, monkeypatch, sampler
-):
-    train = search.run_active_learning
-    directories = []
-
-    def interrupted(*args, **kwargs):
-        directory = kwargs["checkpoint_dir"]
-        directories.append(directory)
-        directory.mkdir(parents=True, exist_ok=True)
-        marker = directory / "saved-round"
-        if not marker.exists():
-            marker.write_text("round 1")
-            raise KeyboardInterrupt
-        assert marker.read_text() == "round 1"
-        return train(*args, **kwargs)
-
-    monkeypatch.setattr(search, "run_active_learning", interrupted)
-    with pytest.raises(KeyboardInterrupt):
-        run_search(tmp_path, sampler, trials=1)
-    root = tmp_path / "bert-token-uq"
-    study = search.optuna.load_study(
-        study_name="bert-token-uq", storage=f"sqlite:///{root / 'study.db'}"
-    )
-    # A second restart while a retry is queued must not enqueue another copy.
-    search.resume_interrupted_trial(study)
-    search.resume_interrupted_trial(study)
-    assert len(study.trials) == 2
-    run_search(tmp_path, sampler, trials=1)
-    original, resumed = study.trials
-    assert original.state == search.optuna.trial.TrialState.FAIL
-    assert resumed.state == search.optuna.trial.TrialState.COMPLETE
-    assert resumed.params == original.params
-    assert resumed.user_attrs["resumed_from_trial"] == original.number
-    assert directories[0] == directories[1]
-    assert not directories[0].exists()
-    assert len(fake_experiment) == 1
-
-
-@pytest.mark.parametrize("sampler", ["tpe", "random", "grid"])
-def test_restart_recovers_trial_left_running_by_process_exit(tmp_path, fake_experiment, sampler):
-    from uq_pet.utils.checkpoints import prepare_trial_checkpoint
-
-    run_search(tmp_path, sampler, trials=1)
-    root = tmp_path / "bert-token-uq"
-    study = search.optuna.load_study(
-        study_name="bert-token-uq",
-        storage=f"sqlite:///{root / 'study.db'}",
-        sampler=search.make_sampler(sampler, 0),
-    )
-    abandoned = study.ask()
-    parameters = search.suggest_search_config(abandoned)
-    directory = prepare_trial_checkpoint(root, abandoned)
-    directory.mkdir(parents=True)
-    (directory / "saved-round").write_text("round 1")
-    # A killed process never reaches tell(), leaving the trial RUNNING in SQLite.
-    run_search(tmp_path, sampler, trials=1)
-    assert study.trials[abandoned.number].state == search.optuna.trial.TrialState.FAIL
-    resumed = study.trials[-1]
-    assert resumed.state == search.optuna.trial.TrialState.COMPLETE
-    assert resumed.params == parameters
-    assert resumed.user_attrs["checkpoint_trial"] == abandoned.number
-    assert not directory.exists()
-    assert len(fake_experiment) == 2

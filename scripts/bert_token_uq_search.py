@@ -8,7 +8,6 @@ import random
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime
-from functools import partial
 from pathlib import Path
 from typing import Literal
 
@@ -25,11 +24,6 @@ from uq_pet.active_learning import run_active_learning, write_run
 from uq_pet.experiment import ExperimentConfig
 from uq_pet.pet_data import RESULTS_DIR, TokenKey, download_pet_ner, load_pet_splits
 from uq_pet.token_model import UQ_METRICS, get_device
-from uq_pet.utils.checkpoints import (
-    prepare_trial_checkpoint,
-    release_trial_checkpoints,
-    resume_interrupted_trial,
-)
 
 DEFAULT_STUDIES_DIR = RESULTS_DIR / "optuna"
 OBJECTIVE_NAME = "mean_validation_entity_f1_gap_auc"
@@ -304,7 +298,6 @@ def _make_objective(
         config = ExperimentConfig.model_validate(
             {**base_config.model_dump(), **suggest_search_config(trial)}
         )
-        checkpoint_dir = prepare_trial_checkpoint(study_root, trial)
 
         def update_progress(rows):
             row = rows[-1]
@@ -327,7 +320,6 @@ def _make_objective(
             **config.active_learning_kwargs(),
             device=device,
             progress_callback=update_progress,
-            checkpoint_dir=checkpoint_dir,
         )
         progress.update(task_id, description=f"{trial_label} · saving results")
         value = mean_entity_f1_gap_auc(results)
@@ -470,7 +462,6 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     study.set_user_attr("context", context)
     study.set_user_attr("context_fingerprint", fingerprint)
     (study_root / "search_config.json").write_text(search_config.model_dump_json(indent=2))
-    resume_interrupted_trial(study)
 
     if (
         isinstance(sampler, optuna.samplers.GridSampler)
@@ -523,7 +514,6 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 n_trials=search_config.trials,
                 timeout=search_config.timeout,
                 gc_after_trial=True,
-                callbacks=[partial(release_trial_checkpoints, study_root)],
             )
         finally:
             _write_study_outputs(study, study_root, base_config)

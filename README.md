@@ -160,31 +160,14 @@ objective is the mean across model seeds of the normalized acquisition-curve are
 configured model seeds. Search trials disable W&B logging.
 
 Running the same command and study name resumes the study for up to `trials` additional
-trials. An interrupted trial is retried first, using the same sampled parameters and
-each seed's last saved round; that retry counts toward `trials`. Optuna gives the
-retry a new trial number and records `resumed_from_trial` while keeping the original
-failed attempt in its history. An exhausted grid exits without loading data or
-training. Changing the sampler,
+trials. Completed trial history is retained, but interrupted trials do not resume:
+model and optimizer states are not saved. An exhausted grid exits without loading
+data or training. Changing the sampler,
 sampler seed, fixed experiment settings, search space, validation settings, or acquisition
 schedule requires a new study name. Compatible older TPE studies are recognized as TPE.
 The SQLite database retains trial history, but restarting a process reinitializes the
 sampler RNG; a resumed TPE/random sequence need not match one uninterrupted run.
 
-Search checkpoints are saved under `checkpoints/trial_<number>/seed_<seed>.pt` within
-the study directory. Each seed saves after bootstrap and after both arms finish a
-round. A checkpoint includes both models, optimizer states, evaluations, and selected
-tokens; replay is reconstructed in its original order from those selections. Local
-round seeds preserve selection and training randomness. Restart with the same data,
-settings, and software environment. Changed settings or input data are rejected.
-
-Checkpoint replacement is atomic: an interrupted save leaves the previous round
-available. An unfinished round runs again, and an interrupted bootstrap starts over.
-Finished seeds are reused without training. Large model states are discarded when
-a seed finishes, and its checkpoint files are removed after Optuna commits the trial.
-Saving every round adds disk I/O and temporarily needs space for both the old and new
-checkpoint. Keep the study directory when updating code on the server. This applies
-to search runs started with checkpoint support; earlier runs cannot recover their
-in-memory training progress. Plain notebook runs do not create these search checkpoints.
 Run only one search process per study; stop the old process and its workers before restarting.
 
 Each study writes `study.db`, `search_config.json`, `trials.json`, `summary.json`, `best_config.json`, and
@@ -259,7 +242,6 @@ Use `--list` on an `add` command to inspect a repository before installing it, o
 | `src/uq_pet/pet_data.py` | PET identity, download, stable split, and private label lookup |
 | `src/uq_pet/token_model.py` | masking, training, UQ metrics, inference, and evaluation |
 | `src/uq_pet/utils/truncation.py` | word alignment and truncation checks |
-| `src/uq_pet/utils/checkpoints.py` | atomic round checkpoints, validation, and interrupted-trial retries |
 | `src/uq_pet/active_learning.py` | acquisition rounds, replay, orchestration, and outputs |
 | `src/uq_pet/experiment.py` | shared configuration, run execution, summaries, and W&B records |
 | `notebooks/bert_token_uq.py` | controls, experiment run, tables, and plots |
