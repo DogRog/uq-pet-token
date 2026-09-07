@@ -6,15 +6,20 @@ import hashlib
 import json
 import random
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
 import optuna
+from datasets.utils import logging as datasets_logging
 from pydantic import Field, field_validator
 from rich.console import Console
+from rich.progress import Progress
 from rich.table import Table
+from transformers.utils import logging as transformers_logging
 
+from uq_pet import active_learning
 from uq_pet.active_learning import run_active_learning, write_run
 from uq_pet.experiment import ExperimentConfig
 from uq_pet.pet_data import RESULTS_DIR, TokenKey, download_pet_ner, load_pet_splits
@@ -23,6 +28,28 @@ from uq_pet.token_model import UQ_METRICS, get_device
 DEFAULT_STUDIES_DIR = RESULTS_DIR / "optuna"
 OBJECTIVE_NAME = "mean_validation_entity_f1_gap_auc"
 CONSOLE = Console()
+
+
+@contextmanager
+def _quiet_search_output():
+    """Keep routine logs off the progress line and restore settings on every exit."""
+    quiet = active_learning.CONSOLE.quiet
+    verbosity = optuna.logging.get_verbosity()
+    model_bars = transformers_logging.is_progress_bar_enabled()
+    data_bars = datasets_logging.is_progress_bar_enabled()
+    try:
+        active_learning.CONSOLE.quiet = True
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+        transformers_logging.disable_progress_bar()
+        datasets_logging.disable_progress_bar()
+        yield
+    finally:
+        active_learning.CONSOLE.quiet = quiet
+        optuna.logging.set_verbosity(verbosity)
+        if model_bars:
+            transformers_logging.enable_progress_bar()
+        if data_bars:
+            datasets_logging.enable_progress_bar()
 
 
 SEARCH_SPACE = {
@@ -261,8 +288,13 @@ def _make_objective(
     validation_examples: list[dict],
     device,
     study_root: Path,
+    progress: Progress,
+    task_id: int,
 ):
     def objective(trial: optuna.Trial) -> float:
+        completed_trials = progress.tasks[task_id].completed
+        trial_label = f"Trial {int(completed_trials) + 1}/{int(progress.tasks[task_id].total)}"
+        progress.update(task_id, description=f"{trial_label} · loading / bootstrap")
         config = ExperimentConfig.model_validate(
             {
                 **base_config.model_dump(),
@@ -271,6 +303,20 @@ def _make_objective(
                 "wandb_run_name": "",
             }
         )
+
+        def update_progress(rows):
+            row = rows[-1]
+            # Two rows per complete round, including each seed's baseline.
+            fraction = len(rows) / (2 * (row["total_rounds"] + 1) * len(config.model_seeds))
+            progress.update(
+                task_id,
+                completed=completed_trials + fraction,
+                description=(
+                    f"{trial_label} · seed {row['seed']} · "
+                    f"round {row['round']}/{row['total_rounds']}"
+                ),
+            )
+
         results, selections = run_active_learning(
             seed_examples,
             tuning_pool_inputs,
@@ -278,7 +324,9 @@ def _make_objective(
             validation_examples,
             **config.active_learning_kwargs(),
             device=device,
+            progress_callback=update_progress,
         )
+        progress.update(task_id, description=f"{trial_label} · saving results")
         value = mean_entity_f1_gap_auc(results)
         trial_root = study_root / "trials" / f"trial_{trial.number:04d}"
         trial_root.mkdir(parents=True)
@@ -297,6 +345,7 @@ def _make_objective(
         trial.set_user_attr("validation_gap_auc", value)
         trial.set_user_attr("token_budget", results[0]["token_budget"])
         trial.set_user_attr("scoreable_pool_tokens", results[0]["scoreable_pool_tokens"])
+        progress.update(task_id, completed=completed_trials + 1)
         return value
 
     return objective
@@ -373,6 +422,7 @@ def load_search_config(args: argparse.Namespace, parser: argparse.ArgumentParser
         parser.error(str(error))
 
 
+@_quiet_search_output()
 def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     search_config = load_search_config(args, parser)
     base_config = search_config.experiment_config()
@@ -451,26 +501,33 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     overview.add_row("Test split", "untouched")
     overview.add_row("Device", str(device))
     overview.add_row("Output", str(study_root))
-    CONSOLE.print(overview)
 
-    objective = _make_objective(
-        base_config=base_config,
-        seed_examples=seed_examples,
-        tuning_pool_inputs=tuning_pool_inputs,
-        tuning_pool_gold=tuning_pool_gold,
-        validation_examples=validation_examples,
-        device=device,
-        study_root=study_root,
-    )
-    try:
-        study.optimize(
-            objective,
-            n_trials=search_config.trials,
-            timeout=search_config.timeout,
-            gc_after_trial=True,
+    with Progress(console=CONSOLE, transient=True) as progress:
+        task_id = progress.add_task("Preparing search", total=search_config.trials)
+        objective = _make_objective(
+            base_config=base_config,
+            seed_examples=seed_examples,
+            tuning_pool_inputs=tuning_pool_inputs,
+            tuning_pool_gold=tuning_pool_gold,
+            validation_examples=validation_examples,
+            device=device,
+            study_root=study_root,
+            progress=progress,
+            task_id=task_id,
         )
-    finally:
-        _write_study_outputs(study, study_root, base_config)
+        try:
+            study.optimize(
+                objective,
+                n_trials=search_config.trials,
+                timeout=search_config.timeout,
+                gc_after_trial=True,
+            )
+        finally:
+            _write_study_outputs(study, study_root, base_config)
+    overview.add_row(
+        "Trials completed this invocation", str(int(progress.tasks[task_id].completed))
+    )
+    CONSOLE.print(overview)
     if not any(trial.state == optuna.trial.TrialState.COMPLETE for trial in study.trials):
         CONSOLE.print("No completed trials; no best configuration is available yet.")
         return

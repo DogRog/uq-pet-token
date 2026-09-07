@@ -147,6 +147,12 @@ current grid contains 5,832 combinations; a smaller trial count explores only pa
 `sampler_seed` controls the sampler seed. Trial count is always required, and a valid
 command starts real training immediately.
 
+During a search, the terminal shows one updating progress line with the current
+trial, latest seed and round, and overall progress. Round tables and routine Optuna
+messages are suppressed. The study summary and best configuration path print once
+the invocation finishes; each
+completed trial still saves its full evaluation and selection records as it finishes.
+
 Search withholds a deterministic validation subset from the pool and removes those
 sentences from acquisition. The held-out test split is never passed to a trial. The
 objective is the mean across model seeds of the normalized acquisition-curve area for

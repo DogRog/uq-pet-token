@@ -1,9 +1,11 @@
 import argparse
 import importlib.util
 import json
+from io import StringIO
 from pathlib import Path
 
 import pytest
+from rich.console import Console
 
 SEARCH_PATH = Path(__file__).resolve().parents[1] / "scripts" / "bert_token_uq_search.py"
 SPEC = importlib.util.spec_from_file_location("bert_token_uq_search", SEARCH_PATH)
@@ -252,17 +254,21 @@ def fake_experiment(monkeypatch):
         calls.append(kwargs["k"])
         rows = [
             {
-                "seed": 0,
+                "seed": model_seed,
                 "round": round_idx,
+                "total_rounds": 1,
                 "arm": arm,
                 "percent_acquired": percent,
                 "entity_f1": 0.5,
                 "token_budget": 4,
                 "scoreable_pool_tokens": 4,
             }
+            for model_seed in kwargs["model_seeds"]
             for round_idx, percent in enumerate((0, 100))
             for arm in ("uncertainty", "random")
         ]
+        for end in range(2, len(rows) + 1, 2):
+            kwargs["progress_callback"](rows[:end])
         return rows, []
 
     monkeypatch.setattr(search, "run_active_learning", train)
@@ -328,6 +334,58 @@ def test_file_only_search_launch_and_resume(tmp_path, fake_experiment, monkeypat
     search.run(parser.parse_args(["--config", str(config_path), "--trials", "1"]), parser)
     assert len(fake_experiment) == 3
     assert json.loads((root / "summary.json").read_text())["completed_trials"] == 3
+
+
+def test_search_progress_replaces_round_logs_and_defers_summary(
+    tmp_path, fake_experiment, monkeypatch
+):
+    output = StringIO()
+    monkeypatch.setattr(search, "CONSOLE", Console(file=output, width=160))
+    monkeypatch.setattr(search.active_learning, "CONSOLE", Console(file=output, width=160))
+    updates = []
+    original_update = search.Progress.update
+
+    def update(progress, task_id, **kwargs):
+        # Routine round logs stay quiet even while real progress snapshots arrive.
+        search.active_learning.CONSOLE.print("unwanted round log")
+        assert "Best config:" not in output.getvalue()
+        updates.append(kwargs)
+        return original_update(progress, task_id, **kwargs)
+
+    monkeypatch.setattr(search.Progress, "update", update)
+    run_search(tmp_path, "tpe", trials=2)
+    rendered = output.getvalue()
+    assert "unwanted round log" not in rendered
+    assert rendered.count("Best config:") == 1
+    assert "Trials completed this invocation" in rendered
+    paired = [item for item in updates if "round " in item.get("description", "")]
+    assert [item["completed"] for item in paired] == [0.5, 1.0, 1.5, 2.0]
+    assert "Trial 2/2 · seed 0 · round 1/1" in paired[-1]["description"]
+    assert search.active_learning.CONSOLE.quiet is False
+
+
+def test_search_restores_logging_and_propagates_training_failure(
+    tmp_path, monkeypatch, fake_experiment
+):
+    verbosity = search.optuna.logging.get_verbosity()
+    model_bars = search.transformers_logging.is_progress_bar_enabled()
+    data_bars = search.datasets_logging.is_progress_bar_enabled()
+    quiet = search.active_learning.CONSOLE.quiet
+
+    def fail(*args, **kwargs):
+        assert search.active_learning.CONSOLE.quiet
+        assert not search.transformers_logging.is_progress_bar_enabled()
+        raise RuntimeError("training failed")
+
+    monkeypatch.setattr(search, "run_active_learning", fail)
+    with pytest.raises(RuntimeError, match="training failed"):
+        run_search(tmp_path, "tpe")
+    assert search.active_learning.CONSOLE.quiet == quiet
+    assert search.optuna.logging.get_verbosity() == verbosity
+    assert search.transformers_logging.is_progress_bar_enabled() == model_bars
+    assert search.datasets_logging.is_progress_bar_enabled() == data_bars
+    trials = json.loads((tmp_path / "bert-token-uq" / "trials.json").read_text())
+    assert trials[0]["state"] == "FAIL"
 
 
 def test_search_resumes_when_only_seed_concurrency_changes(tmp_path, fake_experiment):

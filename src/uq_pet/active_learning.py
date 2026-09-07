@@ -14,6 +14,7 @@ from pathlib import Path
 import torch
 from rich.console import Console
 from rich.table import Table
+from transformers.utils import logging as transformers_logging
 
 from uq_pet.pet_data import NER_TAGS, RESULTS_DIR, TokenKey
 from uq_pet.token_model import (
@@ -426,6 +427,7 @@ def _seed_worker(connection, args: tuple, kwargs: dict, cpu_threads: int) -> Non
     try:
         torch.set_num_threads(cpu_threads)
         CONSOLE.quiet = True
+        transformers_logging.disable_progress_bar()
 
         def publish(rows):
             connection.send(("progress", rows[-2:]))
