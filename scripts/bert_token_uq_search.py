@@ -15,7 +15,7 @@ import optuna
 from datasets.utils import logging as datasets_logging
 from pydantic import Field, field_validator
 from rich.console import Console
-from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeElapsedColumn
+from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeRemainingColumn
 from rich.table import Table
 from transformers.utils import logging as transformers_logging
 
@@ -508,7 +508,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         TextColumn("{task.description}"),
         BarColumn(),
         TaskProgressColumn(),
-        TimeElapsedColumn(),
+        TimeRemainingColumn(),
         console=CONSOLE,
         transient=True,
     ) as progress:
