@@ -296,7 +296,7 @@ def _(DEFAULT_CHECKPOINTS, UQ_METRICS, default_config, mo):
 
         {checkpoint}
 
-        {model_seeds}
+        {model_seeds} {seed_workers}
 
         {uq_metric} {k} {max_pool_percent}
 
@@ -321,6 +321,12 @@ def _(DEFAULT_CHECKPOINTS, UQ_METRICS, default_config, mo):
                 value=",".join(str(seed) for seed in default_config["model_seeds"]),
                 label="Model seeds (comma-separated)",
                 full_width=True,
+            ),
+            seed_workers=mo.ui.number(
+                start=1,
+                step=1,
+                value=default_config["seed_workers"],
+                label="Concurrent seeds (shared device)",
             ),
             uq_metric=mo.ui.dropdown(
                 options=list(UQ_METRICS),
@@ -510,7 +516,7 @@ def _(
 
         if not is_script_mode:
             mo.output.replace(
-                mo.md("Training the seed model; the chart will appear after round 0.")
+                mo.md("Training seed models; the chart will appear after a seed completes round 0.")
             )
         try:
             results_root = Path(os.environ.get("UQ_PET_RESULTS_DIR", RESULTS_DIR))

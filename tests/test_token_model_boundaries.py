@@ -1,4 +1,5 @@
 import copy
+import math
 import random
 from types import SimpleNamespace
 
@@ -14,11 +15,13 @@ from transformers import PreTrainedTokenizerFast
 from uq_pet.token_model import (
     encode_targets,
     predict_tags,
+    prepare_inference_batches,
     score_token_uncertainty,
     scoreable_token_keys,
     set_seed,
     train_items,
 )
+from uq_pet.utils.truncation import complete_word_positions
 
 
 @pytest.fixture
@@ -155,6 +158,92 @@ DEVICES = [
         "mps", marks=pytest.mark.skipif(not torch.backends.mps.is_available(), reason="no MPS")
     ),
 ]
+
+
+@pytest.mark.parametrize("device_name", DEVICES)
+@pytest.mark.parametrize("metric", ["entropy", "least_confidence", "margin"])
+def test_cached_scoring_matches_scalar_reference_without_retokenizing(
+    tokenizer, device_name, metric
+):
+    device = torch.device(device_name)
+    model = TinyClassifier().to(device).eval()
+    pool = [
+        {"pool_idx": 7, "tokens": ["splitting", "a"]},
+        {"pool_idx": 2, "tokens": ["a"]},
+        {"pool_idx": 9, "tokens": ["a", "splitting", "a"]},
+    ]
+    calls = []
+
+    def counting_tokenizer(*args, **kwargs):
+        calls.append(args)
+        return tokenizer(*args, **kwargs)
+
+    batches = prepare_inference_batches(counting_tokenizer, pool, max_length=5, batch_size=2)
+    assert len(calls) == 2
+    expected = {}
+    with torch.no_grad():
+        for start in range(0, len(pool), 2):
+            examples = pool[start : start + 2]
+            encoding = tokenizer(
+                [example["tokens"] for example in examples],
+                is_split_into_words=True,
+                truncation=True,
+                max_length=5,
+                padding=True,
+                return_tensors="pt",
+            )
+            probabilities = model(**encoding.to(device)).logits.softmax(-1).cpu()
+            for idx, example in enumerate(examples):
+                for word, position in complete_word_positions(encoding, idx).items():
+                    values = probabilities[idx, position]
+                    if metric == "entropy":
+                        score = -(values * values.clamp_min(1e-12).log()).sum() / math.log(3)
+                    elif metric == "least_confidence":
+                        score = 1 - values.max()
+                    else:
+                        top_two = values.topk(2).values
+                        score = 1 - (top_two[0] - top_two[1])
+                    expected[(example["pool_idx"], word)] = float(score)
+
+    for excluded in (set(), {(7, 0), (2, 0)}, set(expected)):
+        actual = score_token_uncertainty(
+            model,
+            counting_tokenizer,
+            pool,
+            metric=metric,
+            excluded=excluded,
+            max_length=5,
+            batch_size=2,
+            device=device,
+            prepared_batches=batches,
+        )
+        assert actual == pytest.approx(
+            {key: value for key, value in expected.items() if key not in excluded}, abs=1e-6
+        )
+    assert len(calls) == 2
+    assert all(tensor.device.type == "cpu" for batch in batches for tensor in batch.inputs.values())
+
+
+def test_cached_evaluation_reuses_inputs_and_rejects_truncated_pool_cache(tokenizer):
+    model = TinyClassifier().eval()
+    examples = [{"tokens": ["a", "splitting", "a"]}, {"tokens": ["a"]}]
+    kwargs = {"max_length": 6, "batch_size": 1, "device": torch.device("cpu")}
+    expected = predict_tags(model, tokenizer, examples, **kwargs)
+    batches = prepare_inference_batches(
+        tokenizer, examples, max_length=6, batch_size=1, evaluation=True
+    )
+
+    def no_tokenization(*args, **kwargs):
+        pytest.fail("cached evaluation must not tokenize again")
+
+    for _ in range(2):
+        assert (
+            predict_tags(model, no_tokenization, examples, prepared_batches=batches, **kwargs)
+            == expected
+        )
+    truncated = prepare_inference_batches(tokenizer, examples, max_length=5, batch_size=1)
+    with pytest.raises(ValueError, match="evaluation sentence was truncated"):
+        predict_tags(model, no_tokenization, examples, prepared_batches=truncated, **kwargs)
 
 
 @pytest.mark.parametrize("device_name", DEVICES)

@@ -3,6 +3,7 @@
 import math
 import random
 from contextlib import contextmanager
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -115,8 +116,9 @@ def train_items(
                 loss.backward()
                 optimizer.step()
                 optimizer.zero_grad()
-                losses.append(float(loss.detach().cpu()))
+                losses.append(loss.detach())
     model.eval()
+    losses = torch.stack(losses).cpu().tolist()
     return sum(losses) / len(losses)
 
 
@@ -145,13 +147,26 @@ def load_token_classifier(checkpoint: str, device: torch.device):
     return model, tokenizer
 
 
-def scoreable_token_keys(
-    tokenizer, pool_inputs: list[dict], *, max_length: int, batch_size: int
-) -> set[TokenKey]:
-    """Return pool words that survive tokenizer truncation."""
-    keys: set[TokenKey] = set()
-    for start in range(0, len(pool_inputs), batch_size):
-        batch = pool_inputs[start : start + batch_size]
+@dataclass
+class InferenceBatch:
+    """CPU inputs and first-subword alignment reused across acquisition rounds."""
+
+    inputs: dict[str, torch.Tensor]
+    word_positions: list[dict[int, int]]
+
+
+def prepare_inference_batches(
+    tokenizer,
+    examples: list[dict],
+    *,
+    max_length: int,
+    batch_size: int,
+    evaluation: bool = False,
+) -> list[InferenceBatch]:
+    """Tokenize fixed batches once, without retaining or reading any labels."""
+    batches = []
+    for start in range(0, len(examples), batch_size):
+        batch = examples[start : start + batch_size]
         encoding = tokenizer(
             [example["tokens"] for example in batch],
             is_split_into_words=True,
@@ -160,28 +175,57 @@ def scoreable_token_keys(
             padding=True,
             return_tensors="pt",
         )
-        for batch_idx, example in enumerate(batch):
-            keys.update(
-                (example["pool_idx"], word_idx)
-                for word_idx in complete_word_positions(encoding, batch_idx)
-            )
-    return keys
+        positions = [
+            evaluation_word_positions(encoding, idx, len(example["tokens"]))
+            if evaluation
+            else complete_word_positions(encoding, idx)
+            for idx, example in enumerate(batch)
+        ]
+        batches.append(InferenceBatch(dict(encoding), positions))
+    return batches
+
+
+def scoreable_token_keys(
+    tokenizer,
+    pool_inputs: list[dict],
+    *,
+    max_length: int,
+    batch_size: int,
+    prepared_batches: list[InferenceBatch] | None = None,
+) -> set[TokenKey]:
+    """Return pool words that survive tokenizer truncation."""
+    if prepared_batches is None:
+        prepared_batches = prepare_inference_batches(
+            tokenizer, pool_inputs, max_length=max_length, batch_size=batch_size
+        )
+    return {
+        (example["pool_idx"], word_idx)
+        for example, positions in zip(
+            pool_inputs,
+            (positions for batch in prepared_batches for positions in batch.word_positions),
+            strict=True,
+        )
+        for word_idx in positions
+    }
+
+
+def _uncertainty_values(probabilities: torch.Tensor, metric: str) -> torch.Tensor:
+    """Reduce the class dimension for one word or a batch of words."""
+    if metric == "entropy":
+        return -(probabilities * probabilities.clamp_min(1e-12).log()).sum(dim=-1) / math.log(
+            probabilities.shape[-1]
+        )
+    if metric == "least_confidence":
+        return 1 - probabilities.amax(dim=-1)
+    if metric == "margin":
+        top_two = probabilities.topk(2, dim=-1).values
+        return 1 - (top_two[..., 0] - top_two[..., 1])
+    raise ValueError(f"unknown UQ metric {metric!r}; expected one of {UQ_METRICS}")
 
 
 def token_uncertainty(probabilities: torch.Tensor, metric: str) -> float:
     """Reduce one word's class probabilities to a larger-is-more-uncertain score."""
-    if metric == "entropy":
-        value = -(probabilities * probabilities.clamp_min(1e-12).log()).sum() / math.log(
-            probabilities.numel()
-        )
-    elif metric == "least_confidence":
-        value = 1 - probabilities.max()
-    elif metric == "margin":
-        top_two = probabilities.topk(2).values
-        value = 1 - (top_two[0] - top_two[1])
-    else:
-        raise ValueError(f"unknown UQ metric {metric!r}; expected one of {UQ_METRICS}")
-    return float(value)
+    return float(_uncertainty_values(probabilities, metric))
 
 
 @torch.no_grad()
@@ -195,6 +239,7 @@ def score_token_uncertainty(
     max_length: int,
     batch_size: int,
     device: torch.device,
+    prepared_batches: list[InferenceBatch] | None = None,
 ) -> dict[TokenKey, float]:
     """Score remaining words from first-subword class probabilities."""
     if metric not in UQ_METRICS:
@@ -202,24 +247,29 @@ def score_token_uncertainty(
 
     scores: dict[TokenKey, float] = {}
     model.eval()
-    for start in range(0, len(pool_inputs), batch_size):
-        batch = pool_inputs[start : start + batch_size]
-        encoding = tokenizer(
-            [example["tokens"] for example in batch],
-            is_split_into_words=True,
-            truncation=True,
-            max_length=max_length,
-            padding=True,
-            return_tensors="pt",
+    if prepared_batches is None:
+        prepared_batches = prepare_inference_batches(
+            tokenizer, pool_inputs, max_length=max_length, batch_size=batch_size
         )
-        inputs = {name: tensor.to(device) for name, tensor in encoding.items()}
-        probabilities = model(**inputs).logits.softmax(dim=-1).cpu()
-
-        for batch_idx, example in enumerate(batch):
-            for word_idx, position in complete_word_positions(encoding, batch_idx).items():
-                key = (example["pool_idx"], word_idx)
+    offset = 0
+    for batch in prepared_batches:
+        keys, rows, columns = [], [], []
+        for batch_idx, positions in enumerate(batch.word_positions):
+            pool_idx = pool_inputs[offset + batch_idx]["pool_idx"]
+            for word_idx, position in positions.items():
+                key = (pool_idx, word_idx)
                 if key not in excluded:
-                    scores[key] = token_uncertainty(probabilities[batch_idx, position], metric)
+                    keys.append(key)
+                    rows.append(batch_idx)
+                    columns.append(position)
+        offset += len(batch.word_positions)
+        if not keys:
+            continue
+        inputs = {name: tensor.to(device) for name, tensor in batch.inputs.items()}
+        logits = model(**inputs).logits
+        probabilities = logits[rows, columns].softmax(dim=-1)
+        values = _uncertainty_values(probabilities, metric).cpu().tolist()
+        scores.update(zip(keys, values, strict=True))
     return scores
 
 
@@ -232,31 +282,30 @@ def predict_tags(
     max_length: int,
     batch_size: int,
     device: torch.device,
+    prepared_batches: list[InferenceBatch] | None = None,
 ) -> list[list[str]]:
     """Predict one tag per original word, rejecting truncated evaluation data."""
     predictions: list[list[str]] = []
     model.eval()
-    for start in range(0, len(examples), batch_size):
-        batch = examples[start : start + batch_size]
-        encoding = tokenizer(
-            [example["tokens"] for example in batch],
-            is_split_into_words=True,
-            truncation=True,
-            max_length=max_length,
-            padding=True,
-            return_tensors="pt",
+    if prepared_batches is None:
+        prepared_batches = prepare_inference_batches(
+            tokenizer, examples, max_length=max_length, batch_size=batch_size, evaluation=True
         )
-        word_positions = [
-            evaluation_word_positions(encoding, idx, len(example["tokens"]))
-            for idx, example in enumerate(batch)
-        ]
-        inputs = {name: tensor.to(device) for name, tensor in encoding.items()}
-        predicted_ids = model(**inputs).logits.argmax(dim=-1).cpu()
+    for example, positions in zip(
+        examples,
+        (positions for batch in prepared_batches for positions in batch.word_positions),
+        strict=True,
+    ):
+        if positions.keys() != set(range(len(example["tokens"]))):
+            raise ValueError("evaluation sentence was truncated; increase max_length")
+    for batch in prepared_batches:
+        inputs = {name: tensor.to(device) for name, tensor in batch.inputs.items()}
+        predicted_ids = model(**inputs).logits.argmax(dim=-1).cpu().tolist()
 
-        for batch_idx, positions in enumerate(word_positions):
+        for batch_idx, positions in enumerate(batch.word_positions):
             predictions.append(
                 [
-                    NER_TAGS[int(predicted_ids[batch_idx, positions[idx]])]
+                    NER_TAGS[predicted_ids[batch_idx][positions[idx]]]
                     for idx in range(len(positions))
                 ]
             )
@@ -271,6 +320,7 @@ def evaluate_model(
     max_length: int,
     batch_size: int,
     device: torch.device,
+    prepared_batches: list[InferenceBatch] | None = None,
 ) -> dict[str, float]:
     predictions = predict_tags(
         model,
@@ -279,6 +329,7 @@ def evaluate_model(
         max_length=max_length,
         batch_size=batch_size,
         device=device,
+        prepared_batches=prepared_batches,
     )
     gold = [[NER_TAGS[tag] for tag in example["ner_tags"]] for example in examples]
     total = sum(len(tags) for tags in gold)

@@ -330,7 +330,7 @@ def test_run_reports_progress_after_baseline_and_each_complete_round(
     monkeypatch.setattr(
         active_learning,
         "load_token_classifier",
-        lambda checkpoint, device: (TinyModel(), object()),
+        lambda checkpoint, device: (TinyModel(), FakeTokenizer()),
     )
     monkeypatch.setattr(
         active_learning,

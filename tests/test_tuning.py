@@ -134,7 +134,7 @@ def test_search_config_chooses_optuna_sampler(name):
     assert config.experiment_config().model_seeds == [3]
 
 
-def run_search(tmp_path, sampler, trials=2):
+def run_search(tmp_path, sampler, trials=2, seed_workers=1):
     import argparse
     import json
 
@@ -147,7 +147,7 @@ def run_search(tmp_path, sampler, trials=2):
             "--studies-dir",
             str(tmp_path),
             "--config-json",
-            json.dumps({"sampler": sampler, "model_seeds": [0]}),
+            json.dumps({"sampler": sampler, "model_seeds": [0], "seed_workers": seed_workers}),
         ]
     )
     search.run(args, parser)
@@ -223,6 +223,20 @@ def test_all_samplers_share_validation_and_outputs(tmp_path, fake_experiment, sa
         assert json.loads((output / "selections.json").read_text()) == []
         config = json.loads((output / "config.json").read_text())
         assert config["search_context"]["sampler"] == sampler
+
+
+def test_search_resumes_when_only_seed_concurrency_changes(tmp_path, fake_experiment):
+    import json
+
+    run_search(tmp_path, "random", trials=1)
+    run_search(tmp_path, "random", trials=1, seed_workers=2)
+    root = tmp_path / "bert-token-uq"
+    summary = json.loads((root / "summary.json").read_text())
+    assert summary["completed_trials"] == 2
+    assert "seed_workers" not in summary["context"]["fixed_config"]
+    trial = json.loads((root / "trials.json").read_text())[-1]
+    config = json.loads((Path(trial["user_attrs"]["run_dir"]) / "config.json").read_text())
+    assert config["seed_workers"] == 2
 
 
 def test_grid_resumes_then_exits_before_data_load_when_exhausted(

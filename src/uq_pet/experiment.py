@@ -59,6 +59,11 @@ class ExperimentConfig(BaseModel):
         min_length=1,
         description="Model initialization seeds.",
     )
+    seed_workers: int = Field(
+        default=1,
+        ge=1,
+        description="Concurrent seed processes on the selected device; capped by the seed count.",
+    )
     uq_metric: str = Field(
         default=UQ_METRICS[0],
         description="Larger-is-more-uncertain acquisition metric.",

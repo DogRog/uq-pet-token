@@ -3,9 +3,12 @@
 import copy
 import csv
 import json
+import multiprocessing
 import random
+import traceback
 from collections.abc import Callable
 from datetime import datetime
+from multiprocessing.connection import wait
 from pathlib import Path
 
 import torch
@@ -16,6 +19,7 @@ from uq_pet.pet_data import NER_TAGS, RESULTS_DIR, TokenKey
 from uq_pet.token_model import (
     evaluate_model,
     load_token_classifier,
+    prepare_inference_batches,
     score_token_uncertainty,
     scoreable_token_keys,
     set_seed,
@@ -176,6 +180,7 @@ def run_active_learning(
     score_batch_size: int,
     max_length: int,
     device: torch.device,
+    seed_workers: int = 1,
     progress_callback: Callable[[list[dict]], None] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Run uncertainty and random online learners from the same bootstrap state."""
@@ -183,6 +188,32 @@ def run_active_learning(
         raise ValueError(f"bootstrap_epochs must be non-negative, got {bootstrap_epochs}")
     if not model_seeds:
         raise ValueError("model_seeds must not be empty")
+    if seed_workers < 1:
+        raise ValueError("seed_workers must be positive")
+    if len(model_seeds) != len(set(model_seeds)):
+        raise ValueError("model seeds must be unique")
+    if seed_workers > 1 and len(model_seeds) > 1:
+        return _run_concurrent_seeds(
+            (seed_examples, pool_inputs, pool_gold, test_examples),
+            {
+                "checkpoint": checkpoint,
+                "uq_metric": uq_metric,
+                "k": k,
+                "max_pool_percent": max_pool_percent,
+                "bootstrap_epochs": bootstrap_epochs,
+                "update_passes": update_passes,
+                "replay_ratio": replay_ratio,
+                "learning_rate": learning_rate,
+                "weight_decay": weight_decay,
+                "batch_size": batch_size,
+                "score_batch_size": score_batch_size,
+                "max_length": max_length,
+                "device": device,
+            },
+            model_seeds=model_seeds,
+            seed_workers=min(seed_workers, len(model_seeds)),
+            progress_callback=progress_callback,
+        )
 
     results: list[dict] = []
     selections: list[dict] = []
@@ -191,11 +222,22 @@ def run_active_learning(
         CONSOLE.rule(f"[bold cyan]Seed {model_seed} · bootstrap[/]")
         set_seed(model_seed)
         base_model, tokenizer = load_token_classifier(checkpoint, device)
+        pool_batches = prepare_inference_batches(
+            tokenizer, pool_inputs, max_length=max_length, batch_size=score_batch_size
+        )
+        test_batches = prepare_inference_batches(
+            tokenizer,
+            test_examples,
+            max_length=max_length,
+            batch_size=score_batch_size,
+            evaluation=True,
+        )
         scoreable = scoreable_token_keys(
             tokenizer,
             pool_inputs,
             max_length=max_length,
             batch_size=score_batch_size,
+            prepared_batches=pool_batches,
         )
         rounds, token_budget = acquisition_schedule(len(scoreable), k, max_pool_percent)
         CONSOLE.print(
@@ -227,6 +269,7 @@ def run_active_learning(
             max_length=max_length,
             batch_size=score_batch_size,
             device=device,
+            prepared_batches=test_batches,
         )
         baseline["train_loss"] = bootstrap_loss
         baseline["n_new"] = 0
@@ -285,6 +328,7 @@ def run_active_learning(
                 max_length=max_length,
                 batch_size=score_batch_size,
                 device=device,
+                prepared_batches=pool_batches,
             )
             chosen = {
                 "uncertainty": select_top_k(uq_scores, round_k),
@@ -323,6 +367,7 @@ def run_active_learning(
                     max_length=max_length,
                     batch_size=score_batch_size,
                     device=device,
+                    prepared_batches=test_batches,
                 )
                 metrics.update(
                     {
@@ -367,13 +412,115 @@ def run_active_learning(
             if progress_callback is not None:
                 progress_callback(list(results))
 
-        del models, optimizers, tokenizer
+        del models, optimizers, model, optimizer, tokenizer, pool_batches, test_batches
         if torch.backends.mps.is_available():
             torch.mps.empty_cache()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
     return results, selections
+
+
+def _seed_worker(connection, args: tuple, kwargs: dict, cpu_threads: int) -> None:
+    """Own a seed's models and RNGs in a fresh process; report only complete rounds."""
+    try:
+        torch.set_num_threads(cpu_threads)
+        CONSOLE.quiet = True
+
+        def publish(rows):
+            connection.send(("progress", rows[-2:]))
+
+        result = run_active_learning(*args, **kwargs, progress_callback=publish)
+        connection.send(("result", result))
+    except BaseException:
+        connection.send(("error", traceback.format_exc()))
+    finally:
+        connection.close()
+
+
+def _run_concurrent_seeds(
+    args: tuple,
+    kwargs: dict,
+    *,
+    model_seeds: list[int],
+    seed_workers: int,
+    progress_callback: Callable[[list[dict]], None] | None,
+) -> tuple[list[dict], list[dict]]:
+    """Schedule isolated seeds and append paired progress in arrival order."""
+    context = multiprocessing.get_context("spawn")
+    pending = iter(model_seeds)
+    active = {}
+    completed = {}
+    progress = []
+    cpu_threads = max(1, torch.get_num_threads() // seed_workers)
+
+    def launch_next():
+        seed = next(pending, None)
+        if seed is None:
+            return
+        receiver, sender = context.Pipe(duplex=False)
+        process = context.Process(
+            target=_seed_worker,
+            args=(sender, args, {**kwargs, "model_seeds": [seed]}, cpu_threads),
+            name=f"pet-seed-{seed}",
+        )
+        try:
+            process.start()
+        except BaseException:
+            receiver.close()
+            raise
+        finally:
+            sender.close()
+        active[receiver] = (seed, process)
+        CONSOLE.print(f"[bold cyan]Seed {seed} started[/]")
+
+    try:
+        for _ in range(seed_workers):
+            launch_next()
+        while active:
+            for connection in wait(list(active)):
+                seed, process = active[connection]
+                try:
+                    kind, payload = connection.recv()
+                except EOFError as error:
+                    process.join()
+                    raise RuntimeError(
+                        f"Seed {seed} exited without a result (exit code {process.exitcode})"
+                    ) from error
+                if kind == "error":
+                    raise RuntimeError(f"Seed {seed} failed:\n{payload}")
+                if kind == "progress":
+                    progress.extend(payload)
+                    CONSOLE.print(
+                        f"[bold cyan]Seed {seed}[/]",
+                        _round_progress_table(
+                            {row["arm"]: row for row in payload}, kwargs["uq_metric"]
+                        ),
+                    )
+                    if progress_callback is not None:
+                        progress_callback(list(progress))
+                elif kind == "result":
+                    completed[seed] = payload
+                    process.join()
+                    connection.close()
+                    del active[connection]
+                    if process.exitcode != 0:
+                        raise RuntimeError(f"Seed {seed} exited with code {process.exitcode}")
+                    launch_next()
+    finally:
+        # Also stop sibling workers on model errors, callback errors, or interruption.
+        for _, process in active.values():
+            if process.is_alive():
+                process.terminate()
+        for connection, (_, process) in active.items():
+            process.join()
+            connection.close()
+
+    # Persist deterministic seed/round/arm order even when workers finish out of order.
+    return (
+        [row for seed in model_seeds for row in completed[seed][0]],
+        [row for seed in model_seeds for row in completed[seed][1]],
+    )
 
 
 def write_run(

@@ -166,7 +166,8 @@ def _study_context(
     sampler_seed: int,
     sampler: str = "tpe",
 ) -> dict:
-    fixed_config = base_config.model_dump(exclude=set(SEARCH_SPACE))
+    # Scheduling does not change the study's scientific settings or resume identity.
+    fixed_config = base_config.model_dump(exclude={*SEARCH_SPACE, "seed_workers"})
     return {
         "objective": OBJECTIVE_NAME,
         "acquisition_schedule": "partial_final_round",

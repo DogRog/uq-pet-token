@@ -73,6 +73,30 @@ uv run notebooks/bert_token_uq.py --config-json \
   '{"checkpoint":"microsoft/deberta-v3-base","model_seeds":[0],"update_passes":2,"learning_rate":0.00003}'
 ```
 
+To share a large GPU across independent seeds, set **Concurrent seeds** in the notebook
+or pass `seed_workers` in JSON (default `1`):
+
+```bash
+uv run notebooks/bert_token_uq.py --config-json \
+  '{"model_seeds":[0,1,2,3,4],"seed_workers":2,"score_batch_size":128}'
+```
+
+Workers use separate spawned processes on the selected device, each owning both arms
+and their optimizer and RNG states. Start with two workers, then increase if measured
+throughput improves and peak GPU memory permits. The worker count is capped at the
+number of seeds. Each seed's rounds remain sequential; live updates append only complete
+two-arm rounds as they arrive, and saved records retain the configured seed order.
+Errors or interruption stop the remaining workers. `seed_workers` also applies to the
+seeds within each search trial; search trials themselves remain sequential. It can be
+changed when resuming a study without changing that study's identity.
+
+Pool and evaluation tokenization and first-subword positions are cached once per seed.
+Uncertainty is computed in batches on the model device, transferring only one score per
+remaining word to the CPU. Increasing `score_batch_size` can improve inference throughput;
+training batch size and `K` remain separate experimental choices. Device reductions can
+produce small floating-point differences from the earlier CPU scoring implementation,
+which can affect acquisition order for nearly tied scores.
+
 ## Hyperparameter search
 
 All search logic lives in `scripts/bert_token_uq_search.py`. Choose Optuna's sampler
