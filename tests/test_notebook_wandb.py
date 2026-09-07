@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import charts
 import uq_pet.experiment as experiment
 from uq_pet.experiment import (
     ExperimentConfig,
@@ -88,8 +89,8 @@ def test_wandb_comparison_uses_one_html_panel_and_no_table_per_seed(monkeypatch)
         html_calls.append((data, inject))
         return "html-media"
 
-    monkeypatch.setattr(experiment, "make_learning_chart", make_learning_chart)
-    media = experiment.make_wandb_comparison_media(
+    monkeypatch.setattr(charts, "make_learning_chart", make_learning_chart)
+    media = charts.make_wandb_comparison_media(
         SimpleNamespace(Html=html), records, "least_confidence"
     )
 

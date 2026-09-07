@@ -19,18 +19,20 @@ def _():
     import wandb
     from wigglystuff import EnvConfig
 
+    from charts import (
+        make_learning_chart,
+        make_tag_coverage_chart,
+        make_variance_chart,
+        make_wandb_comparison_media,
+    )
     from uq_pet.active_learning import acquisition_schedule
     from uq_pet.experiment import (
         DEFAULT_CHECKPOINTS,
         ExperimentConfig,
         configure_wandb_metrics,
         execute_experiment,
-        make_learning_chart,
-        make_variance_chart,
-        make_wandb_comparison_media,
         make_wandb_evaluation_log,
         require_wandb_credentials,
-        summarize_label_pool_share,
     )
     from uq_pet.pet_data import RESULTS_DIR
     from uq_pet.token_model import UQ_METRICS
@@ -44,10 +46,10 @@ def _():
         RESULTS_DIR,
         UQ_METRICS,
         acquisition_schedule,
-        alt,
         configure_wandb_metrics,
         execute_experiment,
         make_learning_chart,
+        make_tag_coverage_chart,
         make_variance_chart,
         make_wandb_comparison_media,
         make_wandb_evaluation_log,
@@ -55,7 +57,6 @@ def _():
         os,
         pl,
         require_wandb_credentials,
-        summarize_label_pool_share,
         wandb,
     )
 
@@ -326,7 +327,6 @@ def _(
             )
             configure_wandb_metrics(wandb_run, config["uq_metric"])
 
-        wandb_rows_logged = [0]
         seed_output_indices = {seed: index for index, seed in enumerate(config["model_seeds"])}
 
         def make_live_seed_panel(progress_records, model_seed):
@@ -359,10 +359,7 @@ def _(
                     idx=seed_output_indices[latest["seed"]],
                 )
             if wandb_run is not None:
-                new_rows = progress_records[wandb_rows_logged[0] :]
-                if new_rows:
-                    wandb_run.log(make_wandb_evaluation_log(new_rows, config["uq_metric"]))
-                wandb_rows_logged[0] = len(progress_records)
+                wandb_run.log(make_wandb_evaluation_log(progress_records[-2:], config["uq_metric"]))
 
         if not is_script_mode:
             mo.output.clear()
@@ -519,13 +516,12 @@ def _(config, mo):
 
 @app.cell
 def _(
-    alt,
+    make_tag_coverage_chart,
     config,
     pl,
     results_df,
     selection_coverage_slider,
     selections_df,
-    summarize_label_pool_share,
 ):
     selection_round_progress = results_df.select(
         "seed",
@@ -540,9 +536,6 @@ def _(
         how="left",
         validate="m:1",
     ).with_columns(pl.lit("interactive").alias("run_id"))
-    label_share_summary = summarize_label_pool_share(
-        selections_with_progress, selection_coverage_slider.value
-    ).with_columns(pl.col("arm").replace({"uncertainty": config["uq_metric"]}))
     selection_label_order = (
         selections_df.group_by("label")
         .agg(pl.len().alias("endpoint_count"))
@@ -550,57 +543,12 @@ def _(
         .get_column("label")
         .to_list()
     )
-    arm_order = ["random", config["uq_metric"]]
-    label_chart = (
-        alt.Chart(label_share_summary)
-        .mark_bar()
-        .encode(
-            x=alt.X(
-                "pool_share_mean:Q",
-                title="All scoreable pool tokens (%)",
-            ),
-            y=alt.Y(
-                "label:N",
-                title="Gold label",
-                sort=selection_label_order,
-            ),
-            yOffset=alt.YOffset("arm:N", sort=arm_order),
-            color=alt.Color(
-                "arm:N",
-                title=None,
-                sort=arm_order,
-                scale=alt.Scale(
-                    domain=arm_order,
-                    range=["#4C78A8", "#F58518"],
-                ),
-            ),
-            tooltip=[
-                alt.Tooltip("arm:N", title="Arm"),
-                alt.Tooltip("label:N", title="Gold label"),
-                alt.Tooltip(
-                    "pool_share_mean:Q",
-                    title="Mean pool share",
-                    format=".3f",
-                ),
-                alt.Tooltip(
-                    "pool_share_std:Q",
-                    title="Pool-share std. dev.",
-                    format=".3f",
-                ),
-                alt.Tooltip(
-                    "n_acquired_mean:Q",
-                    title="Mean acquired",
-                    format=".1f",
-                ),
-            ],
-        )
-        .properties(
-            title=(f"Labels revealed by {selection_coverage_slider.value:.1f}% pool acquisition"),
-            width=1000,
-            height=max(380, 28 * len(selection_label_order)),
-        )
+    make_tag_coverage_chart(
+        selections_with_progress,
+        selection_coverage_slider.value,
+        config["uq_metric"],
+        label_order=selection_label_order,
     )
-    label_chart
     return
 
 

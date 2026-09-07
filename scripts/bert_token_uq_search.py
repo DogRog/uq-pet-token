@@ -182,8 +182,13 @@ class SearchConfig(ExperimentConfig):
         return value
 
     def experiment_config(self) -> ExperimentConfig:
+        """Strip launch settings and disable W&B for every search trial."""
         return ExperimentConfig.model_validate(
-            self.model_dump(include=set(ExperimentConfig.model_fields))
+            {
+                **self.model_dump(include=set(ExperimentConfig.model_fields)),
+                "wandb_enabled": False,
+                "wandb_run_name": "",
+            }
         )
 
 
@@ -256,12 +261,7 @@ def _write_study_outputs(
         return
 
     best_config = ExperimentConfig.model_validate(
-        {
-            **base_config.model_dump(),
-            **study.best_trial.params,
-            "wandb_enabled": False,
-            "wandb_run_name": "",
-        }
+        {**base_config.model_dump(), **study.best_trial.params}
     )
     (study_root / "best_config.json").write_text(json.dumps(best_config.model_dump(), indent=2))
     summary = {
@@ -296,12 +296,7 @@ def _make_objective(
         trial_label = f"Trial {int(completed_trials) + 1}/{int(progress.tasks[task_id].total)}"
         progress.update(task_id, description=f"{trial_label} · loading / bootstrap")
         config = ExperimentConfig.model_validate(
-            {
-                **base_config.model_dump(),
-                **suggest_search_config(trial),
-                "wandb_enabled": False,
-                "wandb_run_name": "",
-            }
+            {**base_config.model_dump(), **suggest_search_config(trial)}
         )
 
         def update_progress(rows):
@@ -426,13 +421,6 @@ def load_search_config(args: argparse.Namespace, parser: argparse.ArgumentParser
 def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     search_config = load_search_config(args, parser)
     base_config = search_config.experiment_config()
-    base_config = ExperimentConfig.model_validate(
-        {
-            **base_config.model_dump(),
-            "wandb_enabled": False,
-            "wandb_run_name": "",
-        }
-    )
 
     study_root = search_config.studies_dir / _slug(search_config.study_name)
     study_root.mkdir(parents=True, exist_ok=True)

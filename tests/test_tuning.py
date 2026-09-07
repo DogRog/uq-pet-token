@@ -127,7 +127,9 @@ def test_optuna_suggestions_use_shared_discrete_search_space():
 
 @pytest.mark.parametrize("name", ["tpe", "grid", "random"])
 def test_search_config_chooses_optuna_sampler(name):
-    config = search.SearchConfig.model_validate({"trials": 1, "sampler": name, "model_seeds": [3]})
+    config = search.SearchConfig(
+        trials=1, sampler=name, model_seeds=[3], wandb_enabled=True, wandb_run_name="ignored"
+    )
     expected = {
         "tpe": search.optuna.samplers.TPESampler,
         "grid": search.optuna.samplers.GridSampler,
@@ -136,6 +138,8 @@ def test_search_config_chooses_optuna_sampler(name):
     assert isinstance(search.make_sampler(config.sampler, 7), expected[name])
     assert "sampler" not in config.experiment_config().active_learning_kwargs()
     assert config.experiment_config().model_seeds == [3]
+    assert config.experiment_config().wandb_enabled is False
+    assert config.experiment_config().wandb_run_name == ""
 
 
 def test_file_config_and_explicit_overrides(tmp_path):
@@ -202,8 +206,6 @@ def test_invalid_file_config_stops_before_creating_outputs(tmp_path, payload):
 
 
 def run_search(tmp_path, sampler, trials=2, seed_workers=1):
-    import argparse
-    import json
 
     parser = argparse.ArgumentParser()
     search.configure_parser(parser)
@@ -277,7 +279,6 @@ def fake_experiment(monkeypatch):
 
 @pytest.mark.parametrize("sampler", ["tpe", "grid", "random"])
 def test_all_samplers_share_validation_and_outputs(tmp_path, fake_experiment, sampler):
-    import json
 
     run_search(tmp_path, sampler)
     root = tmp_path / "bert-token-uq"
@@ -389,7 +390,6 @@ def test_search_restores_logging_and_propagates_training_failure(
 
 
 def test_search_resumes_when_only_seed_concurrency_changes(tmp_path, fake_experiment):
-    import json
 
     run_search(tmp_path, "random", trials=1)
     run_search(tmp_path, "random", trials=1, seed_workers=2)

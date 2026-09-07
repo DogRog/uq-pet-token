@@ -20,11 +20,11 @@ def _():
     import marimo as mo
     import polars as pl
 
-    from uq_pet.experiment import make_variance_chart, summarize_label_pool_share
+    from charts import make_tag_coverage_chart, make_variance_chart
 
     alt.data_transformers.disable_max_rows()
     alt.renderers.set_embed_options(scaleFactor=2)
-    return Path, alt, make_variance_chart, mo, pl, summarize_label_pool_share
+    return Path, make_tag_coverage_chart, make_variance_chart, mo, pl
 
 
 @app.cell
@@ -177,81 +177,6 @@ def _(
         validate="m:1",
     )
     return (coverage_selections_with_progress,)
-
-
-@app.cell
-def _(alt, pl, summarize_label_pool_share):
-    def make_tag_coverage_chart(
-        selections_frame,
-        acquisition_percent,
-        uq_metric,
-    ):
-        tag_coverage_summary = summarize_label_pool_share(
-            selections_frame, acquisition_percent
-        ).with_columns(pl.col("arm").replace({"uncertainty": uq_metric}))
-        tag_order = (
-            tag_coverage_summary.group_by("label")
-            .agg(pl.col("n_acquired_mean").mean().alias("tag_frequency"))
-            .sort("tag_frequency", descending=True)
-            .get_column("label")
-            .to_list()
-        )
-        arm_order = ["random", uq_metric]
-        coverage_color = alt.Color(
-            "arm:N",
-            title=None,
-            sort=arm_order,
-            scale=alt.Scale(
-                domain=arm_order,
-                range=["#4C78A8", "#F58518"],
-            ),
-            legend=alt.Legend(orient="top"),
-        )
-        return (
-            alt.Chart(tag_coverage_summary)
-            .mark_bar()
-            .encode(
-                x=alt.X(
-                    "pool_share_mean:Q",
-                    title="All scoreable pool tokens (%)",
-                    scale=alt.Scale(domain=[0, 100]),
-                ),
-                y=alt.Y("label:N", title="Gold label", sort=tag_order),
-                yOffset=alt.YOffset("arm:N", sort=arm_order),
-                color=coverage_color,
-                tooltip=[
-                    alt.Tooltip("arm:N", title="Arm"),
-                    alt.Tooltip("label:N", title="Gold label"),
-                    alt.Tooltip(
-                        "pool_share_mean:Q",
-                        title="Mean pool share",
-                        format=".2f",
-                    ),
-                    alt.Tooltip(
-                        "pool_share_std:Q",
-                        title="Pool-share std. dev.",
-                        format=".2f",
-                    ),
-                    alt.Tooltip(
-                        "n_acquired_mean:Q",
-                        title="Mean acquired",
-                        format=".1f",
-                    ),
-                    alt.Tooltip(
-                        "scoreable_pool_tokens_mean:Q",
-                        title="Scoreable pool tokens",
-                        format=".1f",
-                    ),
-                ],
-            )
-            .properties(
-                title=f"Labels revealed by {acquisition_percent}% pool acquisition",
-                width=1000,
-                height=max(320, 28 * len(tag_order)),
-            )
-        )
-
-    return (make_tag_coverage_chart,)
 
 
 @app.cell

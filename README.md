@@ -150,8 +150,8 @@ command starts real training immediately.
 During a search, the terminal shows one updating progress line with the current
 trial, latest seed and round, and overall progress. Round tables and routine Optuna
 messages are suppressed. The study summary and best configuration path print once
-the invocation finishes; each
-completed trial still saves its full evaluation and selection records as it finishes.
+the invocation finishes; each completed trial still saves its full evaluation and
+selection records as it finishes.
 
 Search withholds a deterministic validation subset from the pool and removes those
 sentences from acquisition. The held-out test split is never passed to a trial. The
@@ -239,8 +239,10 @@ Use `--list` on an `add` command to inspect a repository before installing it, o
 | `src/uq_pet/token_model.py` | masking, training, UQ metrics, inference, and evaluation |
 | `src/uq_pet/utils/truncation.py` | word alignment and truncation checks |
 | `src/uq_pet/active_learning.py` | acquisition rounds, replay, orchestration, and outputs |
-| `src/uq_pet/experiment.py` | shared configuration, run execution, charts, and W&B records |
+| `src/uq_pet/experiment.py` | shared configuration, run execution, summaries, and W&B records |
 | `notebooks/bert_token_uq.py` | controls, experiment run, tables, and plots |
+| `notebooks/fixed_all_metrics_analysis.py` | read-only analysis of saved historical sweeps |
+| `notebooks/charts.py` | shared chart builders and W&B comparison media |
 | `scripts/bert_token_uq_search.py` | Optuna TPE/grid/random search, validation split, objective, and outputs |
 | `tests/test_token_uq.py` | focused offline invariant tests |
 | `skills-lock.json` | project skill sources and content hashes |
