@@ -26,6 +26,7 @@ def _():
         configure_wandb_metrics,
         execute_experiment,
         make_learning_chart,
+        make_variance_chart,
         make_wandb_comparison_media,
         make_wandb_evaluation_log,
         require_wandb_credentials,
@@ -47,6 +48,7 @@ def _():
         configure_wandb_metrics,
         execute_experiment,
         make_learning_chart,
+        make_variance_chart,
         make_wandb_comparison_media,
         make_wandb_evaluation_log,
         mo,
@@ -56,127 +58,6 @@ def _():
         summarize_label_pool_share,
         wandb,
     )
-
-
-@app.cell
-def _(alt, pl):
-    def make_variance_chart(results_frame, uq_metric):
-        summary = (
-            results_frame.with_columns(
-                pl.when(pl.col("arm") == "uncertainty")
-                .then(pl.lit(uq_metric))
-                .otherwise(pl.col("arm"))
-                .alias("arm")
-            )
-            .group_by(["arm", "n_acquired", "percent_acquired"])
-            .agg(
-                pl.col("entity_f1").mean().alias("entity_f1_mean"),
-                pl.col("entity_f1").std().fill_null(0.0).alias("entity_f1_std"),
-                pl.col("entity_macro_f1").mean().alias("entity_macro_f1_mean"),
-                pl.col("entity_macro_f1").std().fill_null(0.0).alias("entity_macro_f1_std"),
-                pl.col("token_accuracy").mean().alias("token_accuracy_mean"),
-                pl.col("token_accuracy").std().fill_null(0.0).alias("token_accuracy_std"),
-            )
-            .with_columns(
-                (pl.col("entity_f1_mean") - pl.col("entity_f1_std"))
-                .clip(0.0, 1.0)
-                .alias("entity_f1_lower"),
-                (pl.col("entity_f1_mean") + pl.col("entity_f1_std"))
-                .clip(0.0, 1.0)
-                .alias("entity_f1_upper"),
-                (pl.col("entity_macro_f1_mean") - pl.col("entity_macro_f1_std"))
-                .clip(0.0, 1.0)
-                .alias("entity_macro_f1_lower"),
-                (pl.col("entity_macro_f1_mean") + pl.col("entity_macro_f1_std"))
-                .clip(0.0, 1.0)
-                .alias("entity_macro_f1_upper"),
-                (pl.col("token_accuracy_mean") - pl.col("token_accuracy_std"))
-                .clip(0.0, 1.0)
-                .alias("token_accuracy_lower"),
-                (pl.col("token_accuracy_mean") + pl.col("token_accuracy_std"))
-                .clip(0.0, 1.0)
-                .alias("token_accuracy_upper"),
-            )
-            .sort(["arm", "percent_acquired"])
-        )
-        arm_order = ["random", uq_metric]
-        arm_color = alt.Color(
-            "arm:N",
-            title=None,
-            sort=arm_order,
-            scale=alt.Scale(
-                domain=arm_order,
-                range=["#4C78A8", "#F58518"],
-            ),
-            legend=alt.Legend(orient="top"),
-        )
-        shared_x = alt.X(
-            "percent_acquired:Q",
-            title="Scoreable pool acquired (%)",
-            scale=alt.Scale(domain=[0, 100]),
-        )
-
-        def metric_chart(mean_field, std_field, lower_field, upper_field, title, y_title):
-            band = (
-                alt.Chart(summary)
-                .mark_area(opacity=0.18)
-                .encode(
-                    x=shared_x,
-                    y=alt.Y(f"{lower_field}:Q", title=y_title, scale=alt.Scale(zero=False)),
-                    y2=alt.Y2(f"{upper_field}:Q"),
-                    color=arm_color,
-                )
-            )
-            mean_line = (
-                alt.Chart(summary)
-                .mark_line(strokeWidth=3)
-                .encode(
-                    x=shared_x,
-                    y=alt.Y(f"{mean_field}:Q", title=y_title, scale=alt.Scale(zero=False)),
-                    color=arm_color,
-                    tooltip=[
-                        alt.Tooltip("arm:N", title="Arm"),
-                        alt.Tooltip("percent_acquired:Q", title="Pool acquired", format=".2f"),
-                        alt.Tooltip("n_acquired:Q", title="Acquired", format=".0f"),
-                        alt.Tooltip(f"{mean_field}:Q", title="Mean", format=".3f"),
-                        alt.Tooltip(f"{std_field}:Q", title="Std. dev.", format=".3f"),
-                    ],
-                )
-            )
-            return alt.layer(band, mean_line).properties(title=title, width=500, height=320)
-
-        entity_chart = metric_chart(
-            "entity_f1_mean",
-            "entity_f1_std",
-            "entity_f1_lower",
-            "entity_f1_upper",
-            "Entity F1",
-            "F1",
-        )
-        macro_f1_chart = metric_chart(
-            "entity_macro_f1_mean",
-            "entity_macro_f1_std",
-            "entity_macro_f1_lower",
-            "entity_macro_f1_upper",
-            "Macro entity F1",
-            "Macro F1",
-        )
-        accuracy_chart = metric_chart(
-            "token_accuracy_mean",
-            "token_accuracy_std",
-            "token_accuracy_lower",
-            "token_accuracy_upper",
-            "Token accuracy",
-            "Accuracy",
-        )
-        return alt.hconcat(
-            entity_chart,
-            macro_f1_chart,
-            accuracy_chart,
-            spacing=35,
-        ).resolve_scale(color="shared")
-
-    return (make_variance_chart,)
 
 
 @app.cell
@@ -290,6 +171,11 @@ def _(EnvConfig, is_script_mode, mo, wandb):
 
 @app.cell
 def _(DEFAULT_CHECKPOINTS, UQ_METRICS, default_config, mo):
+    def numeric_control(name, label, *, start, stop=None, step=1):
+        return mo.ui.number(
+            start=start, stop=stop, step=step, value=default_config[name], label=label
+        )
+
     params_form = (
         mo.md("""
         ## Experiment parameters
@@ -322,86 +208,39 @@ def _(DEFAULT_CHECKPOINTS, UQ_METRICS, default_config, mo):
                 label="Model seeds (comma-separated)",
                 full_width=True,
             ),
-            seed_workers=mo.ui.number(
-                start=1,
-                step=1,
-                value=default_config["seed_workers"],
-                label="Concurrent seeds (shared device)",
+            seed_workers=numeric_control(
+                "seed_workers", "Concurrent seeds (shared device)", start=1
             ),
             uq_metric=mo.ui.dropdown(
                 options=list(UQ_METRICS),
                 value=default_config["uq_metric"],
                 label="UQ metric",
             ),
-            k=mo.ui.number(
-                start=1,
-                stop=1000,
-                step=1,
-                value=default_config["k"],
-                label="Maximum new tokens per round",
+            k=numeric_control("k", "Maximum new tokens per round", start=1, stop=1000),
+            max_pool_percent=numeric_control(
+                "max_pool_percent", "Maximum scoreable pool (%)", start=0.1, stop=100, step=0.1
             ),
-            max_pool_percent=mo.ui.number(
-                start=0.1,
-                stop=100,
-                step=0.1,
-                value=default_config["max_pool_percent"],
-                label="Maximum scoreable pool (%)",
+            bootstrap_epochs=numeric_control(
+                "bootstrap_epochs", "Bootstrap epochs", start=0, stop=100
             ),
-            bootstrap_epochs=mo.ui.number(
-                start=0,
-                stop=100,
-                step=1,
-                value=default_config["bootstrap_epochs"],
-                label="Bootstrap epochs",
+            update_passes=numeric_control(
+                "update_passes", "Update passes per round", start=1, stop=20
             ),
-            update_passes=mo.ui.number(
-                start=1,
-                stop=20,
-                step=1,
-                value=default_config["update_passes"],
-                label="Update passes per round",
+            replay_ratio=numeric_control(
+                "replay_ratio", "Replay ratio", start=0, stop=4, step=0.25
             ),
-            replay_ratio=mo.ui.number(
-                start=0,
-                stop=4,
-                step=0.25,
-                value=default_config["replay_ratio"],
-                label="Replay ratio",
+            learning_rate=numeric_control(
+                "learning_rate", "Learning rate", start=1e-06, stop=0.001, step=1e-06
             ),
-            learning_rate=mo.ui.number(
-                start=0.000001,
-                stop=0.001,
-                step=0.000001,
-                value=default_config["learning_rate"],
-                label="Learning rate",
+            weight_decay=numeric_control(
+                "weight_decay", "Weight decay", start=0, stop=0.2, step=0.001
             ),
-            weight_decay=mo.ui.number(
-                start=0,
-                stop=0.2,
-                step=0.001,
-                value=default_config["weight_decay"],
-                label="Weight decay",
+            batch_size=numeric_control("batch_size", "Training batch size", start=1, stop=64),
+            score_batch_size=numeric_control(
+                "score_batch_size", "Scoring batch size", start=1, stop=256
             ),
-            batch_size=mo.ui.number(
-                start=1,
-                stop=64,
-                step=1,
-                value=default_config["batch_size"],
-                label="Training batch size",
-            ),
-            score_batch_size=mo.ui.number(
-                start=1,
-                stop=256,
-                step=1,
-                value=default_config["score_batch_size"],
-                label="Scoring batch size",
-            ),
-            max_length=mo.ui.number(
-                start=4,
-                stop=2048,
-                step=4,
-                value=default_config["max_length"],
-                label="Maximum sequence length",
+            max_length=numeric_control(
+                "max_length", "Maximum sequence length", start=4, stop=2048, step=4
             ),
             wandb_enabled=mo.ui.checkbox(
                 value=default_config["wandb_enabled"],
@@ -621,10 +460,7 @@ def _(config, make_variance_chart, mo, results_df):
 @app.cell(hide_code=True)
 def _(config, mo, pl, results_df):
     display_results = results_df.with_columns(
-        pl.when(pl.col("arm") == "uncertainty")
-        .then(pl.lit(config["uq_metric"]))
-        .otherwise(pl.col("arm"))
-        .alias("arm")
+        pl.col("arm").replace({"uncertainty": config["uq_metric"]})
     )
     mo.vstack([mo.md("## Round results"), mo.ui.table(display_results, selection=None)])
     return
@@ -706,12 +542,7 @@ def _(
     ).with_columns(pl.lit("interactive").alias("run_id"))
     label_share_summary = summarize_label_pool_share(
         selections_with_progress, selection_coverage_slider.value
-    ).with_columns(
-        pl.when(pl.col("arm") == "uncertainty")
-        .then(pl.lit(config["uq_metric"]))
-        .otherwise(pl.col("arm"))
-        .alias("arm")
-    )
+    ).with_columns(pl.col("arm").replace({"uncertainty": config["uq_metric"]}))
     selection_label_order = (
         selections_df.group_by("label")
         .agg(pl.len().alias("endpoint_count"))
@@ -776,10 +607,7 @@ def _(
 @app.cell(hide_code=True)
 def _(config, mo, pl, selections_df):
     display_selections = selections_df.with_columns(
-        pl.when(pl.col("arm") == "uncertainty")
-        .then(pl.lit(config["uq_metric"]))
-        .otherwise(pl.col("arm"))
-        .alias("arm")
+        pl.col("arm").replace({"uncertainty": config["uq_metric"]})
     )
     mo.vstack(
         [

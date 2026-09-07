@@ -20,11 +20,11 @@ def _():
     import marimo as mo
     import polars as pl
 
-    from uq_pet.experiment import summarize_label_pool_share
+    from uq_pet.experiment import make_variance_chart, summarize_label_pool_share
 
     alt.data_transformers.disable_max_rows()
     alt.renderers.set_embed_options(scaleFactor=2)
-    return Path, alt, mo, pl, summarize_label_pool_share
+    return Path, alt, make_variance_chart, mo, pl, summarize_label_pool_share
 
 
 @app.cell
@@ -76,197 +76,6 @@ def _(mo, results):
         ]
     )
     return checkpoint_selector, uq_metric_selector
-
-
-@app.cell
-def _(alt, pl):
-    def make_variance_chart(results_frame, uq_metric, acquisition_percent):
-        metric_aggregations = [
-            pl.col("entity_f1").mean().alias("entity_f1_mean"),
-            pl.col("entity_f1").std().fill_null(0.0).alias("entity_f1_std"),
-            pl.col("token_accuracy").mean().alias("token_accuracy_mean"),
-            pl.col("token_accuracy").std().fill_null(0.0).alias("token_accuracy_std"),
-        ]
-        metric_bounds = [
-            (pl.col("entity_f1_mean") - pl.col("entity_f1_std"))
-            .clip(0.0, 1.0)
-            .alias("entity_f1_lower"),
-            (pl.col("entity_f1_mean") + pl.col("entity_f1_std"))
-            .clip(0.0, 1.0)
-            .alias("entity_f1_upper"),
-            (pl.col("token_accuracy_mean") - pl.col("token_accuracy_std"))
-            .clip(0.0, 1.0)
-            .alias("token_accuracy_lower"),
-            (pl.col("token_accuracy_mean") + pl.col("token_accuracy_std"))
-            .clip(0.0, 1.0)
-            .alias("token_accuracy_upper"),
-        ]
-        has_macro_f1 = "entity_macro_f1" in results_frame.columns
-        if has_macro_f1:
-            metric_aggregations.extend(
-                [
-                    pl.col("entity_macro_f1").mean().alias("entity_macro_f1_mean"),
-                    pl.col("entity_macro_f1").std().fill_null(0.0).alias("entity_macro_f1_std"),
-                ]
-            )
-            metric_bounds.extend(
-                [
-                    (pl.col("entity_macro_f1_mean") - pl.col("entity_macro_f1_std"))
-                    .clip(0.0, 1.0)
-                    .alias("entity_macro_f1_lower"),
-                    (pl.col("entity_macro_f1_mean") + pl.col("entity_macro_f1_std"))
-                    .clip(0.0, 1.0)
-                    .alias("entity_macro_f1_upper"),
-                ]
-            )
-        summary = (
-            results_frame.with_columns(
-                pl.when(pl.col("arm") == "uncertainty")
-                .then(pl.lit(uq_metric))
-                .otherwise(pl.col("arm"))
-                .alias("arm")
-            )
-            .group_by(["arm", "n_acquired", "percent_acquired"])
-            .agg(*metric_aggregations)
-            .with_columns(*metric_bounds)
-            .sort(["arm", "percent_acquired"])
-        )
-        arm_order = ["random", uq_metric]
-        arm_color = alt.Color(
-            "arm:N",
-            title=None,
-            sort=arm_order,
-            scale=alt.Scale(
-                domain=arm_order,
-                range=["#4C78A8", "#F58518"],
-            ),
-            legend=alt.Legend(orient="top"),
-        )
-        shared_x = alt.X(
-            "percent_acquired:Q",
-            title="Scoreable pool acquired (%)",
-            scale=alt.Scale(domain=[0, 100]),
-        )
-        acquisition_marker = pl.DataFrame({"selected_percent": [float(acquisition_percent)]})
-
-        def metric_chart(
-            mean_field,
-            std_field,
-            lower_field,
-            upper_field,
-            title,
-            y_title,
-        ):
-            band = (
-                alt.Chart(summary)
-                .mark_area(opacity=0.18)
-                .encode(
-                    x=shared_x,
-                    y=alt.Y(
-                        f"{lower_field}:Q",
-                        title=y_title,
-                        scale=alt.Scale(zero=False),
-                    ),
-                    y2=alt.Y2(f"{upper_field}:Q"),
-                    color=arm_color,
-                )
-            )
-            mean_line = (
-                alt.Chart(summary)
-                .mark_line(strokeWidth=3)
-                .encode(
-                    x=shared_x,
-                    y=alt.Y(
-                        f"{mean_field}:Q",
-                        title=y_title,
-                        scale=alt.Scale(zero=False),
-                    ),
-                    color=arm_color,
-                    tooltip=[
-                        alt.Tooltip("arm:N", title="Arm"),
-                        alt.Tooltip(
-                            "percent_acquired:Q",
-                            title="Pool acquired",
-                            format=".2f",
-                        ),
-                        alt.Tooltip(
-                            "n_acquired:Q",
-                            title="Acquired",
-                            format=".0f",
-                        ),
-                        alt.Tooltip(
-                            f"{mean_field}:Q",
-                            title="Mean",
-                            format=".3f",
-                        ),
-                        alt.Tooltip(
-                            f"{std_field}:Q",
-                            title="Std. dev.",
-                            format=".3f",
-                        ),
-                    ],
-                )
-            )
-            selected_budget_rule = (
-                alt.Chart(acquisition_marker)
-                .mark_rule(
-                    color="#E45756",
-                    strokeDash=[7, 5],
-                    strokeWidth=2,
-                )
-                .encode(
-                    x=alt.X(
-                        "selected_percent:Q",
-                        axis=None,
-                        scale=alt.Scale(domain=[0, 100]),
-                    ),
-                    tooltip=[
-                        alt.Tooltip(
-                            "selected_percent:Q",
-                            title="Coverage budget (%)",
-                            format=".0f",
-                        )
-                    ],
-                )
-            )
-            return alt.layer(band, mean_line, selected_budget_rule).properties(
-                title=title,
-                width=500,
-                height=320,
-            )
-
-        entity_chart = metric_chart(
-            "entity_f1_mean",
-            "entity_f1_std",
-            "entity_f1_lower",
-            "entity_f1_upper",
-            "Entity F1",
-            "F1",
-        )
-        metric_charts = [entity_chart]
-        if has_macro_f1:
-            metric_charts.append(
-                metric_chart(
-                    "entity_macro_f1_mean",
-                    "entity_macro_f1_std",
-                    "entity_macro_f1_lower",
-                    "entity_macro_f1_upper",
-                    "Macro entity F1",
-                    "Macro F1",
-                )
-            )
-        accuracy_chart = metric_chart(
-            "token_accuracy_mean",
-            "token_accuracy_std",
-            "token_accuracy_lower",
-            "token_accuracy_upper",
-            "Token accuracy",
-            "Accuracy",
-        )
-        metric_charts.append(accuracy_chart)
-        return alt.hconcat(*metric_charts, spacing=35).resolve_scale(color="shared")
-
-    return (make_variance_chart,)
 
 
 @app.cell
@@ -379,12 +188,7 @@ def _(alt, pl, summarize_label_pool_share):
     ):
         tag_coverage_summary = summarize_label_pool_share(
             selections_frame, acquisition_percent
-        ).with_columns(
-            pl.when(pl.col("arm") == "uncertainty")
-            .then(pl.lit(uq_metric))
-            .otherwise(pl.col("arm"))
-            .alias("arm")
-        )
+        ).with_columns(pl.col("arm").replace({"uncertainty": uq_metric}))
         tag_order = (
             tag_coverage_summary.group_by("label")
             .agg(pl.col("n_acquired_mean").mean().alias("tag_frequency"))
