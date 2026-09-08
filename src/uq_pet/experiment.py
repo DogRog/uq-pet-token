@@ -176,6 +176,34 @@ class ExperimentConfig(BaseModel):
         return self.model_dump(exclude={"wandb_enabled", "wandb_project", "wandb_run_name"})
 
 
+class RandomSearchConfig(ExperimentConfig):
+    """Fixed random-sweep budget and settings, validated before any training."""
+
+    num_configs: int = Field(ge=1)
+    sweep_name: str = "bert-token-uq-random"
+    sweeps_dir: Path = RESULTS_DIR / "random_search"
+    sampler_seed: int = Field(default=0, ge=0)
+
+    @field_validator("sweep_name")
+    @classmethod
+    def validate_sweep_name(cls, value):
+        if not value or not all(c.isalnum() or c in "-_" for c in value):
+            raise ValueError(
+                "sweep_name must contain only letters, numbers, hyphens or underscores"
+            )
+        return value
+
+    def experiment_config(self) -> ExperimentConfig:
+        """Strip sweep settings and disable W&B for the paired sweep runs."""
+        return ExperimentConfig.model_validate(
+            {
+                **self.model_dump(include=set(ExperimentConfig.model_fields)),
+                "wandb_enabled": False,
+                "wandb_run_name": "",
+            }
+        )
+
+
 def execute_experiment(
     config: ExperimentConfig,
     *,
@@ -205,7 +233,7 @@ def execute_experiment(
             100 * first_result["token_budget"] / first_result["scoreable_pool_tokens"]
         ),
     }
-    run_config = {**config.resolved_dict(), **derived_config}
+    run_config = {**config.resolved_dict(), **derived_config, "evaluation_split": "test"}
     dataset_summary = {
         "mode": "experiment",
         "seed_sentences": len(seed_examples),

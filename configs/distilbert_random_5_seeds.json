@@ -1,0 +1,19 @@
+{
+  "sampler_seed": 0,
+  "checkpoint": "distilbert-base-cased",
+  "model_seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "seed_workers": 5,
+  "max_pool_percent": 100.0,
+  "score_batch_size": 32,
+  "max_length": 256,
+  "wandb_enabled": false,
+  "num_configs": 30,
+  "sweep_name": "distilbert-random-5-seeds",
+  "sweeps_dir": "results/random_search"
+}

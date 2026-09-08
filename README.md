@@ -87,8 +87,8 @@ throughput improves and peak GPU memory permits. The worker count is capped at t
 number of seeds. Each seed's rounds remain sequential; live updates append only complete
 two-arm rounds as they arrive, and saved records retain the configured seed order.
 Errors or interruption stop the remaining workers. `seed_workers` also applies to the
-seeds within each search trial; search trials themselves remain sequential. It can be
-changed when resuming a study without changing that study's identity.
+seeds within each paired sweep run; configurations and metrics run sequentially. It can be
+changed when resuming a sweep without changing its saved plan.
 
 Pool and evaluation tokenization and first-subword positions are cached once per seed.
 Uncertainty is computed in batches on the model device, transferring only one score per
@@ -97,91 +97,85 @@ training batch size and `K` remain separate experimental choices. Device reducti
 produce small floating-point differences from the earlier CPU scoring implementation,
 which can affect acquisition order for nearly tied scores.
 
-## Hyperparameter search
+## Random hyperparameter sweep
 
-All search logic lives in `scripts/bert_token_uq_search.py`. Choose Optuna's sampler
-in the JSON configuration: `"sampler":"tpe"` (default), `"sampler":"grid"`, or
-`"sampler":"random"`. Each uses the same discrete `SEARCH_SPACE`, validation split,
-objective, persistent SQLite study, and trial outputs.
+`scripts/bert_token_uq_search.py` samples a fixed set of distinct configurations
+uniformly without replacement, using a local seeded RNG. It saves the entire plan
+before loading data or training. Scores never change the plan, run order, or budget.
+Every configuration runs entropy, least confidence, and margin against a matched
+random-acquisition arm on the original 5 seed / 328 pool / 84 test sentence split.
+Test metrics are evaluated after bootstrap (round 0) and each acquisition round.
+There is no validation holdout, optimization objective, pruning, or best-gap selection.
 
-All launch settings can live alongside experiment settings in one JSON file. The
-included DistilBERT configuration runs up to 100 additional TPE trials, each with
-five parallel seeds and a 100% acquisition budget over the tuning pool:
-
-```bash
-uv run scripts/bert_token_uq_search.py --config configs/distilbert_tpe_5_seeds.json
-```
-
-The file includes `trials`, `study_name`, `studies_dir`, `validation_fraction`,
-`validation_seed`, `sampler_seed`, and `timeout` (`null` means no time limit), plus
-`sampler` and experiment settings such as `checkpoint`, `model_seeds`, and
-`seed_workers`. Relative paths resolve from the working directory. `trials` is
-required; other omitted fields retain their defaults. Settings in `SEARCH_SPACE`
-are still chosen by Optuna per trial, overriding any fixed values for those fields.
-
-`--config-json` accepts the same configuration inline. Choose either `--config`
-or `--config-json`; explicit launch flags override values from either JSON source.
-For example, `--config configs/distilbert_tpe_5_seeds.json --trials 20` runs up to
-20 additional trials. Existing commands remain supported:
+The five files in `configs/*_random_5_seeds.json` retain the model checkpoints and
+five seeds. Each budgets **30 hyperparameter configurations × 3 UQ metrics = 90
+paired runs**, with five concurrent seeds and 100% pool acquisition. This is a larger
+workload than the old 30-trial search, which sampled only one UQ metric per trial.
+The random arm is trained again for each metric with matching seeds and settings;
+these repeated baselines are not independent observations to pool across metrics.
 
 ```bash
-uv run scripts/bert_token_uq_search.py \
-  --trials 20 \
-  --study-name distilbert-tpe \
-  --config-json \
-  '{"sampler":"tpe","checkpoint":"distilbert-base-cased","model_seeds":[0,1],"max_pool_percent":50}'
-
-uv run scripts/bert_token_uq_search.py \
-  --trials 20 --study-name distilbert-grid \
-  --config-json '{"sampler":"grid"}'
-
-uv run scripts/bert_token_uq_search.py \
-  --trials 20 --study-name distilbert-random \
-  --config-json '{"sampler":"random"}'
+uv run scripts/bert_token_uq_search.py --config configs/distilbert_random_5_seeds.json
 ```
 
-TPE adapts suggestions using previous trial results. Random search samples independently
-and can repeat configurations. Grid search enumerates combinations in a seeded shuffled
-order, stopping at `trials`, the optional `timeout`, or grid exhaustion. The full
-current grid contains 5,832 combinations; a smaller trial count explores only part of it.
-`sampler_seed` controls the sampler seed. Trial count is always required, and a valid
-command starts real training immediately.
+The unchanged hyperparameter ranges are:
 
-During a search, the terminal shows one updating progress line with the current
-trial, latest seed and round, and overall progress. Round tables and routine Optuna
-messages are suppressed. The study summary and best configuration path print once
-the invocation finishes; each completed trial still saves its full evaluation and
-selection records as it finishes.
+| Setting | Values |
+| --- | --- |
+| `k` | 8, 16, 32 |
+| `bootstrap_epochs` | 10 |
+| `update_passes` | 1, 2, 4 |
+| `learning_rate` | 0.00002, 0.00005 |
+| `batch_size` | 8, 16 |
+| `replay_ratio` | 0, 1, 2 |
+| `weight_decay` | 0, 0.01 |
 
-Search withholds a deterministic validation subset from the pool and removes those
-sentences from acquisition. The held-out test split is never passed to a trial. The
-objective is the mean across model seeds of the normalized acquisition-curve area for
-`uncertainty entity F1 - random entity F1`. Each trial uses one checkpoint and the
-configured model seeds. Search trials disable W&B logging.
+There are 216 distinct combinations. All supported UQ metrics are applied to each;
+`uq_metric` is not sampled. Values for sampled fields in the input configuration
+are overwritten by the saved plan. Other experiment settings remain fixed.
+Identical sampler seeds and budgets give identical sampled configurations across checkpoints.
+W&B is disabled for sweep runs.
 
-Running the same command and study name resumes the study for up to `trials` additional
-trials. Completed trial history is retained, but interrupted trials do not resume:
-model and optimizer states are not saved. An exhausted grid exits without loading
-data or training. Changing the sampler,
-sampler seed, fixed experiment settings, search space, validation settings, or acquisition
-schedule requires a new study name. Compatible older TPE studies are recognized as TPE.
-The SQLite database retains trial history, but restarting a process reinitializes the
-sampler RNG; a resumed TPE/random sequence need not match one uninterrupted run.
+Use `--config` or `--config-json`, with optional overrides `--num-configs`,
+`--sweep-name`, `--sweeps-dir`, and `--sampler-seed`. `num_configs` is required and
+is the **total fixed budget**, not an additional-run count. A valid command starts
+real training. For example:
 
-Run only one search process per study; stop the old process and its workers before restarting.
+```bash
+uv run scripts/bert_token_uq_search.py \
+  --num-configs 10 --sweep-name distilbert-random-10 \
+  --config-json '{"checkpoint":"distilbert-base-cased","model_seeds":[0,1,2,3,4]}'
+```
 
-Each study writes `study.db`, `search_config.json`, `trials.json`, `summary.json`, `best_config.json`, and
-per-trial settings, evaluations, and selected tokens below
-`results/optuna/<study-name>/`. The summary and trial records include the search context.
-`search_config.json` records the resolved settings from the latest accepted invocation,
-including CLI overrides.
-After selecting a configuration, pass the contents of `best_config.json` to the notebook's
-`--config-json` option for evaluation on the original pool and untouched test split.
-The exported best configuration contains experiment settings only.
+Running the same command resumes unfinished comparisons, retaining completed outputs.
+An interrupted comparison restarts from bootstrap; model and optimizer checkpoints
+are not saved. Only `seed_workers` may change without changing the scientific plan.
+Changing the budget, sampler seed, checkpoint, model seeds, search ranges, or other
+scientific settings requires a new sweep name. Run only one process per sweep.
+Choose the search space and budget before inspecting test curves; changing them in
+response to favorable test gaps would make the resulting assessment exploratory.
 
-This replaces the separate grid/Optuna scripts and the earlier `sweep`/`tune` commands.
-The old balanced sweep, fixed-all-metrics, and sweep W&B flags are removed; use the
-notebook for individual final evaluations and W&B logging.
+Outputs under `results/random_search/<sweep-name>/`:
+
+- `plan.json`: immutable sampled configurations, all UQ metrics, seeds, and fixed settings.
+- `search_config.json`: settings of the latest accepted invocation.
+- `runs/<config-id>/<metric>/progress.csv`: atomically updated test rows after each
+  completed round pair, including round 0.
+- Each completed comparison saves `config.json`, `results.csv`, and `selections.json`
+  in a timestamped run directory, referenced by `completed.json`.
+- `summary.json`: every planned comparison, its pending/failed/complete status, and
+  per-metric mean test F1 gap AUC, mean final F1 gap, wins, ties, losses, and win fraction.
+  Failed comparisons retain their error and are retried on resume.
+
+The AUC integrates UQ minus random entity F1 against acquired-pool percentage,
+normalizes by the observed acquisition interval, and averages across seeds. Each
+configuration has equal weight in per-metric summaries; wins use its seed-mean AUC
+gap, with absolute gaps at most 1e-12 treated as ties. Incomplete sweeps are explicitly
+marked, with completed and planned counts. No configuration is ranked or selected.
+
+The previous Optuna dependency and tuning workflow have been removed. Existing
+`results/optuna` artifacts remain untouched and contain validation evaluations;
+they are excluded from test analysis.
 
 ## Checks
 
@@ -247,7 +241,8 @@ Use `--list` on an `add` command to inspect a repository before installing it, o
 | `notebooks/bert_token_uq.py` | controls, experiment run, tables, and plots |
 | `notebooks/fixed_all_metrics_analysis.py` | read-only analysis of saved historical sweeps |
 | `notebooks/charts.py` | shared chart builders and W&B comparison media |
-| `scripts/bert_token_uq_search.py` | Optuna TPE/grid/random search, validation split, objective, and outputs |
+| `scripts/bert_token_uq_search.py` | fixed random sweep, paired test evaluation, resume, and summaries |
+| `notebooks/test_analysis.py` | individual test curves and sweep-wide paired gaps |
 | `tests/test_token_uq.py` | focused offline invariant tests |
 | `skills-lock.json` | project skill sources and content hashes |
 
@@ -260,13 +255,33 @@ and evaluation inputs stay on the selected device across rounds.
 Compare 1, 2, and 5 workers on the server (stop other experiment runs first):
 
 ```bash
-uv run scripts/benchmark_seed_workers.py --config configs/distilbert_tpe_5_seeds.json > worker_timings.json
+uv run scripts/benchmark_seed_workers.py --config configs/distilbert_random_5_seeds.json > worker_timings.json
 ```
 
 This runs all configured seeds for each worker count, twice, using fixed experiment
-settings from the JSON (or their defaults), rather than sampling Optuna trials.
-It uses the search validation split, caps acquisition at 5%, and prints timings plus
-the fastest worker count when finished. It does not write a study or change the config.
+settings from the JSON (or their defaults), rather than sampling configurations.
+It uses the original test split, caps acquisition at 5%, and prints timings plus
+the fastest worker count when finished. It does not write a sweep or change the config.
 Optional JSON fields are `worker_counts`, `repeats`, and `benchmark_pool_percent`.
 Set `seed_workers` in the search config after comparing the results. Timings include
 model loading and bootstrap; confirm the winner on a longer workload if close.
+
+### Plot test performance
+
+```bash
+uv run marimo edit notebooks/test_analysis.py
+```
+
+This read-only notebook plots held-out test F1 and token accuracy after bootstrap
+(round 0) and every acquisition round, with seed means and SD bands. Select a sweep
+or regular experiments, then a checkpoint, UQ metric, and saved run. Runs with
+different settings remain separate. It also shows cumulative acquired NER-tag coverage.
+
+For random sweeps, it shows all configuration-level AUC gaps around zero, a per-metric
+summary table, and pending/failed comparisons. Sweep summaries always cover all completed
+configurations in that sweep, independently of the individual-run selectors below.
+
+It reads regular exports directly under `results/bert_token_uq_*` and completed sweeps
+under `results/random_search/*` (the default output directory). It never downloads or
+trains a model. Legacy top-level regular exports without an evaluation split marker
+are supported; sweep exports must explicitly identify the test split.

@@ -13,9 +13,9 @@ SEARCH_PATH = Path(__file__).resolve().parents[1] / "scripts" / "bert_token_uq_s
     ("args", "returncode", "expected"),
     [
         (["--help"], 0, "--config-json"),
-        ([], 2, "trials"),
-        (["--trials", "0"], 2, "greater than or equal to 1"),
-        (["--trials", "1", "--config-json", '{"sampler":"invalid"}'], 2, "sampler"),
+        ([], 2, "num_configs"),
+        (["--num-configs", "0"], 2, "greater than or equal to 1"),
+        (["--num-configs", "1", "--config-json", '{"sampler":"invalid"}'], 2, "sampler"),
         (["--config", "missing.json"], 2, "missing.json"),
         (["--config", "missing.json", "--config-json", "{}"], 2, "not allowed with"),
     ],

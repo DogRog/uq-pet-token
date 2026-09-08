@@ -1,4 +1,4 @@
-"""Compare worker counts on a fixed, short search workload without creating a study."""
+"""Compare worker counts on a fixed, short search workload without creating a sweep."""
 
 import argparse
 import json
@@ -8,13 +8,14 @@ from pathlib import Path
 
 from pydantic import Field, field_validator
 
-from bert_token_uq_search import SearchConfig, _quiet_search_output, make_tuning_split
+from bert_token_uq_search import _quiet_search_output
 from uq_pet.active_learning import run_active_learning
+from uq_pet.experiment import RandomSearchConfig
 from uq_pet.pet_data import download_pet_ner, load_pet_splits
 from uq_pet.token_model import get_device
 
 
-class BenchmarkConfig(SearchConfig):
+class BenchmarkConfig(RandomSearchConfig):
     worker_counts: list[int] = [1, 2, 5]
     repeats: int = Field(default=2, ge=1)
     benchmark_pool_percent: float = Field(default=5, gt=0, le=100)
@@ -35,10 +36,7 @@ def benchmark(config):
     experiment = experiment.model_copy(
         update={"max_pool_percent": min(experiment.max_pool_percent, config.benchmark_pool_percent)}
     )
-    seed, pool, gold, _test = load_pet_splits(download_pet_ner())
-    pool, gold, validation = make_tuning_split(
-        pool, gold, validation_fraction=config.validation_fraction, seed=config.validation_seed
-    )
+    seed, pool, gold, test = load_pet_splits(download_pet_ner())
     device = get_device()
     durations = {workers: [] for workers in config.worker_counts}
     # Reverse alternate runs to reduce the advantage from filesystem/model warmup.
@@ -50,7 +48,7 @@ def benchmark(config):
                 seed,
                 pool,
                 gold,
-                validation,
+                test,
                 **{**experiment.active_learning_kwargs(), "seed_workers": workers},
                 device=device,
             )
@@ -58,8 +56,7 @@ def benchmark(config):
     return {
         "device": str(device),
         "experiment": experiment.model_dump(),
-        "validation_fraction": config.validation_fraction,
-        "validation_seed": config.validation_seed,
+        "evaluation_split": "test",
         "timings": [
             {
                 "seed_workers": workers,

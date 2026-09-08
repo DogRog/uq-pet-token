@@ -1,59 +1,27 @@
 #!/usr/bin/env python3
-"""Search PET token-UQ configurations with Optuna TPE, grid, or random sampling."""
+"""Run a fixed random hyperparameter sweep with paired UQ/random test evaluation."""
 
 import argparse
-import hashlib
 import json
 import random
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from itertools import product
 from pathlib import Path
-from typing import Literal
 
-import optuna
+import polars as pl
 from datasets.utils import logging as datasets_logging
-from pydantic import Field, field_validator
 from rich.console import Console
-from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeRemainingColumn
-from rich.table import Table
 from transformers.utils import logging as transformers_logging
 
 from uq_pet import active_learning
 from uq_pet.active_learning import run_active_learning, write_run
-from uq_pet.experiment import ExperimentConfig
-from uq_pet.pet_data import RESULTS_DIR, TokenKey, download_pet_ner, load_pet_splits
+from uq_pet.experiment import ExperimentConfig, RandomSearchConfig
+from uq_pet.pet_data import download_pet_ner, load_pet_splits
 from uq_pet.token_model import UQ_METRICS, get_device
 
-DEFAULT_STUDIES_DIR = RESULTS_DIR / "optuna"
-OBJECTIVE_NAME = "mean_validation_entity_f1_gap_auc"
 CONSOLE = Console()
-
-
-@contextmanager
-def _quiet_search_output():
-    """Keep routine logs off the progress line and restore settings on every exit."""
-    quiet = active_learning.CONSOLE.quiet
-    verbosity = optuna.logging.get_verbosity()
-    model_bars = transformers_logging.is_progress_bar_enabled()
-    data_bars = datasets_logging.is_progress_bar_enabled()
-    try:
-        active_learning.CONSOLE.quiet = True
-        optuna.logging.set_verbosity(optuna.logging.WARNING)
-        transformers_logging.disable_progress_bar()
-        datasets_logging.disable_progress_bar()
-        yield
-    finally:
-        active_learning.CONSOLE.quiet = quiet
-        optuna.logging.set_verbosity(verbosity)
-        if model_bars:
-            transformers_logging.enable_progress_bar()
-        if data_bars:
-            datasets_logging.enable_progress_bar()
-
-
 SEARCH_SPACE = {
-    "uq_metric": UQ_METRICS,
     "k": (8, 16, 32),
     "bootstrap_epochs": (10,),
     "update_passes": (1, 2, 4),
@@ -64,58 +32,23 @@ SEARCH_SPACE = {
 }
 
 
-def make_tuning_split(
-    pool_inputs: list[dict],
-    pool_gold: Mapping[TokenKey, int],
-    *,
-    validation_fraction: float,
-    seed: int,
-) -> tuple[list[dict], dict[TokenKey, int], list[dict]]:
-    """Hold out pool sentences for tuning and reindex the remaining acquisition pool."""
-    if len(pool_inputs) < 2:
-        raise ValueError("tuning requires at least two pool sentences")
-    if not 0 < validation_fraction < 1:
-        raise ValueError(f"validation_fraction must be in (0, 1), got {validation_fraction}")
-
-    validation_count = round(len(pool_inputs) * validation_fraction)
-    validation_count = min(len(pool_inputs) - 1, max(1, validation_count))
-    validation_indices = set(random.Random(seed).sample(range(len(pool_inputs)), validation_count))
-
-    tuning_pool_inputs: list[dict] = []
-    tuning_pool_gold: dict[TokenKey, int] = {}
-    validation_examples: list[dict] = []
-    for old_pool_idx, example in enumerate(pool_inputs):
-        labels = [pool_gold[(old_pool_idx, word_idx)] for word_idx in range(len(example["tokens"]))]
-        if old_pool_idx in validation_indices:
-            validation_examples.append(
-                {
-                    "document_name": example["document_name"],
-                    "sentence_id": example["sentence_id"],
-                    "tokens": example["tokens"],
-                    "ner_tags": labels,
-                }
-            )
-            continue
-
-        new_pool_idx = len(tuning_pool_inputs)
-        tuning_pool_inputs.append(
-            {
-                **example,
-                "pool_idx": new_pool_idx,
-            }
-        )
-        tuning_pool_gold.update(
-            {(new_pool_idx, word_idx): label for word_idx, label in enumerate(labels)}
-        )
-
-    return tuning_pool_inputs, tuning_pool_gold, validation_examples
-
-
-def suggest_search_config(trial) -> dict:
-    """Sample one configuration from the shared discrete search space."""
-    return {
-        name: trial.suggest_categorical(name, list(values)) for name, values in SEARCH_SPACE.items()
-    }
+@contextmanager
+def _quiet_search_output():
+    """Suppress routine model output while retaining concise sweep progress."""
+    quiet = active_learning.CONSOLE.quiet
+    model_bars = transformers_logging.is_progress_bar_enabled()
+    data_bars = datasets_logging.is_progress_bar_enabled()
+    try:
+        active_learning.CONSOLE.quiet = True
+        transformers_logging.disable_progress_bar()
+        datasets_logging.disable_progress_bar()
+        yield
+    finally:
+        active_learning.CONSOLE.quiet = quiet
+        if model_bars:
+            transformers_logging.enable_progress_bar()
+        if data_bars:
+            datasets_logging.enable_progress_bar()
 
 
 def mean_entity_f1_gap_auc(results: Sequence[Mapping[str, object]]) -> float:
@@ -162,254 +95,136 @@ def mean_entity_f1_gap_auc(results: Sequence[Mapping[str, object]]) -> float:
     return sum(seed_aucs) / len(seed_aucs)
 
 
-class SearchConfig(ExperimentConfig):
-    """All experiment and launch settings for one Optuna search invocation."""
-
-    trials: int = Field(ge=1)
-    sampler: Literal["tpe", "grid", "random"] = "tpe"
-    study_name: str = "bert-token-uq"
-    studies_dir: Path = DEFAULT_STUDIES_DIR
-    validation_fraction: float = Field(default=0.2, gt=0, lt=1)
-    validation_seed: int = Field(default=1729, ge=0)
-    sampler_seed: int = Field(default=0, ge=0)
-    timeout: float | None = Field(default=None, gt=0, allow_inf_nan=False)
-
-    @field_validator("study_name")
-    @classmethod
-    def validate_study_name(cls, value):
-        if not _slug(value):
-            raise ValueError("study_name must contain at least one letter or number")
-        return value
-
-    def experiment_config(self) -> ExperimentConfig:
-        """Strip launch settings and disable W&B for every search trial."""
-        return ExperimentConfig.model_validate(
+def sample_plan(config: RandomSearchConfig) -> dict:
+    """Choose distinct combinations uniformly before observing any results."""
+    combinations = list(product(*SEARCH_SPACE.values()))
+    if config.num_configs > len(combinations):
+        raise ValueError(f"num_configs cannot exceed the {len(combinations)} distinct combinations")
+    sampled = random.Random(config.sampler_seed).sample(combinations, config.num_configs)
+    # Worker scheduling can change on resume; scientific settings cannot.
+    fixed = config.experiment_config().model_dump(
+        exclude={"seed_workers", "uq_metric", *SEARCH_SPACE}
+    )
+    return {
+        "version": 1,
+        "evaluation_split": "test",
+        "sampling": "uniform_without_replacement",
+        "sampler_seed": config.sampler_seed,
+        "num_configs": config.num_configs,
+        "fixed_config": fixed,
+        "search_space": {key: list(values) for key, values in SEARCH_SPACE.items()},
+        "uq_metrics": list(UQ_METRICS),
+        "configurations": [
             {
-                **self.model_dump(include=set(ExperimentConfig.model_fields)),
-                "wandb_enabled": False,
-                "wandb_run_name": "",
+                "config_id": f"config_{index:04d}",
+                "parameters": dict(zip(SEARCH_SPACE, values, strict=True)),
+            }
+            for index, values in enumerate(sampled)
+        ],
+    }
+
+
+def write_json(path: Path, value: dict) -> None:
+    """Publish metadata atomically so an interrupted write is never considered complete."""
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(value, indent=2))
+    temporary.replace(path)
+
+
+def paired_summary(results: list[dict]) -> dict:
+    """Describe a paired run without selecting or ranking configurations."""
+    auc = mean_entity_f1_gap_auc(results)
+    seeds = sorted({row["seed"] for row in results})
+    final_gaps = []
+    for seed in seeds:
+        rows = [row for row in results if row["seed"] == seed]
+        last_round = max(row["round"] for row in rows)
+        final = {row["arm"]: row["entity_f1"] for row in rows if row["round"] == last_round}
+        final_gaps.append(final["uncertainty"] - final["random"])
+    return {
+        "mean_test_entity_f1_gap_auc": auc,
+        "mean_final_test_entity_f1_gap": sum(final_gaps) / len(seeds),
+    }
+
+
+def write_summary(root: Path, plan: dict) -> dict:
+    """Include every planned comparison and expose incomplete sweep coverage."""
+    comparisons = []
+    for entry in plan["configurations"]:
+        for metric in plan["uq_metrics"]:
+            slot = root / "runs" / entry["config_id"] / metric
+            marker = slot / "completed.json"
+            row = {
+                "config_id": entry["config_id"],
+                "uq_metric": metric,
+                "parameters": entry["parameters"],
+            }
+            if marker.exists():
+                completed = json.loads(marker.read_text())
+                for filename in ("results.csv", "config.json", "selections.json"):
+                    if not (root / completed["run_dir"] / filename).is_file():
+                        raise ValueError(f"Completed run is missing {filename}: {marker}")
+                row.update(completed, status="complete")
+            elif (slot / "failure.json").exists():
+                row.update(
+                    status="failed", error=json.loads((slot / "failure.json").read_text())["error"]
+                )
+            else:
+                row["status"] = "pending"
+            comparisons.append(row)
+    by_metric = []
+    for metric in plan["uq_metrics"]:
+        rows = [
+            row for row in comparisons if row["uq_metric"] == metric and row["status"] == "complete"
+        ]
+        gaps = [row["mean_test_entity_f1_gap_auc"] for row in rows]
+        by_metric.append(
+            {
+                "uq_metric": metric,
+                "planned_configurations": plan["num_configs"],
+                "completed_configurations": len(rows),
+                "mean_test_entity_f1_gap_auc": sum(gaps) / len(gaps) if gaps else None,
+                "mean_final_test_entity_f1_gap": sum(
+                    row["mean_final_test_entity_f1_gap"] for row in rows
+                )
+                / len(rows)
+                if rows
+                else None,
+                "wins": sum(gap > 1e-12 for gap in gaps),
+                "ties": sum(abs(gap) <= 1e-12 for gap in gaps),
+                "losses": sum(gap < -1e-12 for gap in gaps),
+                "win_fraction": sum(gap > 1e-12 for gap in gaps) / len(gaps) if gaps else None,
             }
         )
-
-
-def make_sampler(name: str, seed: int) -> optuna.samplers.BaseSampler:
-    """Use the same categorical search space for all three Optuna samplers."""
-    if name == "tpe":
-        return optuna.samplers.TPESampler(seed=seed)
-    if name == "grid":
-        return optuna.samplers.GridSampler(SEARCH_SPACE, seed=seed)
-    if name == "random":
-        return optuna.samplers.RandomSampler(seed=seed)
-    raise ValueError(f"unknown sampler: {name}")
-
-
-def _slug(value: str) -> str:
-    return "".join(character if character.isalnum() else "-" for character in value).strip("-")
-
-
-def _study_context(
-    base_config: ExperimentConfig,
-    *,
-    validation_fraction: float,
-    validation_seed: int,
-    sampler_seed: int,
-    sampler: str = "tpe",
-) -> dict:
-    # Scheduling does not change the study's scientific settings or resume identity.
-    fixed_config = base_config.model_dump(exclude={*SEARCH_SPACE, "seed_workers"})
-    return {
-        "objective": OBJECTIVE_NAME,
-        "acquisition_schedule": "partial_final_round",
-        "fixed_config": fixed_config,
-        "search_space": {key: list(values) for key, values in SEARCH_SPACE.items()},
-        "validation_fraction": validation_fraction,
-        "validation_seed": validation_seed,
-        "sampler_seed": sampler_seed,
-        "sampler": sampler,
-    }
-
-
-def _context_fingerprint(context: dict) -> str:
-    payload = json.dumps(context, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode()).hexdigest()
-
-
-def _write_study_outputs(
-    study: optuna.Study, study_root: Path, base_config: ExperimentConfig
-) -> None:
-    complete_trials = [
-        trial for trial in study.trials if trial.state == optuna.trial.TrialState.COMPLETE
-    ]
-    trials = [
-        {
-            "number": trial.number,
-            "state": trial.state.name,
-            "value": trial.value,
-            "params": trial.params,
-            "user_attrs": trial.user_attrs,
-            "datetime_start": trial.datetime_start.isoformat()
-            if trial.datetime_start is not None
-            else None,
-            "datetime_complete": trial.datetime_complete.isoformat()
-            if trial.datetime_complete is not None
-            else None,
-        }
-        for trial in study.trials
-    ]
-    (study_root / "trials.json").write_text(json.dumps(trials, indent=2))
-    if not complete_trials:
-        return
-
-    best_config = ExperimentConfig.model_validate(
-        {**base_config.model_dump(), **study.best_trial.params}
-    )
-    (study_root / "best_config.json").write_text(json.dumps(best_config.model_dump(), indent=2))
     summary = {
-        "study_name": study.study_name,
-        "direction": study.direction.name,
-        "objective": OBJECTIVE_NAME,
-        "context": study.user_attrs.get("context"),
-        "best_trial": study.best_trial.number,
-        "best_value": study.best_value,
-        "best_params": study.best_params,
-        "completed_trials": len(complete_trials),
-        "total_trials": len(study.trials),
-        "updated_at": datetime.now().isoformat(),
+        "evaluation_split": "test",
+        "complete": all(row["status"] == "complete" for row in comparisons),
+        "by_metric": by_metric,
+        "comparisons": comparisons,
     }
-    (study_root / "summary.json").write_text(json.dumps(summary, indent=2))
-
-
-def _make_objective(
-    *,
-    base_config: ExperimentConfig,
-    seed_examples: list[dict],
-    tuning_pool_inputs: list[dict],
-    tuning_pool_gold: dict[tuple[int, int], int],
-    validation_examples: list[dict],
-    device,
-    study_root: Path,
-    progress: Progress,
-    task_id: int,
-):
-    seed_tasks = {
-        seed: progress.add_task(f"Seed {seed} · waiting / bootstrap", total=1)
-        for seed in base_config.model_seeds
-    }
-
-    def objective(trial: optuna.Trial) -> float:
-        completed_trials = progress.tasks[task_id].completed
-        trial_label = f"Trials {int(completed_trials) + 1}/{int(progress.tasks[task_id].total)}"
-        progress.update(task_id, description=trial_label)
-        for seed, seed_task in seed_tasks.items():
-            progress.reset(seed_task, total=1, description=f"Seed {seed} · waiting / bootstrap")
-        seed_fractions = dict.fromkeys(seed_tasks, 0.0)
-        config = ExperimentConfig.model_validate(
-            {**base_config.model_dump(), **suggest_search_config(trial)}
-        )
-
-        def update_progress(rows):
-            row = rows[-1]
-            seed = row["seed"]
-            progress.update(
-                seed_tasks[seed],
-                total=row["total_rounds"],
-                completed=row["round"],
-                description=f"Seed {seed} · round {row['round']}/{row['total_rounds']}",
-            )
-            seed_fractions[seed] = (row["round"] + 1) / (row["total_rounds"] + 1)
-            progress.update(
-                task_id,
-                completed=completed_trials + sum(seed_fractions.values()) / len(seed_fractions),
-            )
-
-        results, selections = run_active_learning(
-            seed_examples,
-            tuning_pool_inputs,
-            tuning_pool_gold,
-            validation_examples,
-            **config.active_learning_kwargs(),
-            device=device,
-            progress_callback=update_progress,
-        )
-        progress.update(task_id, description=f"{trial_label} · saving results")
-        value = mean_entity_f1_gap_auc(results)
-        trial_root = study_root / "trials" / f"trial_{trial.number:04d}"
-        trial_root.mkdir(parents=True)
-        run_config = {
-            **config.resolved_dict(),
-            "mode": "optuna_tuning",
-            "optuna_trial": trial.number,
-            "search_context": trial.study.user_attrs.get("context"),
-            "objective": OBJECTIVE_NAME,
-            "objective_value": value,
-            "tuning_pool_sentences": len(tuning_pool_inputs),
-            "validation_sentences": len(validation_examples),
-        }
-        run_dir = write_run(run_config, results, selections, results_dir=trial_root)
-        trial.set_user_attr("run_dir", str(run_dir))
-        trial.set_user_attr("validation_gap_auc", value)
-        trial.set_user_attr("token_budget", results[0]["token_budget"])
-        trial.set_user_attr("scoreable_pool_tokens", results[0]["scoreable_pool_tokens"])
-        progress.update(task_id, completed=completed_trials + 1)
-        return value
-
-    return objective
+    write_json(root / "summary.json", summary)
+    return summary
 
 
 def configure_parser(parser: argparse.ArgumentParser) -> None:
-    config_source = parser.add_mutually_exclusive_group()
-    config_source.add_argument(
-        "--config", type=Path, help="JSON file containing all search and experiment settings."
-    )
-    config_source.add_argument(
-        "--config-json",
-        help="Inline JSON with the same settings as --config; tuned fields are overwritten.",
-    )
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--config", type=Path, help="JSON file with sweep and experiment settings.")
+    source.add_argument("--config-json", help="Inline JSON with sweep and experiment settings.")
     parser.add_argument(
-        "--trials",
+        "--num-configs",
         type=int,
         default=argparse.SUPPRESS,
-        help="Override additional trials; trials must be supplied in JSON or with this flag.",
+        help="Total fixed budget of distinct configurations, each run with every UQ metric.",
     )
-    parser.add_argument(
-        "--study-name",
-        default=argparse.SUPPRESS,
-        help="Persistent Optuna study name (default: bert-token-uq).",
-    )
-    parser.add_argument(
-        "--studies-dir",
-        type=Path,
-        default=argparse.SUPPRESS,
-        help="Directory containing study databases and trial artifacts.",
-    )
-    parser.add_argument(
-        "--validation-fraction",
-        type=float,
-        default=argparse.SUPPRESS,
-        help="Fraction of pool sentences withheld from acquisition for validation.",
-    )
-    parser.add_argument(
-        "--validation-seed",
-        type=int,
-        default=argparse.SUPPRESS,
-        help="Local RNG seed for the nested validation split.",
-    )
-    parser.add_argument(
-        "--sampler-seed",
-        type=int,
-        default=argparse.SUPPRESS,
-        help="Seed for the selected Optuna sampler.",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=float,
-        default=argparse.SUPPRESS,
-        help="Optional study timeout in seconds.",
-    )
+    parser.add_argument("--sweep-name", default=argparse.SUPPRESS)
+    parser.add_argument("--sweeps-dir", type=Path, default=argparse.SUPPRESS)
+    parser.add_argument("--sampler-seed", type=int, default=argparse.SUPPRESS)
 
 
-def load_search_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> SearchConfig:
-    """Validate JSON and explicit CLI overrides before any experiment side effects."""
+def load_search_config(
+    args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> RandomSearchConfig:
+    """Validate settings before creating output directories or loading models."""
     try:
         payload = args.config.read_text() if args.config is not None else args.config_json or "{}"
         settings = json.loads(payload)
@@ -422,130 +237,105 @@ def load_search_config(args: argparse.Namespace, parser: argparse.ArgumentParser
                 if key not in {"config", "config_json"}
             }
         )
-        return SearchConfig.model_validate(settings)
+        config = RandomSearchConfig.model_validate(settings)
+        sample_plan(config)
+        return config
     except (OSError, ValueError) as error:
         parser.error(str(error))
 
 
 @_quiet_search_output()
 def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
-    search_config = load_search_config(args, parser)
-    base_config = search_config.experiment_config()
-
-    study_root = search_config.studies_dir / _slug(search_config.study_name)
-    study_root.mkdir(parents=True, exist_ok=True)
-    (study_root / "trials").mkdir(exist_ok=True)
-    storage = f"sqlite:///{study_root / 'study.db'}"
-    sampler = make_sampler(search_config.sampler, search_config.sampler_seed)
-    study = optuna.create_study(
-        study_name=search_config.study_name,
-        storage=storage,
-        direction="maximize",
-        sampler=sampler,
-        load_if_exists=True,
-    )
-    context = _study_context(
-        base_config,
-        validation_fraction=search_config.validation_fraction,
-        validation_seed=search_config.validation_seed,
-        sampler_seed=search_config.sampler_seed,
-        sampler=search_config.sampler,
-    )
-    fingerprint = _context_fingerprint(context)
-    existing_fingerprint = study.user_attrs.get("context_fingerprint")
-    # Legacy studies used TPE implicitly; verify their stored fingerprint before migration.
-    existing_context = study.user_attrs.get("context")
-    if (
-        existing_context is not None
-        and "sampler" not in existing_context
-        and existing_fingerprint == _context_fingerprint(existing_context)
-        and {**existing_context, "sampler": "tpe"} == context
-    ):
-        existing_fingerprint = fingerprint
-    if (existing_fingerprint is not None and existing_fingerprint != fingerprint) or (
-        existing_fingerprint is None and study.trials
-    ):
-        parser.error(
-            "the existing study uses different fixed settings, search space, acquisition schedule, "
-            "sampler, or validation split; choose a new --study-name"
-        )
-    study.set_user_attr("context", context)
-    study.set_user_attr("context_fingerprint", fingerprint)
-    (study_root / "search_config.json").write_text(search_config.model_dump_json(indent=2))
-
-    if (
-        isinstance(sampler, optuna.samplers.GridSampler)
-        and sampler.is_exhausted(study)
-        and not any(trial.state == optuna.trial.TrialState.WAITING for trial in study.trials)
-    ):
-        _write_study_outputs(study, study_root, base_config)
-        CONSOLE.print("Grid search is already exhausted; no additional trials to run.")
+    config = load_search_config(args, parser)
+    plan = sample_plan(config)
+    root = config.sweeps_dir / config.sweep_name
+    plan_path = root / "plan.json"
+    if plan_path.exists():
+        if json.loads(plan_path.read_text()) != plan:
+            parser.error(
+                "Existing sweep has a different plan; choose a new --sweep-name. The budget is fixed, not additional runs."
+            )
+    else:
+        if root.exists() and any(root.iterdir()):
+            parser.error("Sweep directory is nonempty but has no plan; choose a new --sweep-name.")
+        root.mkdir(parents=True, exist_ok=True)
+        write_json(plan_path, plan)
+    write_json(root / "search_config.json", config.model_dump(mode="json"))
+    summary = write_summary(root, plan)
+    if summary["complete"]:
+        CONSOLE.print(f"Sweep already complete: {root}")
         return
 
-    data_path = download_pet_ner()
-    seed_examples, pool_inputs, pool_gold, _test_examples = load_pet_splits(data_path)
-    tuning_pool_inputs, tuning_pool_gold, validation_examples = make_tuning_split(
-        pool_inputs,
-        pool_gold,
-        validation_fraction=search_config.validation_fraction,
-        seed=search_config.validation_seed,
-    )
+    # Use the original 5/328/84 split. Test labels never enter acquisition or training.
+    seed_examples, pool_inputs, pool_gold, test_examples = load_pet_splits(download_pet_ner())
     device = get_device()
-
-    overview = Table.grid(padding=(0, 2))
-    overview.add_column(style="bold cyan", justify="right")
-    overview.add_column()
-    overview.add_row("Study", search_config.study_name)
-    overview.add_row("Sampler", search_config.sampler)
-    overview.add_row("Additional trials", str(search_config.trials))
-    overview.add_row("Acquisition pool", f"{len(tuning_pool_inputs)} sentences")
-    overview.add_row("Validation", f"{len(validation_examples)} sentences")
-    overview.add_row("Test split", "untouched")
-    overview.add_row("Device", str(device))
-    overview.add_row("Output", str(study_root))
-
-    with Progress(
-        TextColumn("{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        TimeRemainingColumn(),
-        console=CONSOLE,
-        transient=True,
-    ) as progress:
-        task_id = progress.add_task("Preparing search", total=search_config.trials)
-        objective = _make_objective(
-            base_config=base_config,
-            seed_examples=seed_examples,
-            tuning_pool_inputs=tuning_pool_inputs,
-            tuning_pool_gold=tuning_pool_gold,
-            validation_examples=validation_examples,
-            device=device,
-            study_root=study_root,
-            progress=progress,
-            task_id=task_id,
+    total = config.num_configs * len(plan["uq_metrics"])
+    for index, comparison in enumerate(summary["comparisons"]):
+        if comparison["status"] == "complete":
+            continue
+        slot = root / "runs" / comparison["config_id"] / comparison["uq_metric"]
+        slot.mkdir(parents=True, exist_ok=True)
+        experiment = ExperimentConfig.model_validate(
+            {
+                **plan["fixed_config"],
+                **comparison["parameters"],
+                "uq_metric": comparison["uq_metric"],
+                "seed_workers": config.seed_workers,
+            }
         )
+        CONSOLE.print(
+            f"Run {index + 1}/{total}: {comparison['config_id']} / {comparison['uq_metric']}"
+        )
+
+        status = CONSOLE.status("Preparing test evaluation")
+
+        def update_progress(rows, slot=slot, status=status):
+            # The engine publishes only completed pairs, after bootstrap and each round.
+            temporary = slot / "progress.tmp"
+            pl.DataFrame(rows).write_csv(temporary)
+            temporary.replace(slot / "progress.csv")
+            latest = rows[-1]
+            status.update(
+                f"Seed {latest['seed']} · test round {latest['round']}/{latest['total_rounds']}"
+            )
 
         try:
-            study.optimize(
-                objective,
-                n_trials=search_config.trials,
-                timeout=search_config.timeout,
-                gc_after_trial=True,
+            with status:
+                results, selections = run_active_learning(
+                    seed_examples,
+                    pool_inputs,
+                    pool_gold,
+                    test_examples,
+                    **experiment.active_learning_kwargs(),
+                    device=device,
+                    progress_callback=update_progress,
+                )
+            stats = paired_summary(results)
+            run_dir = write_run(
+                {
+                    **experiment.resolved_dict(),
+                    "evaluation_split": "test",
+                    "mode": "random_search",
+                    "sweep_name": config.sweep_name,
+                    "config_id": comparison["config_id"],
+                    "seed_sentences": len(seed_examples),
+                    "pool_sentences": len(pool_inputs),
+                    "test_sentences": len(test_examples),
+                },
+                results,
+                selections,
+                results_dir=slot,
             )
+            write_json(
+                slot / "completed.json", {"run_dir": str(run_dir.relative_to(root)), **stats}
+            )
+            (slot / "failure.json").unlink(missing_ok=True)
+        except BaseException as error:
+            write_json(slot / "failure.json", {"error": f"{type(error).__name__}: {error}"})
+            raise
         finally:
-            _write_study_outputs(study, study_root, base_config)
-    overview.add_row(
-        "Trials completed this invocation", str(int(progress.tasks[task_id].completed))
-    )
-    CONSOLE.print(overview)
-    if not any(trial.state == optuna.trial.TrialState.COMPLETE for trial in study.trials):
-        CONSOLE.print("No completed trials; no best configuration is available yet.")
-        return
-    CONSOLE.print(
-        f"[bold green]Best {OBJECTIVE_NAME}:[/] {study.best_value:.6f} "
-        f"(trial {study.best_trial.number})"
-    )
-    CONSOLE.print(f"[bold green]Best config:[/] {study_root / 'best_config.json'}")
+            write_summary(root, plan)
+    CONSOLE.print(f"Test sweep complete. All comparisons: {root / 'summary.json'}")
 
 
 def main() -> None:
