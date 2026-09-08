@@ -12,6 +12,7 @@ from pathlib import Path
 import polars as pl
 from datasets.utils import logging as datasets_logging
 from rich.console import Console
+from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeRemainingColumn
 from transformers.utils import logging as transformers_logging
 
 from uq_pet import active_learning
@@ -270,37 +271,63 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     seed_examples, pool_inputs, pool_gold, test_examples = load_pet_splits(download_pet_ner())
     device = get_device()
     total = config.num_configs * len(plan["uq_metrics"])
-    for index, comparison in enumerate(summary["comparisons"]):
-        if comparison["status"] == "complete":
-            continue
-        slot = root / "runs" / comparison["config_id"] / comparison["uq_metric"]
-        slot.mkdir(parents=True, exist_ok=True)
-        experiment = ExperimentConfig.model_validate(
-            {
-                **plan["fixed_config"],
-                **comparison["parameters"],
-                "uq_metric": comparison["uq_metric"],
-                "seed_workers": config.seed_workers,
-            }
-        )
-        CONSOLE.print(
-            f"Run {index + 1}/{total}: {comparison['config_id']} / {comparison['uq_metric']}"
-        )
-
-        status = CONSOLE.status("Preparing test evaluation")
-
-        def update_progress(rows, slot=slot, status=status):
-            # The engine publishes only completed pairs, after bootstrap and each round.
-            temporary = slot / "progress.tmp"
-            pl.DataFrame(rows).write_csv(temporary)
-            temporary.replace(slot / "progress.csv")
-            latest = rows[-1]
-            status.update(
-                f"Seed {latest['seed']} · test round {latest['round']}/{latest['total_rounds']}"
+    completed_runs = sum(row["status"] == "complete" for row in summary["comparisons"])
+    with Progress(
+        TextColumn("{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=CONSOLE,
+    ) as progress:
+        overall_task = progress.add_task("Configurations", total=total, completed=completed_runs)
+        seed_tasks = {
+            seed: progress.add_task(f"Seed {seed} · waiting / bootstrap", total=1)
+            for seed in config.model_seeds
+        }
+        for index, comparison in enumerate(summary["comparisons"]):
+            if comparison["status"] == "complete":
+                continue
+            slot = root / "runs" / comparison["config_id"] / comparison["uq_metric"]
+            slot.mkdir(parents=True, exist_ok=True)
+            experiment = ExperimentConfig.model_validate(
+                {
+                    **plan["fixed_config"],
+                    **comparison["parameters"],
+                    "uq_metric": comparison["uq_metric"],
+                    "seed_workers": config.seed_workers,
+                }
             )
+            description = (
+                f"Configurations {index // len(plan['uq_metrics']) + 1}/{config.num_configs}"
+                f" · {comparison['uq_metric']}"
+            )
+            progress.update(overall_task, description=description)
+            for seed, task in seed_tasks.items():
+                progress.reset(task, total=1, description=f"Seed {seed} · waiting / bootstrap")
+            seed_fractions = dict.fromkeys(seed_tasks, 0.0)
 
-        try:
-            with status:
+            def update_progress(
+                rows, slot=slot, seed_fractions=seed_fractions, base_completed=completed_runs
+            ):
+                # The engine publishes only completed pairs, after bootstrap and each round.
+                temporary = slot / "progress.tmp"
+                pl.DataFrame(rows).write_csv(temporary)
+                temporary.replace(slot / "progress.csv")
+                latest = rows[-1]
+                seed = latest["seed"]
+                progress.update(
+                    seed_tasks[seed],
+                    total=latest["total_rounds"],
+                    completed=latest["round"],
+                    description=f"Seed {seed} · round {latest['round']}/{latest['total_rounds']}",
+                )
+                seed_fractions[seed] = (latest["round"] + 1) / (latest["total_rounds"] + 1)
+                progress.update(
+                    overall_task,
+                    completed=base_completed + sum(seed_fractions.values()) / len(seed_fractions),
+                )
+
+            try:
                 results, selections = run_active_learning(
                     seed_examples,
                     pool_inputs,
@@ -310,31 +337,34 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                     device=device,
                     progress_callback=update_progress,
                 )
-            stats = paired_summary(results)
-            run_dir = write_run(
-                {
-                    **experiment.resolved_dict(),
-                    "evaluation_split": "test",
-                    "mode": "random_search",
-                    "sweep_name": config.sweep_name,
-                    "config_id": comparison["config_id"],
-                    "seed_sentences": len(seed_examples),
-                    "pool_sentences": len(pool_inputs),
-                    "test_sentences": len(test_examples),
-                },
-                results,
-                selections,
-                results_dir=slot,
-            )
-            write_json(
-                slot / "completed.json", {"run_dir": str(run_dir.relative_to(root)), **stats}
-            )
-            (slot / "failure.json").unlink(missing_ok=True)
-        except BaseException as error:
-            write_json(slot / "failure.json", {"error": f"{type(error).__name__}: {error}"})
-            raise
-        finally:
-            write_summary(root, plan)
+                progress.update(overall_task, description=f"{description} · saving")
+                stats = paired_summary(results)
+                run_dir = write_run(
+                    {
+                        **experiment.resolved_dict(),
+                        "evaluation_split": "test",
+                        "mode": "random_search",
+                        "sweep_name": config.sweep_name,
+                        "config_id": comparison["config_id"],
+                        "seed_sentences": len(seed_examples),
+                        "pool_sentences": len(pool_inputs),
+                        "test_sentences": len(test_examples),
+                    },
+                    results,
+                    selections,
+                    results_dir=slot,
+                )
+                write_json(
+                    slot / "completed.json", {"run_dir": str(run_dir.relative_to(root)), **stats}
+                )
+                (slot / "failure.json").unlink(missing_ok=True)
+                completed_runs += 1
+                progress.update(overall_task, completed=completed_runs, description=description)
+            except BaseException as error:
+                write_json(slot / "failure.json", {"error": f"{type(error).__name__}: {error}"})
+                raise
+            finally:
+                write_summary(root, plan)
     CONSOLE.print(f"Test sweep complete. All comparisons: {root / 'summary.json'}")
 
 

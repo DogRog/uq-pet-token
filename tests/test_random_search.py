@@ -270,3 +270,46 @@ def test_corrupt_completed_output_is_not_silently_skipped(tmp_path, fake_experim
     (root / summary["comparisons"][0]["run_dir"] / "results.csv").unlink()
     with pytest.raises(ValueError, match="missing results.csv"):
         run_search(tmp_path)
+
+
+def test_progress_tracks_each_seed_and_resets_between_metrics(
+    tmp_path, fake_experiment, monkeypatch
+):
+    displays = []
+    original_progress = search.Progress
+
+    def make_progress(*args, **kwargs):
+        display = original_progress(*args, **kwargs, disable=True)
+        displays.append(display)
+        return display
+
+    monkeypatch.setattr(search, "Progress", make_progress)
+    original_run = search.run_active_learning
+    snapshots = []
+    starts = []
+
+    def inspect_run(*args, **kwargs):
+        display = displays[0]
+        starts.append([task.completed for task in display.tasks])
+        callback = kwargs["progress_callback"]
+
+        def inspect_progress(rows):
+            callback(rows)
+            snapshots.append(
+                [(task.completed, task.total, task.description) for task in display.tasks]
+            )
+
+        return original_run(*args, **{**kwargs, "progress_callback": inspect_progress})
+
+    monkeypatch.setattr(search, "run_active_learning", inspect_run)
+    run_search(tmp_path)
+    assert starts == [[index, 0, 0] for index in range(6)]
+    # Seed 0 is finished while seed 1 is still waiting, then seed 1 catches up.
+    assert snapshots[1][1] == (1, 1, "Seed 0 · round 1/1")
+    assert snapshots[1][2] == (0, 1, "Seed 1 · waiting / bootstrap")
+    assert snapshots[1][0][0] == pytest.approx(0.5)
+    assert snapshots[2][1] == snapshots[1][1]
+    assert snapshots[2][2] == (0, 1, "Seed 1 · round 0/1")
+    assert snapshots[2][0][0] == pytest.approx(0.75)
+    assert displays[0].tasks[0].completed == displays[0].tasks[0].total == 6
+    assert displays[0].tasks[0].description == "Configurations 2/2 · margin"
