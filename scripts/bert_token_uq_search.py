@@ -271,6 +271,10 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         CONSOLE.print(f"Sweep already complete: {root}")
         return
 
+    CONSOLE.print(
+        f"[bold cyan]Compute precision:[/] [bold]{effective_precision.upper()}[/]"
+        f" · device: {device} · parameters/AdamW: FP32"
+    )
     # Use the original 5/328/84 split. Test labels never enter acquisition or training.
     seed_examples, pool_inputs, pool_gold, test_examples = load_pet_splits(download_pet_ner())
     total = config.num_configs * len(plan["uq_metrics"])

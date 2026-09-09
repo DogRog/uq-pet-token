@@ -236,6 +236,10 @@ def run_metric_comparisons(
         raise ValueError("seed_workers must be positive")
     if len(model_seeds) != len(set(model_seeds)):
         raise ValueError("model seeds must be unique")
+    CONSOLE.print(
+        f"[bold cyan]Compute precision:[/] [bold]{precision.upper()}[/]"
+        f" · device: {device} · parameters/AdamW: FP32"
+    )
     settings = {
         "checkpoint": checkpoint,
         "uq_metrics": uq_metrics,
