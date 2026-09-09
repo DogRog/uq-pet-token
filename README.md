@@ -192,6 +192,8 @@ The CLI prints the project and run URLs when round 0 arrives. Each configuration
 UQ metric, and seed has its own W&B run, grouped under the sweep name, with both UQ
 and random curves against acquired-pool percentage. Logging stays in the parent process
 and publishes only completed comparison pairs. Runs close on completion or failure.
+Console capture is disabled in sweep and notebook runs, so terminal progress redraws
+are not saved or uploaded as `output.log`. Metrics are still logged normally.
 The shared random curves across metrics remain repeated observations of one baseline.
 
 W&B settings can change when resuming an existing sweep without changing its scientific

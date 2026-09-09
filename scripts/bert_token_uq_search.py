@@ -184,7 +184,7 @@ def wandb_comparison_logging(config, experiment, config_id, effective_precision,
                     group=config.sweep_name,
                     job_type="random_search",
                     reinit="create_new",
-                    settings={"quiet": True},
+                    settings={"quiet": True, "console": "off"},
                     dir=str(slots[metric]),
                     config={
                         **settings.resolved_dict(),

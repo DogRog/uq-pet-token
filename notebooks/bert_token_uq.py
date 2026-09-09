@@ -332,6 +332,7 @@ def _(
                 project=config["wandb_project"],
                 name=config["wandb_run_name"],
                 config=config,
+                settings={"console": "off"},
             )
             configure_wandb_metrics(wandb_run, config["uq_metric"])
 

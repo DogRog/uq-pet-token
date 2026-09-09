@@ -391,6 +391,7 @@ def test_sweep_wandb_logs_each_seed_metric_and_prints_project_link(
         assert config["effective_precision"] == "fp32"
         assert config["evaluation_split"] == "test"
         assert run.settings["reinit"] == "create_new"
+        assert run.settings["settings"]["console"] == "off"
         assert run.settings["group"] == "example"
         assert run.settings["name"].startswith("trial-config_")
         assert [row["evaluation/round"] for row in run.logs] == [0, 1]
