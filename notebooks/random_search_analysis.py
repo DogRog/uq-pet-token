@@ -54,7 +54,19 @@ def _(Path, json):
         summary_metadata = json.loads(summary_path.read_text())
         if summary_metadata.get("evaluation_split") == "test":
             sweep_paths[summary_path.parent.name] = summary_path.parent
-    return (sweep_paths,)
+    return project_root, sweep_paths
+
+
+@app.cell
+def _(pl, project_root):
+    sentence_lookup = pl.read_ndjson(
+        project_root / "data" / "raw" / "PETv1.1-entities.jsonl"
+    ).select(
+        pl.col("document name").alias("document_name"),
+        pl.col("sentence-ID").alias("sentence_id"),
+        pl.col("tokens").list.join(" ").alias("sentence"),
+    )
+    return (sentence_lookup,)
 
 
 @app.cell
@@ -334,7 +346,7 @@ def _(pl, selected_comparison, selected_results, selected_run_dir):
         how="left",
         validate="m:1",
     )
-    return (selections_with_progress,)
+    return selected_selections, selections_with_progress
 
 
 @app.cell
@@ -364,6 +376,34 @@ def _(
             ),
         ]
     )
+    return
+
+
+@app.cell
+def _(mo, pl, selected_selections, sentence_lookup):
+    chosen_sentence_rows = (
+        selected_selections.join(
+            sentence_lookup,
+            on=["document_name", "sentence_id"],
+            how="left",
+            validate="m:1",
+        )
+        .sort("seed", "round", "arm", "pool_idx", "word_idx")
+        .select(
+            pl.col("arm").alias("choice"),
+            "seed",
+            "round",
+            "token",
+            pl.col("label").alias("tag"),
+            "uq_score",
+            "document_name",
+            "sentence_id",
+            "sentence",
+        )
+    )
+    chosen_sentences_dataframe = mo.ui.dataframe(chosen_sentence_rows, page_size=30)
+    chosen_sentences_dataframe
+
     return
 
 
