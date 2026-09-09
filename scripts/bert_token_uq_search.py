@@ -12,6 +12,7 @@ from pathlib import Path
 
 import polars as pl
 from datasets.utils import logging as datasets_logging
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeRemainingColumn
 from transformers.utils import logging as transformers_logging
@@ -25,7 +26,7 @@ from uq_pet.experiment import (
     make_wandb_evaluation_log,
     require_wandb_credentials,
 )
-from uq_pet.pet_data import download_pet_ner, load_pet_splits
+from uq_pet.pet_data import PROJECT_ROOT, download_pet_ner, load_pet_splits
 from uq_pet.token_model import UQ_METRICS, get_device, resolve_precision
 
 CONSOLE = Console()
@@ -348,6 +349,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         return
 
     if config.wandb_enabled:
+        load_dotenv(PROJECT_ROOT / ".env", override=False)
         require_wandb_credentials(os.environ)
         if os.environ.get("WANDB_MODE", "").strip().lower() == "offline":
             CONSOLE.print("W&B offline: logging locally; no online project link is available.")

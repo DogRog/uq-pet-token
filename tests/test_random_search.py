@@ -17,6 +17,11 @@ SPEC.loader.exec_module(search)
 mean_entity_f1_gap_auc = search.mean_entity_f1_gap_auc
 
 
+@pytest.fixture(autouse=True)
+def isolated_project_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(search, "PROJECT_ROOT", tmp_path)
+
+
 def test_mean_entity_f1_gap_auc_pairs_arms_and_averages_seeds():
     gaps = {
         0: (0.0, 0.2, 0.2),
@@ -406,6 +411,32 @@ def test_wandb_disabled_never_initializes_or_logs_in(tmp_path, fake_experiment, 
     run_search(tmp_path)
     assert not fake_wandb.runs
     assert not fake_wandb.logins
+
+
+@pytest.mark.parametrize("exported_key", [None, "shell-key"])
+def test_wandb_loads_project_dotenv_without_overriding_shell(
+    tmp_path, fake_experiment, fake_wandb, monkeypatch, exported_key
+):
+    (tmp_path / ".env").write_text("WANDB_API_KEY=file-key\n")
+    if exported_key is None:
+        monkeypatch.delenv("WANDB_API_KEY")
+    else:
+        monkeypatch.setenv("WANDB_API_KEY", exported_key)
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+    monkeypatch.chdir(other_dir)
+    run_search(tmp_path, wandb_enabled=True)
+    assert fake_wandb.logins == [{"key": exported_key or "file-key", "verify": True}]
+
+
+def test_wandb_offline_mode_can_be_loaded_from_dotenv(
+    tmp_path, fake_experiment, fake_wandb, monkeypatch
+):
+    (tmp_path / ".env").write_text("WANDB_MODE=offline\n")
+    monkeypatch.delenv("WANDB_API_KEY")
+    run_search(tmp_path, wandb_enabled=True)
+    assert not fake_wandb.logins
+    assert len(fake_wandb.runs) == 12
 
 
 def test_wandb_offline_does_not_require_credentials_or_print_online_links(

@@ -183,8 +183,9 @@ There are 216 distinct combinations. All supported UQ metrics are applied to eac
 are overwritten by the saved plan. Other experiment settings remain fixed.
 Identical sampler seeds and budgets give identical sampled configurations across checkpoints.
 Set `"wandb_enabled": true` and `"wandb_project": "your-project"` to log sweep runs.
-Online logging requires `WANDB_API_KEY` in the process environment and validates it
-before loading data or training. `WANDB_MODE=offline` writes local W&B records without
+Online logging requires `WANDB_API_KEY` in the process environment or the project's
+`.env` file and validates it before loading data or training. Exported environment
+variables take precedence over `.env` values. `WANDB_MODE=offline` writes local W&B records without
 credentials; offline mode has no online project link.
 
 The CLI prints the project and run URLs when round 0 arrives. Each configuration,
