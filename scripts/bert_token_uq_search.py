@@ -107,7 +107,7 @@ def sample_plan(config: RandomSearchConfig) -> dict:
         exclude={"seed_workers", "uq_metric", *SEARCH_SPACE}
     )
     return {
-        "version": 2,
+        "version": 3,
         "shared_bootstrap_and_random": True,
         "evaluation_split": "test",
         "sampling": "uniform_without_replacement",

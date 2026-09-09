@@ -12,6 +12,7 @@
   "max_pool_percent": 100.0,
   "score_batch_size": 256,
   "precision": "auto",
+  "model_batch_size": 2,
   "max_length": 256,
   "wandb_enabled": false,
   "num_configs": 30,

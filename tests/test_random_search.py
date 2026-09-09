@@ -312,6 +312,13 @@ def test_resume_rejects_effective_precision_changes(tmp_path, fake_experiment, m
     assert len(fake_experiment) == 2
 
 
+def test_resume_rejects_model_group_size_changes(tmp_path, fake_experiment):
+    run_search(tmp_path, model_batch_size=2)
+    with pytest.raises(SystemExit, match="2"):
+        run_search(tmp_path, model_batch_size=1)
+    assert len(fake_experiment) == 2
+
+
 def test_unsupported_bf16_fails_before_loading_data_or_creating_a_plan(tmp_path, monkeypatch):
     monkeypatch.setattr(search, "get_device", lambda: "cpu")
     monkeypatch.setattr(

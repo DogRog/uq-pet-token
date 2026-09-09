@@ -63,6 +63,12 @@ class ExperimentConfig(BaseModel):
         ge=1,
         description="Concurrent seed processes on the selected device; capped by the seed count.",
     )
+    model_batch_size: int = Field(
+        default=2,
+        ge=1,
+        le=4,
+        description="Learners vectorized per seed; 1 uses sequential execution.",
+    )
     precision: Literal["auto", "fp32", "bf16"] = Field(
         default="auto",
         description="Auto uses BF16 on supported CUDA GPUs and FP32 elsewhere.",

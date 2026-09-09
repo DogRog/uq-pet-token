@@ -183,7 +183,7 @@ def _(DEFAULT_CHECKPOINTS, UQ_METRICS, default_config, mo):
 
         {checkpoint}
 
-        {model_seeds} {seed_workers}
+        {model_seeds} {seed_workers} {model_batch_size}
 
         {uq_metric} {k} {max_pool_percent}
 
@@ -211,6 +211,9 @@ def _(DEFAULT_CHECKPOINTS, UQ_METRICS, default_config, mo):
             ),
             seed_workers=numeric_control(
                 "seed_workers", "Concurrent seeds (shared device)", start=1
+            ),
+            model_batch_size=numeric_control(
+                "model_batch_size", "Models per batch (1: sequential)", start=1, stop=4
             ),
             uq_metric=mo.ui.dropdown(
                 options=list(UQ_METRICS),

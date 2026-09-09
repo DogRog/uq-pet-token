@@ -87,8 +87,8 @@ throughput improves and peak GPU memory permits. The worker count is capped at t
 number of seeds. Each seed's rounds remain sequential; live updates append only complete
 two-arm rounds as they arrive, and saved records retain the configured seed order.
 Errors or interruption stop the remaining workers. `seed_workers` also applies to the
-seeds within each sweep configuration. Within a seed, metrics run sequentially and share
-one bootstrap and random trajectory. Seeds can be working on different metrics at the
+seeds within each sweep configuration. Within a seed, learner groups share
+one bootstrap and random trajectory. Seeds can be working on different metric groups at the
 same time. Worker count can change when resuming without changing the saved plan.
 
 Pool and evaluation tokenization and first-subword positions are cached once per seed.
@@ -112,6 +112,32 @@ otherwise. The notebook exposes the same selector. Exports record the requested
 BF16 can change predictions and acquisition order, so compare speed and learning curves
 under a new sweep name rather than mixing precision within an existing sweep.
 
+`model_batch_size` defaults to **2 learners per seed**. PyTorch `vmap` applies the model
+to stacked parameter tensors, using batched matrix operations for different learners.
+With all three UQ metrics, entropy and random train/evaluate together, followed by
+least confidence and margin together. Pool scoring batches the UQ learners in each group;
+the random learner does not score the pool. Set `model_batch_size` to `1` for the previous
+sequential path, or `3`/`4` to test larger groups. This is separate from sentence batch
+size, training batch size, and annotation `k`: each learner still gets the same number
+of newly labelled words, replay items, and optimizer updates.
+
+Every learner has its own FP32 parameter slice and AdamW moment slices, cloned from
+bootstrap. Per-model mean losses are summed before backward so gradients are not divided
+by the number of learners. The common AdamW step counter is valid because every learner
+in a group has the same number of updates. Each learner retains its original seeded
+shuffle, selection, and replay; vectorized dropout uses distinct draws per learner from
+an isolated seed/round RNG stream. Grouping and shared padding change dropout draws, so
+batched runs are reproducible but are not bit-for-bit continuations of sequential runs.
+Changing group size requires a new sweep name.
+
+The batched path uses eager attention for `vmap` compatibility across the five supported
+architectures. Pool/test attention masks are prepared once per group outside `vmap`.
+In BF16 mode, differentiable BF16 execution copies prevent FP32 biases from promoting
+vectorized linear outputs back to FP32; master parameters and optimizer moments stay FP32.
+Larger groups increase activation memory and may not be faster than sequential execution
+with fused attention. Compare complete-run time with the same checkpoint, hyperparameters,
+seeds, precision, and worker count; `model_batch_size=1` versus `2` is the first comparison.
+
 ## Random hyperparameter sweep
 
 `scripts/bert_token_uq_search.py` samples a fixed set of distinct configurations
@@ -128,10 +154,11 @@ paired comparisons**, with five concurrent seeds and 100% pool acquisition. This
 workload than the old 30-trial search, which sampled only one UQ metric per trial.
 For each configuration and seed, bootstrap runs once. Its fitted weights and optimizer
 state are held in CPU memory and cloned into each arm. The first UQ metric trains beside
-random; later metrics train only their own UQ arm and reuse the random evaluation rows
-and selected-token records. At most two trained models reside on the GPU per seed.
+random; later metrics train their own UQ arms and reuse the random evaluation rows
+and selected-token records. With the default group size, at most two learner states
+reside on the GPU per seed (plus transient BF16 execution copies and activations).
 For three metrics this removes two bootstrap runs and two random trajectories per seed;
-all three UQ trajectories still train independently with their original update seeds.
+all three UQ trajectories retain separate model and optimizer histories.
 Each metric retains a complete paired export and live chart. The shared random baselines
 are not independent observations to pool across metrics.
 
@@ -176,8 +203,8 @@ already marked complete are retained even if saving a later metric fails. Only
 `seed_workers` may change without changing the scientific plan.
 Changing the budget, sampler seed, checkpoint, model seeds, search ranges, or other
 scientific settings requires a new sweep name. Run only one process per sweep.
-The shared-work/BF16 implementation uses plan version 2 and requires a new sweep name
-for historical version 1 sweeps; their existing outputs remain readable and untouched.
+The model-batching implementation uses plan version 3 and requires a new sweep name
+for historical version 1/2 sweeps; their existing outputs remain readable and untouched.
 Choose the search space and budget before inspecting test curves; changing them in
 response to favorable test gaps would make the resulting assessment exploratory.
 

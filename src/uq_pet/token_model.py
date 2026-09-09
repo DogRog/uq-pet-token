@@ -1,5 +1,6 @@
 """Token-classifier training, uncertainty scoring, and held-out evaluation."""
 
+import copy
 import logging
 import math
 import random
@@ -9,8 +10,13 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 from seqeval.metrics import f1_score, precision_score, recall_score
+from torch.utils._pytree import tree_map
 from torch.utils.data import DataLoader
 from transformers import AutoConfig, AutoModelForTokenClassification, AutoTokenizer
+from transformers.masking_utils import (
+    create_bidirectional_mask,
+    create_bidirectional_sliding_window_mask,
+)
 from transformers.utils import logging as transformers_logging
 
 from uq_pet.pet_data import NER_TAGS, TokenKey
@@ -410,6 +416,11 @@ def evaluate_model(
         prepared_batches=prepared_batches,
         precision=precision,
     )
+    return evaluate_predictions(examples, predictions)
+
+
+def evaluate_predictions(examples, predictions):
+    """Compute the same word/entity metrics for scalar and batched model predictions."""
     gold = [[NER_TAGS[tag] for tag in example["ner_tags"]] for example in examples]
     total = sum(len(tags) for tags in gold)
     correct = sum(
@@ -426,3 +437,214 @@ def evaluate_model(
         "entity_recall": float(recall_score(gold, predictions, average="micro", zero_division=0)),
         "token_accuracy": correct / total if total else 0.0,
     }
+
+
+class BatchedTokenModels:
+    """Vectorize a small group of independent learners with stacked FP32 AdamW state."""
+
+    def __init__(self, base_model, optimizer_state, count, *, device, precision):
+        self.count = count
+        self.device = device
+        self.precision = precision
+        self.inference_inputs = {}
+        # Stack on CPU before transfer; retain no extra trained model copies on the GPU.
+        self.params = {
+            name: value.detach()
+            .cpu()
+            .unsqueeze(0)
+            .repeat(count, *([1] * value.ndim))
+            .to(device)
+            .requires_grad_()
+            for name, value in base_model.named_parameters()
+        }
+        self.buffers = {
+            name: value.detach().cpu().unsqueeze(0).repeat(count, *([1] * value.ndim)).to(device)
+            for name, value in base_model.named_buffers()
+        }
+        self.template = copy.deepcopy(base_model).to("meta")
+        # Eager attention supports vmap backward and independent dropout across architectures.
+        self.template.set_attn_implementation("eager")
+        groups = optimizer_state["param_groups"]
+        if len(groups) != 1 or len(groups[0]["params"]) != len(self.params):
+            raise ValueError(
+                "model batching requires the experiment's single AdamW parameter group"
+            )
+        options = {key: value for key, value in groups[0].items() if key != "params"}
+        self.optimizer = torch.optim.AdamW([{"params": list(self.params.values()), **options}])
+        for parameter, original_id in zip(self.params.values(), groups[0]["params"], strict=True):
+            original = optimizer_state["state"].get(original_id, {})
+            self.optimizer.state[parameter] = {
+                name: value.clone()
+                if name == "step"
+                else value.unsqueeze(0).repeat(count, *([1] * value.ndim)).to(device)
+                for name, value in original.items()
+            }
+
+    def prepare_inputs(self, inputs):
+        """Build masks outside vmap to avoid Transformers' tensor-dependent mask branches."""
+        inputs = {name: value.to(self.device) for name, value in inputs.items()}
+        config = self.template.config
+        if config.model_type == "deberta-v2":
+            return inputs  # DeBERTa builds its boolean mask without data-dependent branches.
+        dummy = torch.empty((*inputs["input_ids"].shape, 1), device=self.device)
+        kwargs = dict(
+            config=config,
+            inputs_embeds=dummy,
+            attention_mask=inputs["attention_mask"],
+            allow_is_bidirectional_skip=False,
+        )
+        full_mask = create_bidirectional_mask(**kwargs)
+        inputs["attention_mask"] = (
+            {
+                "full_attention": full_mask,
+                "sliding_attention": create_bidirectional_sliding_window_mask(**kwargs),
+            }
+            if config.model_type == "modernbert"
+            else full_mask
+        )
+        return inputs
+
+    def prepare_inference_inputs(self, batch):
+        """Reuse each fixed pool/test attention mask throughout this group's rounds."""
+        key = id(batch)
+        if key not in self.inference_inputs:
+            self.inference_inputs[key] = (batch, self.prepare_inputs(batch.inputs))
+        return self.inference_inputs[key][1]
+
+    def forward(self, inputs, *, shared_inputs, indices=None):
+        """Use batched matrix operations with a distinct parameter slice for every learner."""
+        parameters = self.params
+        buffers = self.buffers
+        if indices is not None:
+            parameters = {name: value[indices] for name, value in parameters.items()}
+            buffers = {name: value[indices] for name, value in buffers.items()}
+        if self.precision == "bf16":
+            # vmap's linear batching rule can promote BF16 matmuls back to FP32 when
+            # adding an FP32 bias. Cast execution weights, retaining differentiable
+            # links to FP32 master parameters and their separate AdamW moments.
+            parameters = {name: value.to(torch.bfloat16) for name, value in parameters.items()}
+
+        def call(parameters, buffers, inputs):
+            return torch.func.functional_call(
+                self.template, (parameters, buffers), (), inputs
+            ).logits
+
+        with _autocast(self.device, self.precision):
+            return torch.vmap(
+                call,
+                in_dims=(0, 0, None if shared_inputs else 0),
+                randomness="different" if self.template.training else "error",
+            )(parameters, buffers, inputs)
+
+    def train(self, tokenizer, items, *, seeds, rng_seed, passes, batch_size, max_length, cache):
+        """Sum per-model mean losses, preserving each learner's gradient and step count."""
+        if len(items) != self.count or len(seeds) != self.count:
+            raise ValueError("one item list and shuffle seed are required per model")
+        if len({len(lane) for lane in items}) != 1 or not items[0]:
+            raise ValueError("batched learners require equal nonzero training budgets")
+        loaders = [
+            DataLoader(
+                lane,
+                batch_size=batch_size,
+                shuffle=True,
+                collate_fn=list,
+                generator=torch.Generator().manual_seed(seed),
+            )
+            for lane, seed in zip(items, seeds, strict=True)
+        ]
+        losses = []
+        self.template.train()
+        try:
+            with _training_rng(rng_seed):
+                for _ in range(passes):
+                    for batches in zip(*loaders, strict=True):
+                        encoding, targets = encode_targets(
+                            tokenizer,
+                            [item for batch in batches for item in batch],
+                            max_length,
+                            cache,
+                        )
+                        inputs = self.prepare_inputs(encoding)
+                        inputs = tree_map(
+                            lambda value: value.reshape(self.count, -1, *value.shape[1:]), inputs
+                        )
+                        targets = targets.to(self.device).reshape(self.count, -1, targets.shape[-1])
+                        self.optimizer.zero_grad()
+                        logits = self.forward(inputs, shared_inputs=False)
+                        token_losses = torch.nn.functional.cross_entropy(
+                            logits.float().reshape(-1, logits.shape[-1]),
+                            targets.flatten(),
+                            ignore_index=-100,
+                            reduction="none",
+                        ).reshape_as(targets)
+                        per_model = token_losses.sum((1, 2)) / (targets != -100).sum((1, 2))
+                        per_model.sum().backward()
+                        self.optimizer.step()
+                        losses.append(per_model.detach())
+        finally:
+            self.template.eval()
+        return torch.stack(losses).mean(0).cpu().tolist()
+
+    @torch.no_grad()
+    def score(self, pool_inputs, batches, metrics, excluded):
+        """Score all UQ learners together using label-free inputs and FP32 probabilities."""
+        self.template.eval()
+        scores = [dict() for _ in metrics]
+        # UQ models occupy the leading slices; the optional random learner is last.
+        offset = 0
+        for batch in batches:
+            keys, rows, columns = [], [], []
+            for row, positions in enumerate(batch.word_positions):
+                pool_idx = pool_inputs[offset + row]["pool_idx"]
+                for word, column in positions.items():
+                    key = (pool_idx, word)
+                    if any(key not in selected for selected in excluded):
+                        keys.append(key)
+                        rows.append(row)
+                        columns.append(column)
+            offset += len(batch.word_positions)
+            if not keys:
+                continue
+            logits = self.forward(
+                self.prepare_inference_inputs(batch),
+                shared_inputs=True,
+                indices=slice(0, len(metrics)),
+            )
+            probabilities = logits[:, rows, columns].float().softmax(-1)
+            for index, metric in enumerate(metrics):
+                values = _uncertainty_values(probabilities[index], metric).cpu().tolist()
+                scores[index].update(
+                    (key, value)
+                    for key, value in zip(keys, values, strict=True)
+                    if key not in excluded[index]
+                )
+        return scores
+
+    @torch.no_grad()
+    def evaluate(self, examples, batches):
+        """Evaluate all learners together while retaining per-model entity metrics."""
+        self.template.eval()
+        predictions = [[] for _ in range(self.count)]
+        for example, positions in zip(
+            examples,
+            (positions for batch in batches for positions in batch.word_positions),
+            strict=True,
+        ):
+            if positions.keys() != set(range(len(example["tokens"]))):
+                raise ValueError("evaluation sentence was truncated; increase max_length")
+        for batch in batches:
+            ids = (
+                self.forward(self.prepare_inference_inputs(batch), shared_inputs=True)
+                .argmax(-1)
+                .cpu()
+                .tolist()
+            )
+            for lane in range(self.count):
+                for row, positions in enumerate(batch.word_positions):
+                    predictions[lane].append(
+                        [
+                            NER_TAGS[ids[lane][row][positions[word]]]
+                            for word in range(len(positions))
+                        ]
+                    )
+        return [evaluate_predictions(examples, prediction) for prediction in predictions]
