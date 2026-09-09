@@ -1,6 +1,7 @@
 import copy
 import math
 import random
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import numpy as np
@@ -16,6 +17,7 @@ from uq_pet.token_model import (
     encode_targets,
     predict_tags,
     prepare_inference_batches,
+    resolve_precision,
     score_token_uncertainty,
     scoreable_token_keys,
     set_seed,
@@ -369,3 +371,97 @@ def test_prepared_inference_inputs_use_requested_device(tokenizer):
     )
     assert all(value.device.type == "meta" for value in batches[0].inputs.values())
     assert batches[0].word_positions == [{0: 1}]
+
+
+def test_precision_resolution_uses_native_cuda_support_and_rejects_unsupported_bf16(monkeypatch):
+    for device in ("cpu", "mps"):
+        assert resolve_precision("auto", torch.device(device)) == "fp32"
+        with pytest.raises(ValueError, match="native BF16"):
+            resolve_precision("bf16", torch.device(device))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device", lambda device: nullcontext())
+    calls = []
+
+    def supported(*, including_emulation):
+        calls.append(including_emulation)
+        return True
+
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", supported)
+    assert resolve_precision("auto", torch.device("cuda")) == "bf16"
+    assert resolve_precision("bf16", torch.device("cuda")) == "bf16"
+    assert resolve_precision("fp32", torch.device("cuda")) == "fp32"
+    assert calls and not any(calls)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda **kwargs: False)
+    assert resolve_precision("auto", torch.device("cuda")) == "fp32"
+    with pytest.raises(ValueError, match="native BF16"):
+        resolve_precision("bf16", torch.device("cuda"))
+    with pytest.raises(ValueError, match="unknown precision"):
+        resolve_precision("fp16", torch.device("cpu"))
+
+
+@pytest.mark.parametrize(
+    "device_name",
+    [
+        "cpu",
+        pytest.param(
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available()
+                or not torch.cuda.is_bf16_supported(including_emulation=False),
+                reason="native CUDA BF16 is unavailable",
+            ),
+        ),
+    ],
+)
+def test_bf16_forward_training_and_scoring_keep_fp32_states_and_probabilities(
+    tokenizer, device_name
+):
+    device = torch.device(device_name)
+    model = TinyClassifier().to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
+    before = model.head.weight.detach().clone()
+    logits_dtypes = []
+    handle = model.head.register_forward_hook(
+        lambda module, inputs, output: logits_dtypes.append(output.dtype)
+    )
+    kwargs = {"max_length": 8, "batch_size": 2, "device": device, "precision": "bf16"}
+    loss = train_items(
+        model,
+        optimizer,
+        tokenizer,
+        [{"tokens": ["a", "splitting"], "targets": {0: 1}}],
+        passes=2,
+        seed=23,
+        **kwargs,
+    )
+    assert math.isfinite(loss)
+    assert not torch.equal(before, model.head.weight)
+    assert all(parameter.dtype == torch.float32 for parameter in model.parameters())
+    assert all(
+        state["exp_avg"].dtype == state["exp_avg_sq"].dtype == torch.float32
+        for state in optimizer.state.values()
+    )
+    pool = [{"pool_idx": 0, "tokens": ["a", "splitting"]}]
+    scores = score_token_uncertainty(
+        model,
+        tokenizer,
+        pool,
+        metric="entropy",
+        excluded=set(),
+        **kwargs,
+    )
+    assert all(math.isfinite(value) and 0 <= value <= 1 for value in scores.values())
+    prediction = predict_tags(model, tokenizer, pool, **kwargs)
+    assert len(prediction[0]) == 2
+    handle.remove()
+    assert logits_dtypes and set(logits_dtypes) == {torch.bfloat16}
+    encoding = tokenizer(
+        [pool[0]["tokens"]],
+        is_split_into_words=True,
+        return_tensors="pt",
+    ).to(device)
+    with torch.no_grad(), torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+        logits = model(**encoding).logits
+    probabilities = logits[0, [1, 2]].float().softmax(-1)
+    expected = -(probabilities * probabilities.log()).sum(-1) / math.log(3)
+    assert list(scores.values()) == pytest.approx(expected.cpu().tolist())

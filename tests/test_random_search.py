@@ -158,25 +158,29 @@ def fake_experiment(monkeypatch, tmp_path):
         assert len(plan["configurations"]) == 2  # full plan precedes the first model call
         assert plan["uq_metrics"] == list(search.UQ_METRICS)
         calls.append(kwargs)
-        gap = {"entropy": 0.2, "least_confidence": -0.1, "margin": 0.0}[kwargs["uq_metric"]]
-        results = []
-        for seed_id in kwargs["model_seeds"]:
-            for round_id, percent in enumerate((0, 100)):
-                for arm in ("uncertainty", "random"):
-                    results.append(
-                        {
-                            "seed": seed_id,
-                            "round": round_id,
-                            "total_rounds": 1,
-                            "arm": arm,
-                            "percent_acquired": percent,
-                            "entity_f1": 0.5 + (gap if arm == "uncertainty" and round_id else 0),
-                        }
-                    )
-                kwargs["progress_callback"](list(results))
-        return results, [{"seed": 0, "arm": "random", "token": "pool"}]
+        comparisons = {}
+        for metric in kwargs["uq_metrics"]:
+            gap = {"entropy": 0.2, "least_confidence": -0.1, "margin": 0.0}[metric]
+            results = []
+            for seed_id in kwargs["model_seeds"]:
+                for round_id, percent in enumerate((0, 100)):
+                    for arm in ("uncertainty", "random"):
+                        results.append(
+                            {
+                                "seed": seed_id,
+                                "round": round_id,
+                                "total_rounds": 1,
+                                "arm": arm,
+                                "percent_acquired": percent,
+                                "entity_f1": 0.5
+                                + (gap if arm == "uncertainty" and round_id else 0),
+                            }
+                        )
+                    kwargs["progress_callback"](metric, list(results))
+            comparisons[metric] = (results, [{"seed": 0, "arm": "random", "token": "pool"}])
+        return comparisons
 
-    monkeypatch.setattr(search, "run_active_learning", fake_run)
+    monkeypatch.setattr(search, "run_metric_comparisons", fake_run)
     return calls
 
 
@@ -185,22 +189,13 @@ def test_sweep_evaluates_original_test_and_saves_every_pair(tmp_path, fake_exper
     root = tmp_path / "example"
     summary = json.loads((root / "summary.json").read_text())
     assert summary["complete"]
-    assert len(fake_experiment) == 6
+    assert len(fake_experiment) == 2
     assert len(summary["comparisons"]) == 6
     assert [row["wins"] for row in summary["by_metric"]] == [2, 0, 0]
     assert [row["losses"] for row in summary["by_metric"]] == [0, 2, 0]
     assert [row["ties"] for row in summary["by_metric"]] == [0, 0, 2]
-    for offset in (0, 3):
-        group = fake_experiment[offset : offset + 3]
-        settings = [
-            {
-                key: value
-                for key, value in row.items()
-                if key not in {"uq_metric", "progress_callback"}
-            }
-            for row in group
-        ]
-        assert settings[0] == settings[1] == settings[2]
+    assert all(call["uq_metrics"] == list(search.UQ_METRICS) for call in fake_experiment)
+    assert all(call["precision"] == "fp32" for call in fake_experiment)
     for comparison in summary["comparisons"]:
         run_dir = root / comparison["run_dir"]
         config = json.loads((run_dir / "config.json").read_text())
@@ -220,17 +215,17 @@ def test_complete_resume_does_not_load_data_and_rejects_plan_changes(
         search, "download_pet_ner", lambda: pytest.fail("complete resume must not load data")
     )
     run_search(tmp_path, seed_workers=2)
-    assert len(fake_experiment) == 6
+    assert len(fake_experiment) == 2
     for overrides in ({"num_configs": 1}, {"sampler_seed": 9}, {"checkpoint": "roberta-base"}):
         with pytest.raises(SystemExit, match="2"):
             run_search(tmp_path, **overrides)
-    assert len(fake_experiment) == 6
+    assert len(fake_experiment) == 2
 
 
 def test_failed_run_is_reported_and_resume_keeps_completed_runs(
     tmp_path, fake_experiment, monkeypatch
 ):
-    original = search.run_active_learning
+    original = search.run_metric_comparisons
     count = 0
 
     def fail_second(*args, **kwargs):
@@ -240,7 +235,7 @@ def test_failed_run_is_reported_and_resume_keeps_completed_runs(
             raise RuntimeError("model failed")
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(search, "run_active_learning", fail_second)
+    monkeypatch.setattr(search, "run_metric_comparisons", fail_second)
     with pytest.raises(RuntimeError, match="model failed"):
         run_search(tmp_path)
     root = tmp_path / "example"
@@ -248,19 +243,19 @@ def test_failed_run_is_reported_and_resume_keeps_completed_runs(
     assert not first["complete"]
     assert [row["status"] for row in first["comparisons"]] == [
         "complete",
+        "complete",
+        "complete",
         "failed",
-        "pending",
-        "pending",
-        "pending",
-        "pending",
+        "failed",
+        "failed",
     ]
     saved = first["comparisons"][0]["run_dir"]
-    monkeypatch.setattr(search, "run_active_learning", original)
+    monkeypatch.setattr(search, "run_metric_comparisons", original)
     run_search(tmp_path)
     final = json.loads((root / "summary.json").read_text())
     assert final["complete"]
     assert final["comparisons"][0]["run_dir"] == saved
-    assert len(fake_experiment) == 6
+    assert len(fake_experiment) == 2
 
 
 def test_corrupt_completed_output_is_not_silently_skipped(tmp_path, fake_experiment):
@@ -272,7 +267,62 @@ def test_corrupt_completed_output_is_not_silently_skipped(tmp_path, fake_experim
         run_search(tmp_path)
 
 
-def test_progress_tracks_each_seed_and_resets_between_metrics(
+def test_partial_export_failure_resumes_only_missing_metrics(
+    tmp_path, fake_experiment, monkeypatch
+):
+    original = search.write_run
+    count = 0
+
+    def fail_second(*args, **kwargs):
+        nonlocal count
+        count += 1
+        if count == 2:
+            raise OSError("disk unavailable")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(search, "write_run", fail_second)
+    with pytest.raises(OSError, match="disk unavailable"):
+        run_search(tmp_path)
+    root = tmp_path / "example"
+    before = json.loads((root / "summary.json").read_text())
+    assert [row["status"] for row in before["comparisons"]] == [
+        "complete",
+        "failed",
+        "failed",
+        "pending",
+        "pending",
+        "pending",
+    ]
+    saved_dir = before["comparisons"][0]["run_dir"]
+    saved_bytes = (root / saved_dir / "results.csv").read_bytes()
+    monkeypatch.setattr(search, "write_run", original)
+    run_search(tmp_path)
+    assert fake_experiment[1]["uq_metrics"] == ["least_confidence", "margin"]
+    after = json.loads((root / "summary.json").read_text())
+    assert after["complete"]
+    assert after["comparisons"][0]["run_dir"] == saved_dir
+    assert (root / saved_dir / "results.csv").read_bytes() == saved_bytes
+
+
+def test_resume_rejects_effective_precision_changes(tmp_path, fake_experiment, monkeypatch):
+    run_search(tmp_path)
+    monkeypatch.setattr(search, "resolve_precision", lambda *args: "bf16")
+    with pytest.raises(SystemExit, match="2"):
+        run_search(tmp_path)
+    assert len(fake_experiment) == 2
+
+
+def test_unsupported_bf16_fails_before_loading_data_or_creating_a_plan(tmp_path, monkeypatch):
+    monkeypatch.setattr(search, "get_device", lambda: "cpu")
+    monkeypatch.setattr(
+        search, "download_pet_ner", lambda: pytest.fail("must fail before download")
+    )
+    with pytest.raises(ValueError, match="native BF16"):
+        run_search(tmp_path, precision="bf16")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_progress_tracks_each_seed_and_resets_between_configurations(
     tmp_path, fake_experiment, monkeypatch
 ):
     displays = []
@@ -284,7 +334,7 @@ def test_progress_tracks_each_seed_and_resets_between_metrics(
         return display
 
     monkeypatch.setattr(search, "Progress", make_progress)
-    original_run = search.run_active_learning
+    original_run = search.run_metric_comparisons
     snapshots = []
     starts = []
 
@@ -293,23 +343,23 @@ def test_progress_tracks_each_seed_and_resets_between_metrics(
         starts.append([task.completed for task in display.tasks])
         callback = kwargs["progress_callback"]
 
-        def inspect_progress(rows):
-            callback(rows)
+        def inspect_progress(metric, rows):
+            callback(metric, rows)
             snapshots.append(
                 [(task.completed, task.total, task.description) for task in display.tasks]
             )
 
         return original_run(*args, **{**kwargs, "progress_callback": inspect_progress})
 
-    monkeypatch.setattr(search, "run_active_learning", inspect_run)
+    monkeypatch.setattr(search, "run_metric_comparisons", inspect_run)
     run_search(tmp_path)
-    assert starts == [[index, 0, 0] for index in range(6)]
+    assert starts == [[index, 0, 0] for index in (0, 3)]
     # Seed 0 is finished while seed 1 is still waiting, then seed 1 catches up.
-    assert snapshots[1][1] == (1, 1, "Seed 0 · round 1/1")
+    assert snapshots[1][1] == (1, 1, "Seed 0 · entropy · round 1/1")
     assert snapshots[1][2] == (0, 1, "Seed 1 · waiting / bootstrap")
     assert snapshots[1][0][0] == pytest.approx(0.5)
     assert snapshots[2][1] == snapshots[1][1]
-    assert snapshots[2][2] == (0, 1, "Seed 1 · round 0/1")
+    assert snapshots[2][2] == (0, 1, "Seed 1 · entropy · round 0/1")
     assert snapshots[2][0][0] == pytest.approx(0.75)
     assert displays[0].tasks[0].completed == displays[0].tasks[0].total == 6
-    assert displays[0].tasks[0].description == "Configurations 2/2 · margin"
+    assert displays[0].tasks[0].description == "Configurations 2/2"

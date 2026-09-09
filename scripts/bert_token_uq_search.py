@@ -16,10 +16,10 @@ from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, T
 from transformers.utils import logging as transformers_logging
 
 from uq_pet import active_learning
-from uq_pet.active_learning import run_active_learning, write_run
+from uq_pet.active_learning import run_metric_comparisons, write_run
 from uq_pet.experiment import ExperimentConfig, RandomSearchConfig
 from uq_pet.pet_data import download_pet_ner, load_pet_splits
-from uq_pet.token_model import UQ_METRICS, get_device
+from uq_pet.token_model import UQ_METRICS, get_device, resolve_precision
 
 CONSOLE = Console()
 SEARCH_SPACE = {
@@ -107,7 +107,8 @@ def sample_plan(config: RandomSearchConfig) -> dict:
         exclude={"seed_workers", "uq_metric", *SEARCH_SPACE}
     )
     return {
-        "version": 1,
+        "version": 2,
+        "shared_bootstrap_and_random": True,
         "evaluation_split": "test",
         "sampling": "uniform_without_replacement",
         "sampler_seed": config.sampler_seed,
@@ -249,6 +250,9 @@ def load_search_config(
 def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     config = load_search_config(args, parser)
     plan = sample_plan(config)
+    device = get_device()
+    effective_precision = resolve_precision(config.precision, device)
+    plan["effective_precision"] = effective_precision
     root = config.sweeps_dir / config.sweep_name
     plan_path = root / "plan.json"
     if plan_path.exists():
@@ -269,7 +273,6 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
 
     # Use the original 5/328/84 split. Test labels never enter acquisition or training.
     seed_examples, pool_inputs, pool_gold, test_examples = load_pet_splits(download_pet_ner())
-    device = get_device()
     total = config.num_configs * len(plan["uq_metrics"])
     completed_runs = sum(row["status"] == "complete" for row in summary["comparisons"])
     with Progress(
@@ -284,32 +287,45 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             seed: progress.add_task(f"Seed {seed} · waiting / bootstrap", total=1)
             for seed in config.model_seeds
         }
-        for index, comparison in enumerate(summary["comparisons"]):
-            if comparison["status"] == "complete":
+        for index, entry in enumerate(plan["configurations"]):
+            pending_metrics = [
+                row["uq_metric"]
+                for row in summary["comparisons"]
+                if row["config_id"] == entry["config_id"] and row["status"] != "complete"
+            ]
+            if not pending_metrics:
                 continue
-            slot = root / "runs" / comparison["config_id"] / comparison["uq_metric"]
-            slot.mkdir(parents=True, exist_ok=True)
+            slots = {
+                metric: root / "runs" / entry["config_id"] / metric for metric in pending_metrics
+            }
+            for slot in slots.values():
+                slot.mkdir(parents=True, exist_ok=True)
+                # Old partial progress does not describe this fresh bootstrap attempt.
+                (slot / "progress.csv").unlink(missing_ok=True)
             experiment = ExperimentConfig.model_validate(
                 {
                     **plan["fixed_config"],
-                    **comparison["parameters"],
-                    "uq_metric": comparison["uq_metric"],
+                    **entry["parameters"],
                     "seed_workers": config.seed_workers,
                 }
             )
-            description = (
-                f"Configurations {index // len(plan['uq_metrics']) + 1}/{config.num_configs}"
-                f" · {comparison['uq_metric']}"
-            )
+            description = f"Configurations {index + 1}/{config.num_configs}"
             progress.update(overall_task, description=description)
             for seed, task in seed_tasks.items():
                 progress.reset(task, total=1, description=f"Seed {seed} · waiting / bootstrap")
-            seed_fractions = dict.fromkeys(seed_tasks, 0.0)
+            seed_fractions = {
+                (metric, seed): 0.0 for metric in pending_metrics for seed in seed_tasks
+            }
 
             def update_progress(
-                rows, slot=slot, seed_fractions=seed_fractions, base_completed=completed_runs
+                metric,
+                rows,
+                slots=slots,
+                seed_fractions=seed_fractions,
+                base_completed=completed_runs,
             ):
-                # The engine publishes only completed pairs, after bootstrap and each round.
+                # Each metric receives complete pairs, including the shared random rows.
+                slot = slots[metric]
                 temporary = slot / "progress.tmp"
                 pl.DataFrame(rows).write_csv(temporary)
                 temporary.replace(slot / "progress.csv")
@@ -319,49 +335,63 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                     seed_tasks[seed],
                     total=latest["total_rounds"],
                     completed=latest["round"],
-                    description=f"Seed {seed} · round {latest['round']}/{latest['total_rounds']}",
+                    description=f"Seed {seed} · {metric} · round {latest['round']}/{latest['total_rounds']}",
                 )
-                seed_fractions[seed] = (latest["round"] + 1) / (latest["total_rounds"] + 1)
+                seed_fractions[metric, seed] = (latest["round"] + 1) / (latest["total_rounds"] + 1)
                 progress.update(
                     overall_task,
-                    completed=base_completed + sum(seed_fractions.values()) / len(seed_fractions),
+                    completed=base_completed + sum(seed_fractions.values()) / len(seed_tasks),
                 )
 
             try:
-                results, selections = run_active_learning(
+                settings = experiment.active_learning_kwargs()
+                settings.pop("uq_metric")
+                comparisons = run_metric_comparisons(
                     seed_examples,
                     pool_inputs,
                     pool_gold,
                     test_examples,
-                    **experiment.active_learning_kwargs(),
+                    **{**settings, "precision": effective_precision},
+                    uq_metrics=pending_metrics,
                     device=device,
                     progress_callback=update_progress,
                 )
                 progress.update(overall_task, description=f"{description} · saving")
-                stats = paired_summary(results)
-                run_dir = write_run(
-                    {
-                        **experiment.resolved_dict(),
-                        "evaluation_split": "test",
-                        "mode": "random_search",
-                        "sweep_name": config.sweep_name,
-                        "config_id": comparison["config_id"],
-                        "seed_sentences": len(seed_examples),
-                        "pool_sentences": len(pool_inputs),
-                        "test_sentences": len(test_examples),
-                    },
-                    results,
-                    selections,
-                    results_dir=slot,
-                )
-                write_json(
-                    slot / "completed.json", {"run_dir": str(run_dir.relative_to(root)), **stats}
-                )
-                (slot / "failure.json").unlink(missing_ok=True)
-                completed_runs += 1
-                progress.update(overall_task, completed=completed_runs, description=description)
+                for metric in pending_metrics:
+                    results, selections = comparisons[metric]
+                    slot = slots[metric]
+                    paired_config = experiment.model_copy(update={"uq_metric": metric})
+                    stats = paired_summary(results)
+                    run_dir = write_run(
+                        {
+                            **paired_config.resolved_dict(),
+                            "effective_precision": effective_precision,
+                            "shared_bootstrap_and_random": True,
+                            "evaluation_split": "test",
+                            "mode": "random_search",
+                            "sweep_name": config.sweep_name,
+                            "config_id": entry["config_id"],
+                            "seed_sentences": len(seed_examples),
+                            "pool_sentences": len(pool_inputs),
+                            "test_sentences": len(test_examples),
+                        },
+                        results,
+                        selections,
+                        results_dir=slot,
+                    )
+                    write_json(
+                        slot / "completed.json",
+                        {"run_dir": str(run_dir.relative_to(root)), **stats},
+                    )
+                    (slot / "failure.json").unlink(missing_ok=True)
+                    completed_runs += 1
+                    progress.update(overall_task, completed=completed_runs, description=description)
             except BaseException as error:
-                write_json(slot / "failure.json", {"error": f"{type(error).__name__}: {error}"})
+                for slot in slots.values():
+                    if not (slot / "completed.json").exists():
+                        write_json(
+                            slot / "failure.json", {"error": f"{type(error).__name__}: {error}"}
+                        )
                 raise
             finally:
                 write_summary(root, plan)

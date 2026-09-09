@@ -3,7 +3,7 @@
 import logging
 import math
 import random
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 
 import numpy as np
@@ -45,6 +45,29 @@ def get_device() -> torch.device:
     if torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def resolve_precision(precision: str, device: torch.device) -> str:
+    """Use native CUDA BF16 when available; reject unsupported explicit requests."""
+    if precision not in {"auto", "fp32", "bf16"}:
+        raise ValueError(f"unknown precision {precision!r}")
+    device = torch.device(device)
+    supported = False
+    if device.type == "cuda" and torch.cuda.is_available():
+        with torch.cuda.device(device):
+            supported = torch.cuda.is_bf16_supported(including_emulation=False)
+    if precision == "bf16" and not supported:
+        raise ValueError("BF16 requires a CUDA GPU with native BF16 support; use auto or fp32")
+    return ("bf16" if supported else "fp32") if precision == "auto" else precision
+
+
+def _autocast(device: torch.device, precision: str):
+    """Autocast forward operations while retaining FP32 parameters and optimizer state."""
+    return (
+        torch.autocast(device_type=device.type, dtype=torch.bfloat16)
+        if precision == "bf16"
+        else nullcontext()
+    )
 
 
 @contextmanager
@@ -131,6 +154,7 @@ def train_items(
     device: torch.device,
     seed: int,
     tokenization_cache: dict | None = None,
+    precision: str = "fp32",
 ) -> float:
     """Update with isolated seeded randomness, returning mean batch loss."""
     if passes < 0:
@@ -155,7 +179,8 @@ def train_items(
         for _ in range(passes):
             for encoding, labels in loader:
                 inputs = {name: tensor.to(device) for name, tensor in encoding.items()}
-                loss = model(**inputs, labels=labels.to(device)).loss
+                with _autocast(device, precision):
+                    loss = model(**inputs, labels=labels.to(device)).loss
                 loss.backward()
                 optimizer.step()
                 optimizer.zero_grad()
@@ -181,6 +206,7 @@ def load_token_classifier(checkpoint: str, device: torch.device):
     try:
         model = AutoModelForTokenClassification.from_pretrained(
             checkpoint,
+            dtype=torch.float32,
             num_labels=len(NER_TAGS),
             id2label=dict(enumerate(NER_TAGS)),
             label2id={label: idx for idx, label in enumerate(NER_TAGS)},
@@ -286,6 +312,7 @@ def score_token_uncertainty(
     batch_size: int,
     device: torch.device,
     prepared_batches: list[InferenceBatch] | None = None,
+    precision: str = "fp32",
 ) -> dict[TokenKey, float]:
     """Score remaining words from first-subword class probabilities."""
     if metric not in UQ_METRICS:
@@ -312,8 +339,9 @@ def score_token_uncertainty(
         if not keys:
             continue
         inputs = {name: tensor.to(device) for name, tensor in batch.inputs.items()}
-        logits = model(**inputs).logits
-        probabilities = logits[rows, columns].softmax(dim=-1)
+        with _autocast(device, precision):
+            logits = model(**inputs).logits
+        probabilities = logits[rows, columns].float().softmax(dim=-1)
         values = _uncertainty_values(probabilities, metric).cpu().tolist()
         scores.update(zip(keys, values, strict=True))
     return scores
@@ -329,6 +357,7 @@ def predict_tags(
     batch_size: int,
     device: torch.device,
     prepared_batches: list[InferenceBatch] | None = None,
+    precision: str = "fp32",
 ) -> list[list[str]]:
     """Predict one tag per original word, rejecting truncated evaluation data."""
     predictions: list[list[str]] = []
@@ -346,7 +375,9 @@ def predict_tags(
             raise ValueError("evaluation sentence was truncated; increase max_length")
     for batch in prepared_batches:
         inputs = {name: tensor.to(device) for name, tensor in batch.inputs.items()}
-        predicted_ids = model(**inputs).logits.argmax(dim=-1).cpu().tolist()
+        with _autocast(device, precision):
+            logits = model(**inputs).logits
+        predicted_ids = logits.argmax(dim=-1).cpu().tolist()
 
         for batch_idx, positions in enumerate(batch.word_positions):
             predictions.append(
@@ -367,6 +398,7 @@ def evaluate_model(
     batch_size: int,
     device: torch.device,
     prepared_batches: list[InferenceBatch] | None = None,
+    precision: str = "fp32",
 ) -> dict[str, float]:
     predictions = predict_tags(
         model,
@@ -376,6 +408,7 @@ def evaluate_model(
         batch_size=batch_size,
         device=device,
         prepared_batches=prepared_batches,
+        precision=precision,
     )
     gold = [[NER_TAGS[tag] for tag in example["ner_tags"]] for example in examples]
     total = sum(len(tags) for tags in gold)

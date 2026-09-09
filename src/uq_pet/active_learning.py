@@ -18,9 +18,11 @@ from transformers.utils import logging as transformers_logging
 
 from uq_pet.pet_data import NER_TAGS, RESULTS_DIR, TokenKey
 from uq_pet.token_model import (
+    UQ_METRICS,
     evaluate_model,
     load_token_classifier,
     prepare_inference_batches,
+    resolve_precision,
     score_token_uncertainty,
     scoreable_token_keys,
     set_seed,
@@ -167,9 +169,36 @@ def run_active_learning(
     pool_gold: dict[TokenKey, int],
     test_examples: list[dict],
     *,
+    uq_metric: str,
+    progress_callback: Callable[[list[dict]], None] | None = None,
+    **settings,
+) -> tuple[list[dict], list[dict]]:
+    """Run one paired comparison using the same engine as all-metric sweeps."""
+    comparisons = run_metric_comparisons(
+        seed_examples,
+        pool_inputs,
+        pool_gold,
+        test_examples,
+        uq_metrics=[uq_metric],
+        progress_callback=(
+            (lambda metric, rows: progress_callback(rows))
+            if progress_callback is not None
+            else None
+        ),
+        **settings,
+    )
+    return comparisons[uq_metric]
+
+
+def run_metric_comparisons(
+    seed_examples: list[dict],
+    pool_inputs: list[dict],
+    pool_gold: dict[TokenKey, int],
+    test_examples: list[dict],
+    *,
     checkpoint: str,
     model_seeds: list[int],
-    uq_metric: str,
+    uq_metrics: list[str],
     k: int,
     max_pool_percent: float,
     bootstrap_epochs: int,
@@ -182,9 +211,19 @@ def run_active_learning(
     max_length: int,
     device: torch.device,
     seed_workers: int = 1,
-    progress_callback: Callable[[list[dict]], None] | None = None,
-) -> tuple[list[dict], list[dict]]:
-    """Run uncertainty and random online learners from the same bootstrap state."""
+    precision: str = "auto",
+    progress_callback: Callable[[str, list[dict]], None] | None = None,
+) -> dict[str, tuple[list[dict], list[dict]]]:
+    """Share one bootstrap and random trajectory per seed across the requested metrics.
+
+    Metrics run sequentially, keeping at most two trained models on the device.
+    CPU bootstrap state and label/evaluation records are reused only within this call.
+    """
+    if not uq_metrics or len(set(uq_metrics)) != len(uq_metrics):
+        raise ValueError("uq_metrics must be nonempty and unique")
+    if any(metric not in UQ_METRICS for metric in uq_metrics):
+        raise ValueError(f"uq_metrics must be drawn from {UQ_METRICS}")
+    precision = resolve_precision(precision, device)
     if bootstrap_epochs < 0:
         raise ValueError(f"bootstrap_epochs must be non-negative, got {bootstrap_epochs}")
     if not model_seeds:
@@ -195,7 +234,8 @@ def run_active_learning(
         raise ValueError("model seeds must be unique")
     settings = {
         "checkpoint": checkpoint,
-        "uq_metric": uq_metric,
+        "uq_metrics": uq_metrics,
+        "precision": precision,
         "k": k,
         "max_pool_percent": max_pool_percent,
         "bootstrap_epochs": bootstrap_epochs,
@@ -216,8 +256,7 @@ def run_active_learning(
             progress_callback=progress_callback,
         )
 
-    results: list[dict] = []
-    selections: list[dict] = []
+    comparisons = {metric: ([], []) for metric in uq_metrics}
 
     for model_seed in model_seeds:
         CONSOLE.rule(f"[bold cyan]Seed {model_seed} · bootstrap[/]")
@@ -269,6 +308,7 @@ def run_active_learning(
             device=device,
             seed=model_seed,
             tokenization_cache=tokenization_cache,
+            precision=precision,
         )
         baseline = evaluate_model(
             base_model,
@@ -278,6 +318,7 @@ def run_active_learning(
             batch_size=score_batch_size,
             device=device,
             prepared_batches=test_batches,
+            precision=precision,
         )
         baseline["train_loss"] = bootstrap_loss
         baseline["n_new"] = 0
@@ -287,149 +328,164 @@ def run_active_learning(
             f"[dim]entity F1[/] [bold]{baseline['entity_f1']:.4f}[/]  "
             f"[dim]token accuracy[/] [bold]{baseline['token_accuracy']:.4f}[/]"
         )
-        for arm in ("uncertainty", "random"):
-            results.append(
-                _result_row(
-                    model_seed,
-                    arm,
-                    0,
-                    0,
-                    baseline,
-                    scoreable_tokens=len(scoreable),
-                    token_budget=token_budget,
-                    total_rounds=rounds,
-                )
-            )
-
+        # Keep the common fitted state on CPU while each metric owns its live model.
+        # AdamW load_state_dict moves each copied tensor to the new parameter device.
+        base_model.to("cpu")
         bootstrap_optimizer_state = copy.deepcopy(bootstrap_optimizer.state_dict())
+        for state in bootstrap_optimizer_state["state"].values():
+            for name, value in state.items():
+                if isinstance(value, torch.Tensor):
+                    state[name] = value.cpu()
         del bootstrap_optimizer
+        random_results = {}
+        random_selections = {}
 
-        models = {
-            "uncertainty": copy.deepcopy(base_model),
-            "random": copy.deepcopy(base_model),
-        }
-        del base_model
-        optimizers = {}
-        for arm, model in models.items():
-            optimizer = torch.optim.AdamW(
-                model.parameters(), lr=learning_rate, weight_decay=weight_decay
-            )
-            optimizer.load_state_dict(copy.deepcopy(bootstrap_optimizer_state))
-            optimizers[arm] = optimizer
-        del bootstrap_optimizer_state
-
-        acquired = {"uncertainty": set(), "random": set()}
-        replay_banks = {
-            "uncertainty": seed_replay_items(seed_examples),
-            "random": seed_replay_items(seed_examples),
-        }
-
-        if progress_callback is not None:
-            progress_callback(list(results))
-        for round_idx in range(1, rounds + 1):
-            round_k = min(k, token_budget - (round_idx - 1) * k)
-            round_results = {}
-            uq_scores = score_token_uncertainty(
-                models["uncertainty"],
-                tokenizer,
-                pool_inputs,
-                metric=uq_metric,
-                excluded=acquired["uncertainty"],
-                max_length=max_length,
-                batch_size=score_batch_size,
-                device=device,
-                prepared_batches=pool_batches,
-            )
-            chosen = {
-                "uncertainty": select_top_k(uq_scores, round_k),
-                "random": select_random(
-                    scoreable - acquired["random"],
-                    round_k,
-                    seed=model_seed * 10_000 + round_idx,
-                ),
-            }
-
-            for arm_idx, arm in enumerate(("uncertainty", "random")):
-                replay = sample_replay(
-                    replay_banks[arm],
-                    round_k,
-                    replay_ratio,
-                    seed=model_seed * 100_000 + round_idx * 10 + arm_idx,
+        for metric_index, uq_metric in enumerate(uq_metrics):
+            results, selections = comparisons[uq_metric]
+            for arm in ("uncertainty", "random"):
+                results.append(
+                    _result_row(
+                        model_seed,
+                        arm,
+                        0,
+                        0,
+                        baseline,
+                        scoreable_tokens=len(scoreable),
+                        token_budget=token_budget,
+                        total_rounds=rounds,
+                    )
                 )
-                new_items = reveal_pool_items(chosen[arm], pool_inputs, pool_gold)
-                loss = train_items(
-                    models[arm],
-                    optimizers[arm],
-                    tokenizer,
-                    [*new_items, *replay],
-                    passes=update_passes,
-                    batch_size=batch_size,
-                    max_length=max_length,
-                    device=device,
-                    seed=model_seed * 100_000 + round_idx * 10 + arm_idx,
-                    tokenization_cache=tokenization_cache,
+            active_arms = ("uncertainty", "random") if metric_index == 0 else ("uncertainty",)
+            models = {arm: copy.deepcopy(base_model).to(device) for arm in active_arms}
+            optimizers = {}
+            for arm, model in models.items():
+                optimizer = torch.optim.AdamW(
+                    model.parameters(), lr=learning_rate, weight_decay=weight_decay
                 )
-                acquired[arm].update(chosen[arm])
-                replay_banks[arm].extend(new_items)
-                metrics = evaluate_model(
-                    models[arm],
+                optimizer.load_state_dict(copy.deepcopy(bootstrap_optimizer_state))
+                optimizers[arm] = optimizer
+            acquired = {arm: set() for arm in active_arms}
+            replay_banks = {arm: seed_replay_items(seed_examples) for arm in active_arms}
+
+            if progress_callback is not None:
+                progress_callback(uq_metric, list(results))
+            for round_idx in range(1, rounds + 1):
+                round_k = min(k, token_budget - (round_idx - 1) * k)
+                round_results = {}
+                uq_scores = score_token_uncertainty(
+                    models["uncertainty"],
                     tokenizer,
-                    test_examples,
+                    pool_inputs,
+                    metric=uq_metric,
+                    excluded=acquired["uncertainty"],
                     max_length=max_length,
                     batch_size=score_batch_size,
                     device=device,
-                    prepared_batches=test_batches,
+                    prepared_batches=pool_batches,
+                    precision=precision,
                 )
-                metrics.update(
-                    {
-                        "train_loss": loss,
-                        "n_new": len(new_items),
-                        "n_replay": len(replay),
-                    }
-                )
-                result = _result_row(
-                    model_seed,
-                    arm,
-                    round_idx,
-                    len(acquired[arm]),
-                    metrics,
-                    scoreable_tokens=len(scoreable),
-                    token_budget=token_budget,
-                    total_rounds=rounds,
-                )
-                results.append(result)
-                round_results[arm] = result
-
-                for pool_idx, word_idx in chosen[arm]:
-                    example = pool_inputs[pool_idx]
-                    selections.append(
-                        {
-                            "seed": model_seed,
-                            "arm": arm,
-                            "round": round_idx,
-                            "pool_idx": pool_idx,
-                            "word_idx": word_idx,
-                            "document_name": example["document_name"],
-                            "sentence_id": example["sentence_id"],
-                            "token": example["tokens"][word_idx],
-                            "label": NER_TAGS[pool_gold[(pool_idx, word_idx)]],
-                            "uq_metric": uq_metric if arm == "uncertainty" else None,
-                            "uq_score": uq_scores[(pool_idx, word_idx)]
-                            if arm == "uncertainty"
-                            else None,
-                        }
+                chosen = {"uncertainty": select_top_k(uq_scores, round_k)}
+                if metric_index == 0:
+                    chosen["random"] = select_random(
+                        scoreable - acquired["random"],
+                        round_k,
+                        seed=model_seed * 10_000 + round_idx,
                     )
-            if progress_callback is not None:
-                progress_callback(list(results))
-            CONSOLE.print(_round_progress_table(round_results, uq_metric))
 
-        del models, optimizers, model, optimizer, tokenizer, pool_batches, test_batches
+                for arm_idx, arm in enumerate(active_arms):
+                    # Keep the original per-arm RNG seeds independent of metric/order.
+                    update_seed = model_seed * 100_000 + round_idx * 10 + arm_idx
+                    replay = sample_replay(
+                        replay_banks[arm],
+                        round_k,
+                        replay_ratio,
+                        seed=update_seed,
+                    )
+                    new_items = reveal_pool_items(chosen[arm], pool_inputs, pool_gold)
+                    loss = train_items(
+                        models[arm],
+                        optimizers[arm],
+                        tokenizer,
+                        [*new_items, *replay],
+                        passes=update_passes,
+                        batch_size=batch_size,
+                        max_length=max_length,
+                        device=device,
+                        seed=update_seed,
+                        tokenization_cache=tokenization_cache,
+                        precision=precision,
+                    )
+                    acquired[arm].update(chosen[arm])
+                    replay_banks[arm].extend(new_items)
+                    metrics = evaluate_model(
+                        models[arm],
+                        tokenizer,
+                        test_examples,
+                        max_length=max_length,
+                        batch_size=score_batch_size,
+                        device=device,
+                        prepared_batches=test_batches,
+                        precision=precision,
+                    )
+                    metrics.update(
+                        train_loss=loss,
+                        n_new=len(new_items),
+                        n_replay=len(replay),
+                    )
+                    result = _result_row(
+                        model_seed,
+                        arm,
+                        round_idx,
+                        len(acquired[arm]),
+                        metrics,
+                        scoreable_tokens=len(scoreable),
+                        token_budget=token_budget,
+                        total_rounds=rounds,
+                    )
+                    results.append(result)
+                    round_results[arm] = result
+                    selected_rows = []
+                    for pool_idx, word_idx in chosen[arm]:
+                        example = pool_inputs[pool_idx]
+                        selected_rows.append(
+                            {
+                                "seed": model_seed,
+                                "arm": arm,
+                                "round": round_idx,
+                                "pool_idx": pool_idx,
+                                "word_idx": word_idx,
+                                "document_name": example["document_name"],
+                                "sentence_id": example["sentence_id"],
+                                "token": example["tokens"][word_idx],
+                                "label": NER_TAGS[pool_gold[(pool_idx, word_idx)]],
+                                "uq_metric": uq_metric if arm == "uncertainty" else None,
+                                "uq_score": uq_scores[(pool_idx, word_idx)]
+                                if arm == "uncertainty"
+                                else None,
+                            }
+                        )
+                    selections.extend(selected_rows)
+                    if arm == "random":
+                        random_results[round_idx] = result
+                        random_selections[round_idx] = selected_rows
+                if metric_index > 0:
+                    # Preserve the ordinary paired export and complete-round snapshots.
+                    result = dict(random_results[round_idx])
+                    results.append(result)
+                    round_results["random"] = result
+                    selections.extend(dict(row) for row in random_selections[round_idx])
+                if progress_callback is not None:
+                    progress_callback(uq_metric, list(results))
+                CONSOLE.print(_round_progress_table(round_results, uq_metric))
+            del models, optimizers, model, optimizer
+
+        del base_model, bootstrap_optimizer_state, tokenizer, pool_batches, test_batches
         if torch.backends.mps.is_available():
             torch.mps.empty_cache()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    return results, selections
+    return comparisons
 
 
 def _seed_worker(connection, args: tuple, kwargs: dict, cpu_threads: int) -> None:
@@ -439,10 +495,10 @@ def _seed_worker(connection, args: tuple, kwargs: dict, cpu_threads: int) -> Non
         CONSOLE.quiet = True
         transformers_logging.disable_progress_bar()
 
-        def publish(rows):
-            connection.send(("progress", rows[-2:]))
+        def publish(metric, rows):
+            connection.send(("progress", (metric, rows[-2:])))
 
-        result = run_active_learning(*args, **kwargs, progress_callback=publish)
+        result = run_metric_comparisons(*args, **kwargs, progress_callback=publish)
         connection.send(("result", result))
     except BaseException:
         connection.send(("error", traceback.format_exc()))
@@ -456,14 +512,14 @@ def _run_concurrent_seeds(
     *,
     model_seeds: list[int],
     seed_workers: int,
-    progress_callback: Callable[[list[dict]], None] | None,
-) -> tuple[list[dict], list[dict]]:
+    progress_callback: Callable[[str, list[dict]], None] | None,
+) -> dict[str, tuple[list[dict], list[dict]]]:
     """Schedule isolated seeds and append paired progress in arrival order."""
     context = multiprocessing.get_context("spawn")
     pending = iter(model_seeds)
     active = {}
     completed = {}
-    progress = []
+    progress = {metric: [] for metric in kwargs["uq_metrics"]}
     cpu_threads = max(1, torch.get_num_threads() // seed_workers)
 
     def launch_next():
@@ -502,15 +558,14 @@ def _run_concurrent_seeds(
                 if kind == "error":
                     raise RuntimeError(f"Seed {seed} failed:\n{payload}")
                 if kind == "progress":
-                    progress.extend(payload)
+                    metric, rows = payload
+                    progress[metric].extend(rows)
                     CONSOLE.print(
                         f"[bold cyan]Seed {seed}[/]",
-                        _round_progress_table(
-                            {row["arm"]: row for row in payload}, kwargs["uq_metric"]
-                        ),
+                        _round_progress_table({row["arm"]: row for row in rows}, metric),
                     )
                     if progress_callback is not None:
-                        progress_callback(list(progress))
+                        progress_callback(metric, list(progress[metric]))
                 elif kind == "result":
                     completed[seed] = payload
                     process.join()
@@ -529,10 +584,13 @@ def _run_concurrent_seeds(
             connection.close()
 
     # Persist deterministic seed/round/arm order even when workers finish out of order.
-    return (
-        [row for seed in model_seeds for row in completed[seed][0]],
-        [row for seed in model_seeds for row in completed[seed][1]],
-    )
+    return {
+        metric: (
+            [row for seed in model_seeds for row in completed[seed][metric][0]],
+            [row for seed in model_seeds for row in completed[seed][metric][1]],
+        )
+        for metric in kwargs["uq_metrics"]
+    }
 
 
 def write_run(

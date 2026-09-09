@@ -87,8 +87,9 @@ throughput improves and peak GPU memory permits. The worker count is capped at t
 number of seeds. Each seed's rounds remain sequential; live updates append only complete
 two-arm rounds as they arrive, and saved records retain the configured seed order.
 Errors or interruption stop the remaining workers. `seed_workers` also applies to the
-seeds within each paired sweep run; configurations and metrics run sequentially. It can be
-changed when resuming a sweep without changing its saved plan.
+seeds within each sweep configuration. Within a seed, metrics run sequentially and share
+one bootstrap and random trajectory. Seeds can be working on different metrics at the
+same time. Worker count can change when resuming without changing the saved plan.
 
 Pool and evaluation tokenization and first-subword positions are cached once per seed.
 Uncertainty is computed in batches on the model device, transferring only one score per
@@ -96,6 +97,20 @@ remaining word to the CPU. Increasing `score_batch_size` can improve inference t
 training batch size and `K` remain separate experimental choices. Device reductions can
 produce small floating-point differences from the earlier CPU scoring implementation,
 which can affect acquisition order for nearly tied scores.
+
+`score_batch_size` defaults to **256 sentences** for both pool scoring and test evaluation;
+it does not change the number of words acquired or the training batch size.
+
+`precision` defaults to `"auto"`: native BF16 autocasting on supported CUDA GPUs (including
+the RTX 4090), and FP32 on other devices. Bootstrap, online training, pool scoring, and
+test evaluation all use the same resolved precision. Parameters and AdamW state stay
+FP32, and scoring converts first-subword logits to FP32 before softmax and uncertainty
+reduction. BF16 uses no gradient scaler. Set `"precision":"fp32"` for a full-precision
+comparison, or `"precision":"bf16"` to require native CUDA BF16 support and fail early
+otherwise. The notebook exposes the same selector. Exports record the requested
+`precision` and `effective_precision`; a sweep's plan also locks the latter across resumes.
+BF16 can change predictions and acquisition order, so compare speed and learning curves
+under a new sweep name rather than mixing precision within an existing sweep.
 
 ## Random hyperparameter sweep
 
@@ -109,10 +124,16 @@ There is no validation holdout, optimization objective, pruning, or best-gap sel
 
 The five files in `configs/*_random_5_seeds.json` retain the model checkpoints and
 five seeds. Each budgets **30 hyperparameter configurations × 3 UQ metrics = 90
-paired runs**, with five concurrent seeds and 100% pool acquisition. This is a larger
+paired comparisons**, with five concurrent seeds and 100% pool acquisition. This is a larger
 workload than the old 30-trial search, which sampled only one UQ metric per trial.
-The random arm is trained again for each metric with matching seeds and settings;
-these repeated baselines are not independent observations to pool across metrics.
+For each configuration and seed, bootstrap runs once. Its fitted weights and optimizer
+state are held in CPU memory and cloned into each arm. The first UQ metric trains beside
+random; later metrics train only their own UQ arm and reuse the random evaluation rows
+and selected-token records. At most two trained models reside on the GPU per seed.
+For three metrics this removes two bootstrap runs and two random trajectories per seed;
+all three UQ trajectories still train independently with their original update seeds.
+Each metric retains a complete paired export and live chart. The shared random baselines
+are not independent observations to pool across metrics.
 
 ```bash
 uv run scripts/bert_token_uq_search.py --config configs/distilbert_random_5_seeds.json
@@ -148,10 +169,15 @@ uv run scripts/bert_token_uq_search.py \
 ```
 
 Running the same command resumes unfinished comparisons, retaining completed outputs.
-An interrupted comparison restarts from bootstrap; model and optimizer checkpoints
-are not saved. Only `seed_workers` may change without changing the scientific plan.
+A configuration trains its unfinished metrics together and saves paired exports after
+all its seed workers finish. If interrupted during training, its unfinished comparisons
+restart together from bootstrap; model and optimizer checkpoints are not saved. Exports
+already marked complete are retained even if saving a later metric fails. Only
+`seed_workers` may change without changing the scientific plan.
 Changing the budget, sampler seed, checkpoint, model seeds, search ranges, or other
 scientific settings requires a new sweep name. Run only one process per sweep.
+The shared-work/BF16 implementation uses plan version 2 and requires a new sweep name
+for historical version 1 sweeps; their existing outputs remain readable and untouched.
 Choose the search space and budget before inspecting test curves; changing them in
 response to favorable test gaps would make the resulting assessment exploratory.
 

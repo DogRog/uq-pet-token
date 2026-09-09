@@ -1,3 +1,4 @@
+import copy
 import multiprocessing
 import os
 
@@ -147,3 +148,94 @@ def test_abrupt_worker_exit_is_detected(monkeypatch, tiny_experiment):
 def test_seed_workers_must_be_positive(value):
     with pytest.raises(ValueError, match="seed_workers"):
         ExperimentConfig(seed_workers=value)
+
+
+@pytest.mark.parametrize("precision", ["fp32", "bf16"])
+def test_shared_metrics_match_independent_runs_and_train_random_only_once(
+    tiny_experiment, monkeypatch, precision
+):
+    args, kwargs = tiny_experiment
+    # CPU autocast exercises real BF16 operations offline; production selection is CUDA-only.
+    if precision == "bf16":
+        monkeypatch.setattr(active_learning, "resolve_precision", lambda value, device: value)
+    kwargs = {**kwargs, "model_seeds": [11], "precision": precision}
+    metrics = ["entropy", "least_confidence", "margin"]
+    old_threads = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        independent = {
+            metric: active_learning.run_active_learning(*args, **{**kwargs, "uq_metric": metric})
+            for metric in metrics
+        }
+        calls = []
+        initial_states = []
+        original_train = active_learning.train_items
+
+        def train(model, optimizer, tokenizer, items, **settings):
+            bootstrap = "key" not in items[0]
+            calls.append((bootstrap, settings["seed"], len(items)))
+            if not bootstrap and settings["seed"] in {11 * 100_000 + 10, 11 * 100_000 + 11}:
+                initial_states.append(
+                    (copy.deepcopy(model.state_dict()), copy.deepcopy(optimizer.state_dict()))
+                )
+            return original_train(model, optimizer, tokenizer, items, **settings)
+
+        monkeypatch.setattr(active_learning, "train_items", train)
+        settings = {key: value for key, value in kwargs.items() if key != "uq_metric"}
+        snapshots = {metric: [] for metric in metrics}
+
+        def record(metric, rows):
+            previous = snapshots[metric][-1] if snapshots[metric] else []
+            assert rows[:-2] == previous
+            make_wandb_evaluation_log(rows[-2:], metric)
+            snapshots[metric].append(rows)
+
+        shared = active_learning.run_metric_comparisons(
+            *args, **settings, uq_metrics=metrics, progress_callback=record
+        )
+        assert shared == independent
+        assert sum(bootstrap for bootstrap, _, _ in calls) == 1
+        # Seven pool tokens, K=2: four rounds. Three UQ arms plus one random arm.
+        assert len(calls) == 1 + 4 * 4
+        assert sum(seed % 10 == 1 for bootstrap, seed, _ in calls if not bootstrap) == 4
+        assert all(snapshots[metric][-1] == shared[metric][0] for metric in metrics)
+        # All four arms receive identical trained weights AND nonempty AdamW history.
+        assert len(initial_states) == 4
+        assert initial_states[0][1]["state"]
+        for state in initial_states[1:]:
+            torch.testing.assert_close(state, initial_states[0], rtol=0, atol=0)
+        calls.clear()
+        reversed_run = active_learning.run_metric_comparisons(
+            *args, **settings, uq_metrics=list(reversed(metrics))
+        )
+        assert reversed_run == shared
+        # A final round of one new token replays only one old token for every arm.
+        assert sum(size == 2 for bootstrap, _, size in calls if not bootstrap) == 4
+    finally:
+        torch.set_num_threads(old_threads)
+
+
+def test_shared_metrics_match_spawned_seeds_and_publish_separate_paired_streams(tiny_experiment):
+    args, kwargs = tiny_experiment
+    kwargs = {key: value for key, value in kwargs.items() if key != "uq_metric"}
+    metrics = ["entropy", "margin"]
+    snapshots = {metric: [] for metric in metrics}
+
+    def record(metric, rows):
+        previous = snapshots[metric][-1] if snapshots[metric] else []
+        assert rows[:-2] == previous
+        make_wandb_evaluation_log(rows[-2:], metric)
+        snapshots[metric].append(rows)
+
+    old_threads = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        sequential = active_learning.run_metric_comparisons(*args, **kwargs, uq_metrics=metrics)
+        concurrent = active_learning.run_metric_comparisons(
+            *args, **{**kwargs, "seed_workers": 2}, uq_metrics=metrics, progress_callback=record
+        )
+        assert concurrent == sequential
+        assert all(len(stream) == 15 for stream in snapshots.values())
+        assert not seed_children()
+    finally:
+        torch.set_num_threads(old_threads)

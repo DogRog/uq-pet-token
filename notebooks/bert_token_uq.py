@@ -191,7 +191,7 @@ def _(DEFAULT_CHECKPOINTS, UQ_METRICS, default_config, mo):
 
         {learning_rate} {weight_decay} {batch_size}
 
-        {score_batch_size} {max_length}
+        {score_batch_size} {max_length} {precision}
 
         {wandb_enabled} {wandb_project}
 
@@ -242,6 +242,11 @@ def _(DEFAULT_CHECKPOINTS, UQ_METRICS, default_config, mo):
             ),
             max_length=numeric_control(
                 "max_length", "Maximum sequence length", start=4, stop=2048, step=4
+            ),
+            precision=mo.ui.dropdown(
+                options=["auto", "fp32", "bf16"],
+                value=default_config["precision"],
+                label="Precision (auto: BF16 on supported CUDA GPUs)",
             ),
             wandb_enabled=mo.ui.checkbox(
                 value=default_config["wandb_enabled"],

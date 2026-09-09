@@ -4,14 +4,14 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from uq_pet.active_learning import run_active_learning, write_run
 from uq_pet.pet_data import RESULTS_DIR, download_pet_ner, load_pet_splits
-from uq_pet.token_model import UQ_METRICS, get_device
+from uq_pet.token_model import UQ_METRICS, get_device, resolve_precision
 
 DEFAULT_CHECKPOINTS = (
     "distilbert-base-cased",
@@ -63,6 +63,10 @@ class ExperimentConfig(BaseModel):
         ge=1,
         description="Concurrent seed processes on the selected device; capped by the seed count.",
     )
+    precision: Literal["auto", "fp32", "bf16"] = Field(
+        default="auto",
+        description="Auto uses BF16 on supported CUDA GPUs and FP32 elsewhere.",
+    )
     uq_metric: str = Field(
         default=UQ_METRICS[0],
         description="Larger-is-more-uncertain acquisition metric.",
@@ -97,7 +101,7 @@ class ExperimentConfig(BaseModel):
     weight_decay: float = Field(default=0.01, ge=0, description="AdamW weight decay.")
     batch_size: int = Field(default=8, ge=1, description="Training item batch size.")
     score_batch_size: int = Field(
-        default=32,
+        default=256,
         ge=1,
         description="Pool scoring and test evaluation batch size.",
     )
@@ -211,9 +215,10 @@ def execute_experiment(
     progress_callback: Callable[[list[dict]], None] | None = None,
 ) -> tuple[dict, dict, list[dict], list[dict], Path]:
     """Load PET, run both arms, persist the run, and return display-ready records."""
+    device = get_device()
+    effective_precision = resolve_precision(config.precision, device)
     data_path = download_pet_ner()
     seed_examples, pool_inputs, pool_gold, test_examples = load_pet_splits(data_path)
-    device = get_device()
     results, selections = run_active_learning(
         seed_examples,
         pool_inputs,
@@ -229,6 +234,7 @@ def execute_experiment(
         "scoreable_pool_tokens": first_result["scoreable_pool_tokens"],
         "token_budget": first_result["token_budget"],
         "rounds": first_result["total_rounds"],
+        "effective_precision": effective_precision,
         "effective_pool_percent": (
             100 * first_result["token_budget"] / first_result["scoreable_pool_tokens"]
         ),
