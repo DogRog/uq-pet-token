@@ -314,6 +314,7 @@ Use `--list` on an `add` command to inspect a repository before installing it, o
 | `notebooks/charts.py` | shared chart builders and W&B comparison media |
 | `scripts/bert_token_uq_search.py` | fixed random sweep, paired test evaluation, resume, and summaries |
 | `notebooks/test_analysis.py` | individual test curves and sweep-wide paired gaps |
+| `notebooks/random_search_analysis.py` | random-sweep summaries and per-configuration drill-downs |
 | `tests/test_token_uq.py` | focused offline invariant tests |
 | `skills-lock.json` | project skill sources and content hashes |
 
@@ -356,3 +357,10 @@ It reads regular exports directly under `results/bert_token_uq_*` and completed 
 under `results/random_search/*` (the default output directory). It never downloads or
 trains a model. Legacy top-level regular exports without an evaluation split marker
 are supported; sweep exports must explicitly identify the test split.
+
+For a random-sweep-only view with sweep status, aggregate metric results, and a
+per-configuration drill-down, run:
+
+```bash
+uv run marimo edit notebooks/random_search_analysis.py
+```

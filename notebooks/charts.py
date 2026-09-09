@@ -3,7 +3,7 @@
 import altair as alt
 import polars as pl
 
-from uq_pet.experiment import summarize_label_pool_share
+from uq_pet.experiment import summarize_label_category_coverage, summarize_label_pool_share
 
 
 def make_learning_chart(result_records: list[dict], seed: int, uq_metric: str):
@@ -113,12 +113,76 @@ def make_tag_coverage_chart(
                 alt.Tooltip("pool_share_std:Q", title="Pool-share std. dev.", format=".3f"),
                 alt.Tooltip("n_acquired_mean:Q", title="Mean acquired", format=".1f"),
                 alt.Tooltip(
-                    "scoreable_pool_tokens_mean:Q", title="Scoreable pool tokens", format=".1f"
+                    "scoreable_pool_tokens_mean:Q",
+                    title="Scoreable pool tokens",
+                    format=".1f",
                 ),
             ],
         )
         .properties(
             title=f"Labels revealed by {acquisition_percent:.1f}% pool acquisition",
+            width=1000,
+            height=max(380, 28 * len(label_order)),
+        )
+    )
+
+
+def make_tag_category_coverage_chart(
+    selections: pl.DataFrame,
+    acquisition_percent: float,
+    uq_metric: str,
+    label_order: list[str] | None = None,
+):
+    """Compare acquisition percentages within each gold-label category."""
+    summary = summarize_label_category_coverage(selections, acquisition_percent).with_columns(
+        pl.col("arm").replace({"uncertainty": uq_metric})
+    )
+    if label_order is None:
+        label_order = (
+            summary.group_by("label")
+            .agg(pl.col("n_label_tokens_mean").mean().alias("count"))
+            .sort("count", descending=True)
+            .get_column("label")
+            .to_list()
+        )
+    arm_order = ["random", uq_metric]
+    return (
+        alt.Chart(summary)
+        .mark_bar()
+        .encode(
+            x=alt.X(
+                "label_coverage_mean:Q",
+                title="Available tokens of each gold label acquired (%)",
+                scale=alt.Scale(domain=[0, 100]),
+            ),
+            y=alt.Y("label:N", title="Gold label", sort=label_order),
+            yOffset=alt.YOffset("arm:N", sort=arm_order),
+            color=alt.Color(
+                "arm:N",
+                title=None,
+                sort=arm_order,
+                scale=alt.Scale(domain=arm_order, range=["#4C78A8", "#F58518"]),
+                legend=alt.Legend(orient="top"),
+            ),
+            tooltip=[
+                alt.Tooltip("arm:N", title="Arm"),
+                alt.Tooltip("label:N", title="Gold label"),
+                alt.Tooltip("label_coverage_mean:Q", title="Mean label coverage", format=".1f"),
+                alt.Tooltip(
+                    "label_coverage_std:Q",
+                    title="Label-coverage std. dev.",
+                    format=".1f",
+                ),
+                alt.Tooltip("n_acquired_mean:Q", title="Mean acquired", format=".1f"),
+                alt.Tooltip(
+                    "n_label_tokens_mean:Q",
+                    title="Available tokens with label",
+                    format=".1f",
+                ),
+            ],
+        )
+        .properties(
+            title=f"Per-label coverage by {acquisition_percent:.1f}% pool acquisition",
             width=1000,
             height=max(380, 28 * len(label_order)),
         )

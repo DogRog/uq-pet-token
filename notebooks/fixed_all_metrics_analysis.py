@@ -20,11 +20,22 @@ def _():
     import marimo as mo
     import polars as pl
 
-    from charts import make_tag_coverage_chart, make_variance_chart
+    from charts import (
+        make_tag_category_coverage_chart,
+        make_tag_coverage_chart,
+        make_variance_chart,
+    )
 
     alt.data_transformers.disable_max_rows()
     alt.renderers.set_embed_options(scaleFactor=2)
-    return Path, make_tag_coverage_chart, make_variance_chart, mo, pl
+    return (
+        Path,
+        make_tag_category_coverage_chart,
+        make_tag_coverage_chart,
+        make_variance_chart,
+        mo,
+        pl,
+    )
 
 
 @app.cell
@@ -130,9 +141,10 @@ def _(mo):
             mo.md(r"""
             ## Cumulative NER-tag coverage
 
-            Each bar is the acquired count for that gold label as a percentage of
-            all scoreable pool tokens. Bars show the mean across the displayed runs,
-            including zero counts. Gold labels are used only after acquisition.
+            The first chart shows the percentage acquired within each gold-label
+            category, so rare tags remain visible. The original all-pool-share chart
+            is shown underneath. Bars include zero counts across displayed runs.
+            Gold labels are used only after acquisition.
             """),
             coverage_percent_slider,
         ]
@@ -183,13 +195,24 @@ def _(
 def _(
     coverage_percent_slider,
     coverage_selections_with_progress,
+    make_tag_category_coverage_chart,
     make_tag_coverage_chart,
+    mo,
     uq_metric_selector,
 ):
-    make_tag_coverage_chart(
-        coverage_selections_with_progress,
-        coverage_percent_slider.value,
-        uq_metric_selector.value,
+    mo.vstack(
+        [
+            make_tag_category_coverage_chart(
+                coverage_selections_with_progress,
+                coverage_percent_slider.value,
+                uq_metric_selector.value,
+            ),
+            make_tag_coverage_chart(
+                coverage_selections_with_progress,
+                coverage_percent_slider.value,
+                uq_metric_selector.value,
+            ),
+        ]
     )
     return
 

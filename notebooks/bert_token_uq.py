@@ -21,6 +21,7 @@ def _():
 
     from charts import (
         make_learning_chart,
+        make_tag_category_coverage_chart,
         make_tag_coverage_chart,
         make_variance_chart,
         make_wandb_comparison_media,
@@ -49,6 +50,7 @@ def _():
         configure_wandb_metrics,
         execute_experiment,
         make_learning_chart,
+        make_tag_category_coverage_chart,
         make_tag_coverage_chart,
         make_variance_chart,
         make_wandb_comparison_media,
@@ -513,9 +515,9 @@ def _(config, mo):
             mo.md(r"""
             ## Cumulative NER-tag coverage
 
-            Move the slider to compare the cumulative label mix at the same
-            acquisition budget. Each bar is the acquired count for that gold label
-            as a percentage of all scoreable pool tokens.
+            Move the slider to compare coverage at the same acquisition budget.
+            The first chart normalizes within each gold-label category so rare tags
+            remain visible. The original all-pool-share chart is shown underneath.
             """),
             selection_coverage_slider,
         ]
@@ -525,8 +527,10 @@ def _(config, mo):
 
 @app.cell
 def _(
+    make_tag_category_coverage_chart,
     make_tag_coverage_chart,
     config,
+    mo,
     pl,
     results_df,
     selection_coverage_slider,
@@ -552,11 +556,21 @@ def _(
         .get_column("label")
         .to_list()
     )
-    make_tag_coverage_chart(
-        selections_with_progress,
-        selection_coverage_slider.value,
-        config["uq_metric"],
-        label_order=selection_label_order,
+    mo.vstack(
+        [
+            make_tag_category_coverage_chart(
+                selections_with_progress,
+                selection_coverage_slider.value,
+                config["uq_metric"],
+                label_order=selection_label_order,
+            ),
+            make_tag_coverage_chart(
+                selections_with_progress,
+                selection_coverage_slider.value,
+                config["uq_metric"],
+                label_order=selection_label_order,
+            ),
+        ]
     )
     return
 
