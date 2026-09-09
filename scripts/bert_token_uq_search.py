@@ -32,7 +32,7 @@ CONSOLE = Console()
 WANDB_FIELDS = {"wandb_enabled", "wandb_project", "wandb_run_name"}
 SEARCH_SPACE = {
     "k": (32, 64),
-    "bootstrap_epochs": (10),
+    "bootstrap_epochs": (10,),
     "update_passes": (1, 2, 4),
     "learning_rate": (2e-5, 5e-5),
     "batch_size": (32, 64),
