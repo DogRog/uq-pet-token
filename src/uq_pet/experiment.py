@@ -204,13 +204,9 @@ class RandomSearchConfig(ExperimentConfig):
         return value
 
     def experiment_config(self) -> ExperimentConfig:
-        """Strip sweep settings and disable W&B for the paired sweep runs."""
+        """Strip sweep settings while preserving the requested experiment logging."""
         return ExperimentConfig.model_validate(
-            {
-                **self.model_dump(include=set(ExperimentConfig.model_fields)),
-                "wandb_enabled": False,
-                "wandb_run_name": "",
-            }
+            self.model_dump(include=set(ExperimentConfig.model_fields))
         )
 
 

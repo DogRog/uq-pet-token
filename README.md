@@ -182,7 +182,22 @@ There are 216 distinct combinations. All supported UQ metrics are applied to eac
 `uq_metric` is not sampled. Values for sampled fields in the input configuration
 are overwritten by the saved plan. Other experiment settings remain fixed.
 Identical sampler seeds and budgets give identical sampled configurations across checkpoints.
-W&B is disabled for sweep runs.
+Set `"wandb_enabled": true` and `"wandb_project": "your-project"` to log sweep runs.
+Online logging requires `WANDB_API_KEY` in the process environment and validates it
+before loading data or training. `WANDB_MODE=offline` writes local W&B records without
+credentials; offline mode has no online project link.
+
+The CLI prints the project and run URLs when round 0 arrives. Each configuration,
+UQ metric, and seed has its own W&B run, grouped under the sweep name, with both UQ
+and random curves against acquired-pool percentage. Logging stays in the parent process
+and publishes only completed comparison pairs. Runs close on completion or failure.
+The shared random curves across metrics remain repeated observations of one baseline.
+
+W&B settings can change when resuming an existing sweep without changing its scientific
+plan. Completed comparisons are skipped and are not uploaded retroactively. An unfinished
+configuration restarts from bootstrap and gets fresh W&B runs so its new trajectory is
+not appended to an interrupted one. Updating the code or config does not alter an already
+running process.
 
 Use `--config` or `--config-json`, with optional overrides `--num-configs`,
 `--sweep-name`, `--sweeps-dir`, and `--sampler-seed`. `num_configs` is required and
@@ -200,7 +215,7 @@ A configuration trains its unfinished metrics together and saves paired exports 
 all its seed workers finish. If interrupted during training, its unfinished comparisons
 restart together from bootstrap; model and optimizer checkpoints are not saved. Exports
 already marked complete are retained even if saving a later metric fails. Only
-`seed_workers` may change without changing the scientific plan.
+`seed_workers` and W&B logging settings may change without changing the scientific plan.
 Changing the budget, sampler seed, checkpoint, model seeds, search ranges, or other
 scientific settings requires a new sweep name. Run only one process per sweep.
 The model-batching implementation uses plan version 3 and requires a new sweep name

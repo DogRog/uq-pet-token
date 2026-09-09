@@ -2,9 +2,12 @@ import argparse
 import importlib.util
 import json
 import random
+import sys
+from io import StringIO
 from pathlib import Path
 
 import pytest
+from rich.console import Console
 
 SEARCH_PATH = Path(__file__).resolve().parents[1] / "scripts" / "bert_token_uq_search.py"
 SPEC = importlib.util.spec_from_file_location("bert_token_uq_search", SEARCH_PATH)
@@ -172,6 +175,9 @@ def fake_experiment(monkeypatch, tmp_path):
                                 "total_rounds": 1,
                                 "arm": arm,
                                 "percent_acquired": percent,
+                                "n_acquired": round_id,
+                                "scoreable_pool_tokens": 1,
+                                "token_budget": 1,
                                 "entity_f1": 0.5
                                 + (gap if arm == "uncertainty" and round_id else 0),
                             }
@@ -317,6 +323,156 @@ def test_resume_rejects_model_group_size_changes(tmp_path, fake_experiment):
     with pytest.raises(SystemExit, match="2"):
         run_search(tmp_path, model_batch_size=1)
     assert len(fake_experiment) == 2
+
+
+@pytest.fixture
+def fake_wandb(monkeypatch):
+    class Run:
+        def __init__(self, settings):
+            self.settings = settings
+            self.logs = []
+            self.metrics = []
+            self.exit_codes = []
+
+        def log(self, payload):
+            self.logs.append(payload)
+
+        def define_metric(self, *args, **kwargs):
+            self.metrics.append((args, kwargs))
+
+        def finish(self, *, exit_code):
+            self.exit_codes.append(exit_code)
+
+        def get_project_url(self):
+            return "https://wandb.ai/test/pet"
+
+        def get_url(self):
+            return f"https://wandb.ai/test/pet/runs/{self.settings['name']}"
+
+    class SDK:
+        runs = []
+        logins = []
+
+        def init(self, **settings):
+            run = Run(settings)
+            self.runs.append(run)
+            return run
+
+        def login(self, **kwargs):
+            self.logins.append(kwargs)
+
+    sdk = SDK()
+    monkeypatch.setitem(sys.modules, "wandb", sdk)
+    monkeypatch.setenv("WANDB_API_KEY", "test-key")
+    monkeypatch.delenv("WANDB_MODE", raising=False)
+    return sdk
+
+
+def test_sweep_wandb_logs_each_seed_metric_and_prints_project_link(
+    tmp_path, fake_experiment, fake_wandb, monkeypatch
+):
+    output = StringIO()
+    monkeypatch.setattr(search, "CONSOLE", Console(file=output, width=240, color_system=None))
+    run_search(tmp_path, wandb_enabled=True, wandb_project="pet", wandb_run_name="trial")
+    assert fake_wandb.logins == [{"key": "test-key", "verify": True}]
+    assert len(fake_wandb.runs) == 2 * 3 * 2  # configurations x metrics x seeds
+    assert "W&B project: https://wandb.ai/test/pet" in output.getvalue()
+    assert "W&B run (entropy, seed 0):" in output.getvalue()
+    for run in fake_wandb.runs:
+        config = run.settings["config"]
+        metric = config["uq_metric"]
+        assert config["wandb_enabled"]
+        assert config["model_seeds"] == [config["seed"]]
+        assert config["effective_precision"] == "fp32"
+        assert config["evaluation_split"] == "test"
+        assert run.settings["reinit"] == "create_new"
+        assert run.settings["group"] == "example"
+        assert run.settings["name"].startswith("trial-config_")
+        assert [row["evaluation/round"] for row in run.logs] == [0, 1]
+        assert all(row["evaluation/seed"] == config["seed"] for row in run.logs)
+        assert all(f"evaluation/entity_f1/{metric}" in row for row in run.logs)
+        assert all("evaluation/entity_f1/random" in row for row in run.logs)
+        assert run.exit_codes == [0]
+    summary = json.loads((tmp_path / "example" / "summary.json").read_text())
+    for comparison in summary["comparisons"]:
+        config = json.loads(
+            (tmp_path / "example" / comparison["run_dir"] / "config.json").read_text()
+        )
+        assert config["wandb_enabled"] is True
+        assert config["wandb_project"] == "pet"
+
+
+def test_wandb_disabled_never_initializes_or_logs_in(tmp_path, fake_experiment, fake_wandb):
+    run_search(tmp_path)
+    assert not fake_wandb.runs
+    assert not fake_wandb.logins
+
+
+def test_wandb_offline_does_not_require_credentials_or_print_online_links(
+    tmp_path, fake_experiment, fake_wandb, monkeypatch
+):
+    output = StringIO()
+    monkeypatch.setattr(search, "CONSOLE", Console(file=output, width=240, color_system=None))
+    monkeypatch.setenv("WANDB_MODE", "offline")
+    monkeypatch.delenv("WANDB_API_KEY")
+    run_search(tmp_path, wandb_enabled=True)
+    assert len(fake_wandb.runs) == 12
+    assert not fake_wandb.logins
+    assert "W&B offline:" in output.getvalue()
+    assert "W&B project:" not in output.getvalue()
+
+
+def test_wandb_missing_credentials_fail_before_data_loading(tmp_path, monkeypatch):
+    monkeypatch.delenv("WANDB_API_KEY", raising=False)
+    monkeypatch.delenv("WANDB_MODE", raising=False)
+    monkeypatch.setattr(search, "get_device", lambda: "cpu")
+    monkeypatch.setattr(search, "download_pet_ner", lambda: pytest.fail("unexpected download"))
+    with pytest.raises(ValueError, match="WANDB_API_KEY is missing"):
+        run_search(tmp_path, wandb_enabled=True)
+
+
+def test_wandb_closes_all_initialized_runs_on_training_failure(
+    tmp_path, fake_experiment, fake_wandb, monkeypatch
+):
+    original = search.run_metric_comparisons
+
+    def fail_after_progress(*args, **kwargs):
+        original(*args, **kwargs)
+        raise RuntimeError("training failed")
+
+    monkeypatch.setattr(search, "run_metric_comparisons", fail_after_progress)
+    with pytest.raises(RuntimeError, match="training failed"):
+        run_search(tmp_path, wandb_enabled=True)
+    assert len(fake_wandb.runs) == 6
+    assert all(run.exit_codes == [1] for run in fake_wandb.runs)
+
+
+def test_logging_can_be_enabled_when_resuming_legacy_plan(
+    tmp_path, fake_experiment, fake_wandb, monkeypatch
+):
+    original = search.run_metric_comparisons
+    calls = 0
+
+    def fail_second(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("interrupted")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(search, "run_metric_comparisons", fail_second)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        run_search(tmp_path)
+    path = tmp_path / "example" / "plan.json"
+    plan = json.loads(path.read_text())
+    plan["fixed_config"].update(wandb_enabled=False, wandb_project="old", wandb_run_name="")
+    path.write_text(json.dumps(plan))
+    old_plan = path.read_bytes()
+    monkeypatch.setattr(search, "run_metric_comparisons", original)
+    run_search(tmp_path, wandb_enabled=True, wandb_project="pet")
+    assert path.read_bytes() == old_plan
+    assert len(fake_wandb.runs) == 6  # only unfinished configuration is logged
+    assert all(run.settings["project"] == "pet" for run in fake_wandb.runs)
 
 
 def test_unsupported_bf16_fails_before_loading_data_or_creating_a_plan(tmp_path, monkeypatch):

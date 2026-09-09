@@ -3,9 +3,10 @@
 
 import argparse
 import json
+import os
 import random
 from collections.abc import Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from itertools import product
 from pathlib import Path
 
@@ -17,11 +18,18 @@ from transformers.utils import logging as transformers_logging
 
 from uq_pet import active_learning
 from uq_pet.active_learning import run_metric_comparisons, write_run
-from uq_pet.experiment import ExperimentConfig, RandomSearchConfig
+from uq_pet.experiment import (
+    ExperimentConfig,
+    RandomSearchConfig,
+    configure_wandb_metrics,
+    make_wandb_evaluation_log,
+    require_wandb_credentials,
+)
 from uq_pet.pet_data import download_pet_ner, load_pet_splits
 from uq_pet.token_model import UQ_METRICS, get_device, resolve_precision
 
 CONSOLE = Console()
+WANDB_FIELDS = {"wandb_enabled", "wandb_project", "wandb_run_name"}
 SEARCH_SPACE = {
     "k": (8, 16, 32),
     "bootstrap_epochs": (10,),
@@ -104,7 +112,7 @@ def sample_plan(config: RandomSearchConfig) -> dict:
     sampled = random.Random(config.sampler_seed).sample(combinations, config.num_configs)
     # Worker scheduling can change on resume; scientific settings cannot.
     fixed = config.experiment_config().model_dump(
-        exclude={"seed_workers", "uq_metric", *SEARCH_SPACE}
+        exclude={"seed_workers", "uq_metric", *SEARCH_SPACE, *WANDB_FIELDS}
     )
     return {
         "version": 3,
@@ -131,6 +139,74 @@ def write_json(path: Path, value: dict) -> None:
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(value, indent=2))
     temporary.replace(path)
+
+
+def scientific_plan(plan: dict) -> dict:
+    """Ignore logging fields in older plans without relaxing any experiment settings."""
+    return {
+        **plan,
+        "fixed_config": {
+            key: value for key, value in plan["fixed_config"].items() if key not in WANDB_FIELDS
+        },
+    }
+
+
+@contextmanager
+def wandb_comparison_logging(config, experiment, config_id, effective_precision, slots):
+    """Own one W&B run per metric/seed in the parent, with separate acquisition axes."""
+    if not config.wandb_enabled:
+        yield None
+        return
+
+    import wandb
+
+    runs = {}
+    success = False
+    offline = os.environ.get("WANDB_MODE", "").strip().lower() == "offline"
+    with ExitStack() as cleanup:
+
+        def log_evaluation(metric, rows):
+            pair = rows[-2:]
+            payload = make_wandb_evaluation_log(pair, metric)
+            seed = pair[0]["seed"]
+            key = (metric, seed)
+            if key not in runs:
+                name = (
+                    f"{config.wandb_run_name or config.sweep_name}-{config_id}-{metric}-seed{seed}"
+                )
+                settings = experiment.model_copy(
+                    update={"uq_metric": metric, "model_seeds": [seed]}
+                )
+                run = wandb.init(
+                    project=config.wandb_project,
+                    name=name,
+                    group=config.sweep_name,
+                    job_type="random_search",
+                    reinit="create_new",
+                    settings={"quiet": True},
+                    dir=str(slots[metric]),
+                    config={
+                        **settings.resolved_dict(),
+                        "wandb_run_name": name,
+                        "seed": seed,
+                        "config_id": config_id,
+                        "sweep_name": config.sweep_name,
+                        "evaluation_split": "test",
+                        "effective_precision": effective_precision,
+                        "shared_bootstrap_and_random": True,
+                    },
+                )
+                cleanup.callback(lambda run=run: run.finish(exit_code=0 if success else 1))
+                runs[key] = run
+                configure_wandb_metrics(run, metric)
+                if not offline:
+                    if len(runs) == 1:
+                        CONSOLE.print(f"W&B project: {run.get_project_url()}", markup=False)
+                    CONSOLE.print(f"W&B run ({metric}, seed {seed}): {run.get_url()}", markup=False)
+            runs[key].log(payload)
+
+        yield log_evaluation
+        success = True
 
 
 def paired_summary(results: list[dict]) -> dict:
@@ -256,7 +332,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     root = config.sweeps_dir / config.sweep_name
     plan_path = root / "plan.json"
     if plan_path.exists():
-        if json.loads(plan_path.read_text()) != plan:
+        if scientific_plan(json.loads(plan_path.read_text())) != scientific_plan(plan):
             parser.error(
                 "Existing sweep has a different plan; choose a new --sweep-name. The budget is fixed, not additional runs."
             )
@@ -271,6 +347,15 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         CONSOLE.print(f"Sweep already complete: {root}")
         return
 
+    if config.wandb_enabled:
+        require_wandb_credentials(os.environ)
+        if os.environ.get("WANDB_MODE", "").strip().lower() == "offline":
+            CONSOLE.print("W&B offline: logging locally; no online project link is available.")
+        else:
+            import wandb
+
+            wandb.login(key=os.environ["WANDB_API_KEY"], verify=True)
+            CONSOLE.print(f"W&B enabled: {config.wandb_project} (links appear at round 0).")
     CONSOLE.print(
         f"[bold cyan]Compute precision:[/] [bold]{effective_precision.upper()}[/]"
         f" · device: {device} · parameters/AdamW: FP32"
@@ -310,6 +395,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 {
                     **plan["fixed_config"],
                     **entry["parameters"],
+                    **config.model_dump(include=WANDB_FIELDS),
                     "seed_workers": config.seed_workers,
                 }
             )
@@ -333,6 +419,8 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 temporary = slot / "progress.tmp"
                 pl.DataFrame(rows).write_csv(temporary)
                 temporary.replace(slot / "progress.csv")
+                if log_evaluation is not None:
+                    log_evaluation(metric, rows)
                 latest = rows[-1]
                 seed = latest["seed"]
                 progress.update(
@@ -348,48 +436,53 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 )
 
             try:
-                settings = experiment.active_learning_kwargs()
-                settings.pop("uq_metric")
-                comparisons = run_metric_comparisons(
-                    seed_examples,
-                    pool_inputs,
-                    pool_gold,
-                    test_examples,
-                    **{**settings, "precision": effective_precision},
-                    uq_metrics=pending_metrics,
-                    device=device,
-                    progress_callback=update_progress,
-                )
-                progress.update(overall_task, description=f"{description} · saving")
-                for metric in pending_metrics:
-                    results, selections = comparisons[metric]
-                    slot = slots[metric]
-                    paired_config = experiment.model_copy(update={"uq_metric": metric})
-                    stats = paired_summary(results)
-                    run_dir = write_run(
-                        {
-                            **paired_config.resolved_dict(),
-                            "effective_precision": effective_precision,
-                            "shared_bootstrap_and_random": True,
-                            "evaluation_split": "test",
-                            "mode": "random_search",
-                            "sweep_name": config.sweep_name,
-                            "config_id": entry["config_id"],
-                            "seed_sentences": len(seed_examples),
-                            "pool_sentences": len(pool_inputs),
-                            "test_sentences": len(test_examples),
-                        },
-                        results,
-                        selections,
-                        results_dir=slot,
+                with wandb_comparison_logging(
+                    config, experiment, entry["config_id"], effective_precision, slots
+                ) as log_evaluation:
+                    settings = experiment.active_learning_kwargs()
+                    settings.pop("uq_metric")
+                    comparisons = run_metric_comparisons(
+                        seed_examples,
+                        pool_inputs,
+                        pool_gold,
+                        test_examples,
+                        **{**settings, "precision": effective_precision},
+                        uq_metrics=pending_metrics,
+                        device=device,
+                        progress_callback=update_progress,
                     )
-                    write_json(
-                        slot / "completed.json",
-                        {"run_dir": str(run_dir.relative_to(root)), **stats},
-                    )
-                    (slot / "failure.json").unlink(missing_ok=True)
-                    completed_runs += 1
-                    progress.update(overall_task, completed=completed_runs, description=description)
+                    progress.update(overall_task, description=f"{description} · saving")
+                    for metric in pending_metrics:
+                        results, selections = comparisons[metric]
+                        slot = slots[metric]
+                        paired_config = experiment.model_copy(update={"uq_metric": metric})
+                        stats = paired_summary(results)
+                        run_dir = write_run(
+                            {
+                                **paired_config.resolved_dict(),
+                                "effective_precision": effective_precision,
+                                "shared_bootstrap_and_random": True,
+                                "evaluation_split": "test",
+                                "mode": "random_search",
+                                "sweep_name": config.sweep_name,
+                                "config_id": entry["config_id"],
+                                "seed_sentences": len(seed_examples),
+                                "pool_sentences": len(pool_inputs),
+                                "test_sentences": len(test_examples),
+                            },
+                            results,
+                            selections,
+                            results_dir=slot,
+                        )
+                        write_json(
+                            slot / "completed.json",
+                            {"run_dir": str(run_dir.relative_to(root)), **stats},
+                        )
+                        (slot / "failure.json").unlink(missing_ok=True)
+                        completed_runs += 1
+                        progress.update(
+                            overall_task, completed=completed_runs, description=description
+                        )
             except BaseException as error:
                 for slot in slots.values():
                     if not (slot / "completed.json").exists():
