@@ -31,11 +31,11 @@ from uq_pet.token_model import UQ_METRICS, get_device, resolve_precision
 CONSOLE = Console()
 WANDB_FIELDS = {"wandb_enabled", "wandb_project", "wandb_run_name"}
 SEARCH_SPACE = {
-    "k": (8, 16, 32),
-    "bootstrap_epochs": (10,),
+    "k": (32, 64),
+    "bootstrap_epochs": (10),
     "update_passes": (1, 2, 4),
     "learning_rate": (2e-5, 5e-5),
-    "batch_size": (8, 16),
+    "batch_size": (32, 64),
     "replay_ratio": (0, 1.0, 2.0),
     "weight_decay": (0.0, 0.01),
 }
