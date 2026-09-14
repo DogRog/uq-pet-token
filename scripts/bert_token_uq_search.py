@@ -293,7 +293,7 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         "--num-configs",
         type=int,
         default=argparse.SUPPRESS,
-        help="Total fixed budget of distinct configurations, each run with every UQ metric.",
+        help="Total fixed budget of distinct hyperparameter configurations.",
     )
     parser.add_argument("--sweep-name", default=argparse.SUPPRESS)
     parser.add_argument("--sweeps-dir", type=Path, default=argparse.SUPPRESS)

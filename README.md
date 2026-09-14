@@ -138,6 +138,72 @@ Larger groups increase activation memory and may not be faster than sequential e
 with fused attention. Compare complete-run time with the same checkpoint, hyperparameters,
 seeds, precision, and worker count; `model_batch_size=1` versus `2` is the first comparison.
 
+## Tune the random baseline, then compare uncertainty
+
+Use this workflow to find the strongest **random-selection configuration**, freeze its
+hyperparameters, and assess whether uncertainty selection improves performance:
+
+```bash
+uv run scripts/bert_token_uq_tune_random.py --config configs/distilbert_tune_random_50.json --dry-run
+uv run scripts/bert_token_uq_tune_random.py --config configs/distilbert_tune_random_50.json
+```
+
+The supplied configuration samples **50 distinct hyperparameter configurations** for
+DistilBERT with five model seeds. The dry run prints the plan without loading data or
+models. The second command starts training. Increase `seed_workers` in the JSON if
+GPU memory permits; it defaults to one. This workflow uses sequential model execution
+(`model_batch_size=1`) in both stages so the random learner retains the same training
+RNG stream when the uncertainty arm is added. Logs and results are local; W&B logging
+is not supported by this entry point.
+
+1. Keep the original five seed sentences and 84 test sentences. Before tuning, use a
+   fixed local RNG to hold out 66 of the 328 pool sentences for validation, leaving
+   262 acquisition sentences. Validation sentences cannot be acquired or replayed.
+2. Train **only random selection** for each sampled configuration. Select the largest
+   seed-mean normalized validation entity-F1 AUC against acquired-pool percentage,
+   including round 0. This objective rewards performance throughout acquisition.
+   To optimize only the endpoint, set `objective` to
+   `random_validation_final_entity_f1` before starting. Ties use ascending config ID.
+3. Save the winning hyperparameters before any final test evaluation. Start a fresh
+   bootstrap with the original five seed sentences, restore the full 328-sentence
+   pool, and compare random with entropy selection using the winner's hyperparameters.
+   Both arms clone the same bootstrap model and optimizer and keep independent states.
+   The 84 test sentences are evaluation-only throughout.
+
+The candidate ranges match `scripts/bert_token_uq_search.py`: `k` in 32/64,
+bootstrap epochs 10, update passes 1/2/4, learning rate 0.00002/0.00005,
+batch size 32/64, replay ratio 0/1/2, and weight decay 0/0.01 (144 combinations).
+The sampled settings overwrite the corresponding input fields. Acquisition percentage,
+checkpoint, seeds, and all other settings stay fixed. `uq_metric` defaults to entropy
+and must be chosen before the run; it is not tuned using the final test results.
+
+The validation holdout size and seed, objective, search space, sample, final UQ metric,
+and effective precision are locked in `plan.json`. The original dataset hash and
+validation/acquisition index mapping are recorded in `split.json`. The original
+5/328/84 split used by ordinary experiments is unchanged.
+
+Outputs live under `results/random_baseline_search/<sweep-name>/`:
+
+- `tuning/<config-id>/`: random-only validation progress, settings, results, selections,
+  and a completion marker with its objective score.
+- `best_config.json` and `selection.json`: frozen experiment settings, winning ID,
+  validation objective, and validation score.
+- `final/`: the paired test run, including all evaluation rows and selected tokens.
+- `summary.json`: every trial's status/score and the final mean and per-seed test F1
+  differences (uncertainty minus random), for both curve AUC and final acquisition.
+
+Positive final gaps favor uncertainty. These are descriptive paired results across
+five seeds; a small positive mean alone does not establish a reliable improvement.
+The validation winner is the best of the sampled candidates under the chosen objective,
+not a guarantee of a global optimum. If earlier experiments on this same test split
+informed the study design, treat the test comparison as exploratory.
+
+Repeat the same command to resume. Completed trials are retained; an interrupted trial
+or final comparison restarts from bootstrap. The final comparison waits for every
+validation trial to finish. Changing scientific settings requires a new `sweep_name`;
+worker count may change on resume. Run one process per sweep. Existing sweep artifacts
+and their analysis notebooks remain unchanged; this workflow has its own output directory.
+
 ## Random hyperparameter sweep
 
 `scripts/bert_token_uq_search.py` samples a fixed set of distinct configurations
@@ -170,15 +236,15 @@ The unchanged hyperparameter ranges are:
 
 | Setting | Values |
 | --- | --- |
-| `k` | 8, 16, 32 |
+| `k` | 32, 64 |
 | `bootstrap_epochs` | 10 |
 | `update_passes` | 1, 2, 4 |
 | `learning_rate` | 0.00002, 0.00005 |
-| `batch_size` | 8, 16 |
+| `batch_size` | 32, 64 |
 | `replay_ratio` | 0, 1, 2 |
 | `weight_decay` | 0, 0.01 |
 
-There are 216 distinct combinations. All supported UQ metrics are applied to each;
+There are 144 distinct combinations. All supported UQ metrics are applied to each;
 `uq_metric` is not sampled. Values for sampled fields in the input configuration
 are overwritten by the saved plan. Other experiment settings remain fixed.
 Identical sampler seeds and budgets give identical sampled configurations across checkpoints.

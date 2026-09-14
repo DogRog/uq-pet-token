@@ -1,0 +1,17 @@
+{
+  "num_configs": 50,
+  "sweep_name": "distilbert-random-baseline-50",
+  "sweeps_dir": "results/random_baseline_search",
+  "sampler_seed": 0,
+  "checkpoint": "distilbert-base-cased",
+  "model_seeds": [0, 1, 2, 3, 4],
+  "seed_workers": 1,
+  "model_batch_size": 1,
+  "precision": "auto",
+  "uq_metric": "entropy",
+  "max_pool_percent": 100.0,
+  "validation_sentences": 66,
+  "validation_seed": 1729,
+  "objective": "random_validation_entity_f1_auc",
+  "wandb_enabled": false
+}

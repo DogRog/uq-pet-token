@@ -191,6 +191,11 @@ def run_active_learning(
     return comparisons[uq_metric]
 
 
+def run_random_selection(*args, **settings) -> tuple[list[dict], list[dict]]:
+    """Train only random acquisition, with the paired engine's random RNG stream."""
+    return run_active_learning(*args, **settings, random_only=True)
+
+
 def run_metric_comparisons(
     seed_examples: list[dict],
     pool_inputs: list[dict],
@@ -214,6 +219,7 @@ def run_metric_comparisons(
     seed_workers: int = 1,
     precision: str = "auto",
     model_batch_size: int = 1,
+    random_only: bool = False,
     progress_callback: Callable[[str, list[dict]], None] | None = None,
 ) -> dict[str, tuple[list[dict], list[dict]]]:
     """Share one bootstrap and random trajectory per seed across the requested metrics.
@@ -227,6 +233,8 @@ def run_metric_comparisons(
         raise ValueError(f"uq_metrics must be drawn from {UQ_METRICS}")
     if not 1 <= model_batch_size <= 4:
         raise ValueError("model_batch_size must be between 1 and 4")
+    if random_only and (model_batch_size != 1 or len(uq_metrics) != 1):
+        raise ValueError("random_only requires model_batch_size=1 and one metric key")
     precision = resolve_precision(precision, device)
     if bootstrap_epochs < 0:
         raise ValueError(f"bootstrap_epochs must be non-negative, got {bootstrap_epochs}")
@@ -245,6 +253,7 @@ def run_metric_comparisons(
         "uq_metrics": uq_metrics,
         "precision": precision,
         "model_batch_size": model_batch_size,
+        "random_only": random_only,
         "k": k,
         "max_pool_percent": max_pool_percent,
         "bootstrap_epochs": bootstrap_epochs,
@@ -374,7 +383,7 @@ def run_metric_comparisons(
         else:
             for metric_index, uq_metric in enumerate(uq_metrics):
                 results, selections = comparisons[uq_metric]
-                for arm in ("uncertainty", "random"):
+                for arm in ("random",) if random_only else ("uncertainty", "random"):
                     results.append(
                         _result_row(
                             model_seed,
@@ -388,6 +397,8 @@ def run_metric_comparisons(
                         )
                     )
                 active_arms = ("uncertainty", "random") if metric_index == 0 else ("uncertainty",)
+                if random_only:
+                    active_arms = ("random",)
                 models = {arm: copy.deepcopy(base_model).to(device) for arm in active_arms}
                 optimizers = {}
                 for arm, model in models.items():
@@ -404,19 +415,21 @@ def run_metric_comparisons(
                 for round_idx in range(1, rounds + 1):
                     round_k = min(k, token_budget - (round_idx - 1) * k)
                     round_results = {}
-                    uq_scores = score_token_uncertainty(
-                        models["uncertainty"],
-                        tokenizer,
-                        pool_inputs,
-                        metric=uq_metric,
-                        excluded=acquired["uncertainty"],
-                        max_length=max_length,
-                        batch_size=score_batch_size,
-                        device=device,
-                        prepared_batches=pool_batches,
-                        precision=precision,
-                    )
-                    chosen = {"uncertainty": select_top_k(uq_scores, round_k)}
+                    chosen = {}
+                    if not random_only:
+                        uq_scores = score_token_uncertainty(
+                            models["uncertainty"],
+                            tokenizer,
+                            pool_inputs,
+                            metric=uq_metric,
+                            excluded=acquired["uncertainty"],
+                            max_length=max_length,
+                            batch_size=score_batch_size,
+                            device=device,
+                            prepared_batches=pool_batches,
+                            precision=precision,
+                        )
+                        chosen["uncertainty"] = select_top_k(uq_scores, round_k)
                     if metric_index == 0:
                         chosen["random"] = select_random(
                             scoreable - acquired["random"],
@@ -424,9 +437,9 @@ def run_metric_comparisons(
                             seed=model_seed * 10_000 + round_idx,
                         )
 
-                    for arm_idx, arm in enumerate(active_arms):
+                    for arm in active_arms:
                         # Keep the original per-arm RNG seeds independent of metric/order.
-                        update_seed = model_seed * 100_000 + round_idx * 10 + arm_idx
+                        update_seed = model_seed * 100_000 + round_idx * 10 + (arm == "random")
                         replay = sample_replay(
                             replay_banks[arm],
                             round_k,
@@ -508,7 +521,8 @@ def run_metric_comparisons(
                         selections.extend(dict(row) for row in random_selections[round_idx])
                     if progress_callback is not None:
                         progress_callback(uq_metric, list(results))
-                    CONSOLE.print(_round_progress_table(round_results, uq_metric))
+                    if not random_only:
+                        CONSOLE.print(_round_progress_table(round_results, uq_metric))
                 del models, optimizers, model, optimizer
 
         del base_model, bootstrap_optimizer_state, tokenizer, pool_batches, test_batches
@@ -670,7 +684,8 @@ def _seed_worker(connection, args: tuple, kwargs: dict, cpu_threads: int) -> Non
         transformers_logging.disable_progress_bar()
 
         def publish(metric, rows):
-            connection.send(("progress", (metric, rows[-2:])))
+            count = 1 if kwargs.get("random_only") else 2
+            connection.send(("progress", (metric, rows[-count:])))
 
         result = run_metric_comparisons(*args, **kwargs, progress_callback=publish)
         connection.send(("result", result))
@@ -734,10 +749,11 @@ def _run_concurrent_seeds(
                 if kind == "progress":
                     metric, rows = payload
                     progress[metric].extend(rows)
-                    CONSOLE.print(
-                        f"[bold cyan]Seed {seed}[/]",
-                        _round_progress_table({row["arm"]: row for row in rows}, metric),
-                    )
+                    if not kwargs.get("random_only"):
+                        CONSOLE.print(
+                            f"[bold cyan]Seed {seed}[/]",
+                            _round_progress_table({row["arm"]: row for row in rows}, metric),
+                        )
                     if progress_callback is not None:
                         progress_callback(metric, list(progress[metric]))
                 elif kind == "result":

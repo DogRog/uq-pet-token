@@ -1,5 +1,6 @@
 """PET dataset identity, download, and stable experiment split."""
 
+import random
 import urllib.request
 from pathlib import Path
 
@@ -103,3 +104,51 @@ def load_pet_splits(
         for word_idx, tag in enumerate(example["ner_tags"])
     }
     return seed_examples, pool_inputs, pool_gold, test_examples
+
+
+def split_tuning_pool(
+    pool_inputs: list[dict],
+    pool_gold: dict[TokenKey, int],
+    *,
+    validation_sentences: int,
+    validation_seed: int,
+) -> tuple[list[dict], dict[TokenKey, int], list[dict], dict]:
+    """Hold out fixed pool sentences for tuning; never accept the outer test set.
+
+    Choose sentence indices without labels, then materialize validation labels.
+    Acquisition inputs are reindexed and remain label-free. The manifest maps
+    those indices back to the original pool used for the final comparison.
+    """
+    if not 0 < validation_sentences < len(pool_inputs):
+        raise ValueError("validation_sentences must leave a nonempty acquisition pool")
+    held_out = set(
+        random.Random(validation_seed).sample(range(len(pool_inputs)), validation_sentences)
+    )
+    train_indices = [index for index in range(len(pool_inputs)) if index not in held_out]
+    validation_indices = sorted(held_out)
+    inputs = [
+        {**pool_inputs[original], "pool_idx": index} for index, original in enumerate(train_indices)
+    ]
+    gold = {
+        (index, word): pool_gold[(original, word)]
+        for index, original in enumerate(train_indices)
+        for word in range(len(pool_inputs[original]["tokens"]))
+    }
+    validation = [
+        {
+            **{key: value for key, value in pool_inputs[index].items() if key != "pool_idx"},
+            "ner_tags": [
+                pool_gold[(index, word)] for word in range(len(pool_inputs[index]["tokens"]))
+            ],
+        }
+        for index in validation_indices
+    ]
+    return (
+        inputs,
+        gold,
+        validation,
+        {
+            "acquisition_original_pool_indices": train_indices,
+            "validation_original_pool_indices": validation_indices,
+        },
+    )

@@ -320,3 +320,32 @@ def test_vectorized_models_match_spawned_execution(tiny_experiment):
         assert not seed_children()
     finally:
         torch.set_num_threads(old_threads)
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_random_only_matches_paired_random_and_never_scores_pool(
+    tiny_experiment, monkeypatch, workers
+):
+    args, kwargs = tiny_experiment
+    kwargs = {**kwargs, "seed_workers": workers, "model_seeds": [11, 3]}
+    previous = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        paired_rows, paired_selections = active_learning.run_active_learning(*args, **kwargs)
+        monkeypatch.setattr(
+            active_learning,
+            "score_token_uncertainty",
+            lambda *a, **kw: pytest.fail("random-only scored uncertainty"),
+        )
+        snapshots = []
+        random_rows, random_selections = active_learning.run_random_selection(
+            *args,
+            **kwargs,
+            progress_callback=snapshots.append,
+        )
+    finally:
+        torch.set_num_threads(previous)
+    assert random_rows == [row for row in paired_rows if row["arm"] == "random"]
+    assert random_selections == [row for row in paired_selections if row["arm"] == "random"]
+    assert [len(snapshot) for snapshot in snapshots] == list(range(1, len(random_rows) + 1))
+    assert all(row["arm"] == "random" for snapshot in snapshots for row in snapshot)

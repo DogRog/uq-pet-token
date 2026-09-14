@@ -210,6 +210,22 @@ class RandomSearchConfig(ExperimentConfig):
         )
 
 
+class RandomBaselineSearchConfig(RandomSearchConfig):
+    """Tune random acquisition on validation, then test one frozen paired configuration."""
+
+    num_configs: int = Field(default=50, ge=1)
+    sweep_name: str = "distilbert-random-baseline-50"
+    sweeps_dir: Path = RESULTS_DIR / "random_baseline_search"
+    validation_sentences: int = Field(default=66, ge=1)
+    validation_seed: int = Field(default=1729, ge=0)
+    objective: Literal["random_validation_entity_f1_auc", "random_validation_final_entity_f1"] = (
+        "random_validation_entity_f1_auc"
+    )
+    # Keep the random training stream identical when adding the UQ arm at final evaluation.
+    model_batch_size: Literal[1] = 1
+    wandb_enabled: Literal[False] = False
+
+
 def execute_experiment(
     config: ExperimentConfig,
     *,
