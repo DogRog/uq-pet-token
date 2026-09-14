@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Run a fixed random hyperparameter sweep with paired UQ/random test evaluation."""
+"""Run a paired hyperparameter sweep or tune random selection before testing UQ."""
 
 import argparse
+import hashlib
 import json
+import math
 import os
 import random
 from collections.abc import Mapping, Sequence
@@ -21,12 +23,13 @@ from uq_pet import active_learning
 from uq_pet.active_learning import run_metric_comparisons, write_run
 from uq_pet.experiment import (
     ExperimentConfig,
+    RandomBaselineSearchConfig,
     RandomSearchConfig,
     configure_wandb_metrics,
     make_wandb_evaluation_log,
     require_wandb_credentials,
 )
-from uq_pet.pet_data import PROJECT_ROOT, download_pet_ner, load_pet_splits
+from uq_pet.pet_data import PROJECT_ROOT, download_pet_ner, load_pet_splits, split_tuning_pool
 from uq_pet.token_model import UQ_METRICS, get_device, resolve_precision
 
 CONSOLE = Console()
@@ -142,6 +145,75 @@ def write_json(path: Path, value: dict) -> None:
     temporary.replace(path)
 
 
+def tuning_plan(config: RandomBaselineSearchConfig) -> dict:
+    """Lock sampling, holdout, objective, and final acquisition rule before training."""
+    sampled = sample_plan(config)
+    return {
+        "version": 1,
+        "mode": "random_baseline_tuning",
+        "sampling": sampled["sampling"],
+        "sampler_seed": config.sampler_seed,
+        "num_configs": config.num_configs,
+        "search_space": sampled["search_space"],
+        "configurations": sampled["configurations"],
+        "fixed_config": sampled["fixed_config"],
+        "validation_sentences": config.validation_sentences,
+        "validation_seed": config.validation_seed,
+        "objective": config.objective,
+        "tie_break": "config_id_ascending",
+        "final_uq_metric": config.uq_metric,
+        "tuning_evaluation_split": "validation",
+        "final_evaluation_split": "test",
+        "final_pool": "original_328_sentences",
+    }
+
+
+def random_validation_score(results: list[dict], objective: str) -> float:
+    """Average random validation F1 across seeds, using final F1 or normalized curve AUC."""
+    if not results or any(row["arm"] != "random" for row in results):
+        raise ValueError("tuning requires nonempty random-only validation results")
+    scores = []
+    for seed in sorted({row["seed"] for row in results}):
+        rows = sorted((row for row in results if row["seed"] == seed), key=lambda r: r["round"])
+        if [row["round"] for row in rows] != list(range(rows[-1]["total_rounds"] + 1)):
+            raise ValueError("tuning requires every round, including bootstrap and the final round")
+        points = [(float(row["percent_acquired"]), float(row["entity_f1"])) for row in rows]
+        if any(not math.isfinite(x) or not math.isfinite(y) for x, y in points):
+            raise ValueError("tuning scores must be finite")
+        if len(points) < 2 or any(b[0] <= a[0] for a, b in zip(points, points[1:], strict=False)):
+            raise ValueError("tuning requires increasing acquisition points")
+        if objective == "random_validation_final_entity_f1":
+            scores.append(points[-1][1])
+        elif objective == "random_validation_entity_f1_auc":
+            area = sum(
+                (b[0] - a[0]) * (a[1] + b[1]) / 2 for a, b in zip(points, points[1:], strict=False)
+            )
+            scores.append(area / (points[-1][0] - points[0][0]))
+        else:
+            raise ValueError(f"unknown objective: {objective}")
+    return sum(scores) / len(scores)
+
+
+def preserve_json(path: Path, value: dict) -> None:
+    """Refuse to mix scientific plans, dataset splits, or frozen winners across resumes."""
+    if path.exists():
+        if json.loads(path.read_text()) != value:
+            raise ValueError(f"Saved {path.name} differs; choose a new sweep_name")
+    else:
+        write_json(path, value)
+
+
+def completed_run(root: Path, slot: Path) -> dict | None:
+    marker = slot / "completed.json"
+    if not marker.exists():
+        return None
+    completed = json.loads(marker.read_text())
+    for name in ("config.json", "results.csv", "selections.json"):
+        if not (root / completed["run_dir"] / name).is_file():
+            raise ValueError(f"Completed run is missing {name}: {marker}")
+    return completed
+
+
 def scientific_plan(plan: dict) -> dict:
     """Ignore logging fields in older plans without relaxing any experiment settings."""
     return {
@@ -153,7 +225,16 @@ def scientific_plan(plan: dict) -> dict:
 
 
 @contextmanager
-def wandb_comparison_logging(config, experiment, config_id, effective_precision, slots):
+def wandb_comparison_logging(
+    config,
+    experiment,
+    config_id,
+    effective_precision,
+    slots,
+    *,
+    evaluation_split="test",
+    random_only=False,
+):
     """Own one W&B run per metric/seed in the parent, with separate acquisition axes."""
     if not config.wandb_enabled:
         yield None
@@ -167,14 +248,16 @@ def wandb_comparison_logging(config, experiment, config_id, effective_precision,
     with ExitStack() as cleanup:
 
         def log_evaluation(metric, rows):
-            pair = rows[-2:]
-            payload = make_wandb_evaluation_log(pair, metric)
+            pair = rows[-1:] if random_only else rows[-2:]
+            payload = make_wandb_evaluation_log(pair, metric, random_only=random_only)
             seed = pair[0]["seed"]
             key = (metric, seed)
             if key not in runs:
                 name = (
                     f"{config.wandb_run_name or config.sweep_name}-{config_id}-{metric}-seed{seed}"
                 )
+                if random_only:
+                    name += "-validation-random"
                 settings = experiment.model_copy(
                     update={"uq_metric": metric, "model_seeds": [seed]}
                 )
@@ -192,14 +275,15 @@ def wandb_comparison_logging(config, experiment, config_id, effective_precision,
                         "seed": seed,
                         "config_id": config_id,
                         "sweep_name": config.sweep_name,
-                        "evaluation_split": "test",
+                        "evaluation_split": evaluation_split,
+                        "random_only": random_only,
                         "effective_precision": effective_precision,
-                        "shared_bootstrap_and_random": True,
+                        "shared_bootstrap_and_random": not random_only,
                     },
                 )
                 cleanup.callback(lambda run=run: run.finish(exit_code=0 if success else 1))
                 runs[key] = run
-                configure_wandb_metrics(run, metric)
+                configure_wandb_metrics(run, metric, random_only=random_only)
                 if not offline:
                     if len(runs) == 1:
                         CONSOLE.print(f"W&B project: {run.get_project_url()}", markup=False)
@@ -226,30 +310,43 @@ def paired_summary(results: list[dict]) -> dict:
     }
 
 
+def run_status(root: Path, slot: Path) -> dict:
+    completed = completed_run(root, slot)
+    if completed is not None:
+        return {**completed, "status": "complete"}
+    if (slot / "failure.json").exists():
+        return {**json.loads((slot / "failure.json").read_text()), "status": "failed"}
+    return {"status": "pending"}
+
+
 def write_summary(root: Path, plan: dict) -> dict:
     """Include every planned comparison and expose incomplete sweep coverage."""
+    if plan.get("mode") == "random_baseline_tuning":
+        trials = [
+            {**entry, **run_status(root, root / "tuning" / entry["config_id"])}
+            for entry in plan["configurations"]
+        ]
+        final = run_status(root, root / "final")
+        summary = {
+            "mode": plan["mode"],
+            "objective": plan["objective"],
+            "complete": final["status"] == "complete"
+            and all(row["status"] == "complete" for row in trials),
+            "trials": trials,
+            "final": final,
+        }
+        write_json(root / "summary.json", summary)
+        return summary
     comparisons = []
     for entry in plan["configurations"]:
         for metric in plan["uq_metrics"]:
             slot = root / "runs" / entry["config_id"] / metric
-            marker = slot / "completed.json"
             row = {
                 "config_id": entry["config_id"],
                 "uq_metric": metric,
                 "parameters": entry["parameters"],
+                **run_status(root, slot),
             }
-            if marker.exists():
-                completed = json.loads(marker.read_text())
-                for filename in ("results.csv", "config.json", "selections.json"):
-                    if not (root / completed["run_dir"] / filename).is_file():
-                        raise ValueError(f"Completed run is missing {filename}: {marker}")
-                row.update(completed, status="complete")
-            elif (slot / "failure.json").exists():
-                row.update(
-                    status="failed", error=json.loads((slot / "failure.json").read_text())["error"]
-                )
-            else:
-                row["status"] = "pending"
             comparisons.append(row)
     by_metric = []
     for metric in plan["uq_metrics"]:
@@ -286,6 +383,15 @@ def write_summary(root: Path, plan: dict) -> dict:
 
 
 def configure_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--mode",
+        choices=("compare", "tune-random"),
+        default=argparse.SUPPRESS,
+        help="Compare every configuration on test (default), or tune random on validation then test the winner.",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print the plan without loading data or models."
+    )
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--config", type=Path, help="JSON file with sweep and experiment settings.")
     source.add_argument("--config-json", help="Inline JSON with sweep and experiment settings.")
@@ -313,10 +419,15 @@ def load_search_config(
             {
                 key: value
                 for key, value in vars(args).items()
-                if key not in {"config", "config_json"}
+                if key not in {"config", "config_json", "dry_run"}
             }
         )
-        config = RandomSearchConfig.model_validate(settings)
+        config_class = (
+            RandomBaselineSearchConfig
+            if settings.get("mode") == "tune-random"
+            else RandomSearchConfig
+        )
+        config = config_class.model_validate(settings)
         sample_plan(config)
         return config
     except (OSError, ValueError) as error:
@@ -326,10 +437,14 @@ def load_search_config(
 @_quiet_search_output()
 def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     config = load_search_config(args, parser)
-    plan = sample_plan(config)
+    tuning = config.mode == "tune-random"
+    plan = tuning_plan(config) if tuning else sample_plan(config)
     device = get_device()
     effective_precision = resolve_precision(config.precision, device)
     plan["effective_precision"] = effective_precision
+    if args.dry_run:
+        print(json.dumps(plan, indent=2))
+        return
     root = config.sweeps_dir / config.sweep_name
     plan_path = root / "plan.json"
     if plan_path.exists():
@@ -362,10 +477,31 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         f"[bold cyan]Compute precision:[/] [bold]{effective_precision.upper()}[/]"
         f" · device: {device} · parameters/AdamW: FP32"
     )
-    # Use the original 5/328/84 split. Test labels never enter acquisition or training.
-    seed_examples, pool_inputs, pool_gold, test_examples = load_pet_splits(download_pet_ner())
-    total = config.num_configs * len(plan["uq_metrics"])
-    completed_runs = sum(row["status"] == "complete" for row in summary["comparisons"])
+    data_path = download_pet_ner()
+    seed_examples, pool_inputs, pool_gold, test_examples = load_pet_splits(data_path)
+    if tuning:
+        tune_pool, tune_gold, validation_examples, manifest = split_tuning_pool(
+            pool_inputs,
+            pool_gold,
+            validation_sentences=config.validation_sentences,
+            validation_seed=config.validation_seed,
+        )
+        preserve_json(
+            root / "split.json",
+            {
+                **manifest,
+                "dataset_sha256": hashlib.sha256(Path(data_path).read_bytes()).hexdigest(),
+                "seed_sentences": len(seed_examples),
+                "tuning_pool_sentences": len(tune_pool),
+                "validation_sentences": len(validation_examples),
+                "final_pool_sentences": len(pool_inputs),
+                "test_sentences": len(test_examples),
+            },
+        )
+    total = config.num_configs + 1 if tuning else config.num_configs * len(plan["uq_metrics"])
+    completed_runs = sum(
+        row["status"] == "complete" for row in summary["trials" if tuning else "comparisons"]
+    )
     with Progress(
         TextColumn("{task.description}"),
         BarColumn(),
@@ -378,45 +514,44 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             seed: progress.add_task(f"Seed {seed} · waiting / bootstrap", total=1)
             for seed in config.model_seeds
         }
-        for index, entry in enumerate(plan["configurations"]):
-            pending_metrics = [
-                row["uq_metric"]
-                for row in summary["comparisons"]
-                if row["config_id"] == entry["config_id"] and row["status"] != "complete"
-            ]
-            if not pending_metrics:
-                continue
+
+        def execute(entry, pending_metrics, *, stage, final=False):
+            nonlocal completed_runs
+            random_only = stage == "validation"
+            inputs, gold, evaluation = (
+                (tune_pool, tune_gold, validation_examples)
+                if random_only
+                else (pool_inputs, pool_gold, test_examples)
+            )
             slots = {
-                metric: root / "runs" / entry["config_id"] / metric for metric in pending_metrics
+                metric: (
+                    root / "final"
+                    if final
+                    else root / "tuning" / entry["config_id"]
+                    if random_only
+                    else root / "runs" / entry["config_id"] / metric
+                )
+                for metric in pending_metrics
             }
             for slot in slots.values():
                 slot.mkdir(parents=True, exist_ok=True)
-                # Old partial progress does not describe this fresh bootstrap attempt.
                 (slot / "progress.csv").unlink(missing_ok=True)
             experiment = ExperimentConfig.model_validate(
                 {
-                    **plan["fixed_config"],
+                    **config.experiment_config().model_dump(),
                     **entry["parameters"],
-                    **config.model_dump(include=WANDB_FIELDS),
-                    "seed_workers": config.seed_workers,
                 }
             )
-            description = f"Configurations {index + 1}/{config.num_configs}"
+            description = f"{'Final test' if final else stage.capitalize()} {entry['config_id']}"
             progress.update(overall_task, description=description)
             for seed, task in seed_tasks.items():
                 progress.reset(task, total=1, description=f"Seed {seed} · waiting / bootstrap")
             seed_fractions = {
                 (metric, seed): 0.0 for metric in pending_metrics for seed in seed_tasks
             }
+            base_completed = completed_runs
 
-            def update_progress(
-                metric,
-                rows,
-                slots=slots,
-                seed_fractions=seed_fractions,
-                base_completed=completed_runs,
-            ):
-                # Each metric receives complete pairs, including the shared random rows.
+            def update_progress(metric, rows):
                 slot = slots[metric]
                 temporary = slot / "progress.tmp"
                 pl.DataFrame(rows).write_csv(temporary)
@@ -429,7 +564,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                     seed_tasks[seed],
                     total=latest["total_rounds"],
                     completed=latest["round"],
-                    description=f"Seed {seed} · {metric} · round {latest['round']}/{latest['total_rounds']}",
+                    description=f"Seed {seed} · {'random' if random_only else metric} · round {latest['round']}/{latest['total_rounds']}",
                 )
                 seed_fractions[metric, seed] = (latest["round"] + 1) / (latest["total_rounds"] + 1)
                 progress.update(
@@ -439,17 +574,24 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
 
             try:
                 with wandb_comparison_logging(
-                    config, experiment, entry["config_id"], effective_precision, slots
+                    config,
+                    experiment,
+                    entry["config_id"],
+                    effective_precision,
+                    slots,
+                    evaluation_split=stage,
+                    random_only=random_only,
                 ) as log_evaluation:
                     settings = experiment.active_learning_kwargs()
                     settings.pop("uq_metric")
                     comparisons = run_metric_comparisons(
                         seed_examples,
-                        pool_inputs,
-                        pool_gold,
-                        test_examples,
+                        inputs,
+                        gold,
+                        evaluation,
                         **{**settings, "precision": effective_precision},
                         uq_metrics=pending_metrics,
+                        random_only=random_only,
                         device=device,
                         progress_callback=update_progress,
                     )
@@ -457,25 +599,39 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                     for metric in pending_metrics:
                         results, selections = comparisons[metric]
                         slot = slots[metric]
-                        paired_config = experiment.model_copy(update={"uq_metric": metric})
-                        stats = paired_summary(results)
-                        run_dir = write_run(
-                            {
-                                **paired_config.resolved_dict(),
-                                "effective_precision": effective_precision,
-                                "shared_bootstrap_and_random": True,
-                                "evaluation_split": "test",
-                                "mode": "random_search",
-                                "sweep_name": config.sweep_name,
-                                "config_id": entry["config_id"],
-                                "seed_sentences": len(seed_examples),
-                                "pool_sentences": len(pool_inputs),
-                                "test_sentences": len(test_examples),
-                            },
-                            results,
-                            selections,
-                            results_dir=slot,
+                        run_config = experiment.model_copy(update={"uq_metric": metric})
+                        stats = (
+                            {"score": random_validation_score(results, config.objective)}
+                            if random_only
+                            else paired_summary(results)
                         )
+                        if final:
+                            stats["per_seed"] = [
+                                {
+                                    "seed": seed,
+                                    **paired_summary([r for r in results if r["seed"] == seed]),
+                                }
+                                for seed in config.model_seeds
+                            ]
+                        metadata = {
+                            **run_config.resolved_dict(),
+                            "effective_precision": effective_precision,
+                            "shared_bootstrap_and_random": not random_only,
+                            "random_only": random_only,
+                            "evaluation_split": stage,
+                            "mode": "random_baseline_tuning" if tuning else "random_search",
+                            "sweep_name": config.sweep_name,
+                            "config_id": entry["config_id"],
+                            "seed_sentences": len(seed_examples),
+                            "pool_sentences": len(inputs),
+                            "evaluation_sentences": len(evaluation),
+                        }
+                        metadata["validation_sentences" if random_only else "test_sentences"] = len(
+                            evaluation
+                        )
+                        if tuning:
+                            metadata["objective"] = config.objective
+                        run_dir = write_run(metadata, results, selections, results_dir=slot)
                         write_json(
                             slot / "completed.json",
                             {"run_dir": str(run_dir.relative_to(root)), **stats},
@@ -494,7 +650,63 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 raise
             finally:
                 write_summary(root, plan)
-    CONSOLE.print(f"Test sweep complete. All comparisons: {root / 'summary.json'}")
+
+        for entry in plan["configurations"]:
+            if tuning:
+                pending_metrics = (
+                    [config.uq_metric]
+                    if completed_run(root, root / "tuning" / entry["config_id"]) is None
+                    else []
+                )
+            else:
+                pending_metrics = [
+                    row["uq_metric"]
+                    for row in summary["comparisons"]
+                    if row["config_id"] == entry["config_id"] and row["status"] != "complete"
+                ]
+            if pending_metrics:
+                execute(entry, pending_metrics, stage="validation" if tuning else "test")
+
+        if tuning:
+            trials = write_summary(root, plan)["trials"]
+            if any(row["status"] != "complete" for row in trials):
+                raise ValueError("All tuning configurations must finish before selecting a winner")
+            best = min(trials, key=lambda row: (-row["score"], row["config_id"]))
+            frozen = {
+                **config.experiment_config().model_dump(exclude={"seed_workers", *WANDB_FIELDS}),
+                **best["parameters"],
+            }
+            winner_path = root / "best_config.json"
+            if winner_path.exists():
+                saved = {
+                    key: value
+                    for key, value in json.loads(winner_path.read_text()).items()
+                    if key not in WANDB_FIELDS
+                }
+                if saved != frozen:
+                    raise ValueError("Saved best_config.json differs; choose a new sweep_name")
+            else:
+                write_json(winner_path, frozen)
+            preserve_json(
+                root / "selection.json",
+                {
+                    "config_id": best["config_id"],
+                    "objective": config.objective,
+                    "validation_score": best["score"],
+                    "selection_split": "validation",
+                },
+            )
+            CONSOLE.print(
+                f"Frozen winner: {best['config_id']} · validation score {best['score']:.6f}"
+            )
+            # Use the persisted scientific configuration; current logging/worker settings may vary.
+            execute(
+                {"config_id": best["config_id"], "parameters": frozen},
+                [config.uq_metric],
+                stage="test",
+                final=True,
+            )
+    CONSOLE.print(f"Search complete. Results: {root / 'summary.json'}")
 
 
 def main() -> None:

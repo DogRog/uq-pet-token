@@ -144,17 +144,32 @@ Use this workflow to find the strongest **random-selection configuration**, free
 hyperparameters, and assess whether uncertainty selection improves performance:
 
 ```bash
-uv run scripts/bert_token_uq_tune_random.py --config configs/distilbert_tune_random_50.json --dry-run
-uv run scripts/bert_token_uq_tune_random.py --config configs/distilbert_tune_random_50.json
+uv run scripts/bert_token_uq_search.py --mode tune-random --config configs/distilbert_tune_random_50.json --dry-run
+uv run scripts/bert_token_uq_search.py --mode tune-random --config configs/distilbert_tune_random_50.json
 ```
 
 The supplied configuration samples **50 distinct hyperparameter configurations** for
 DistilBERT with five model seeds. The dry run prints the plan without loading data or
 models. The second command starts training. Increase `seed_workers` in the JSON if
-GPU memory permits; it defaults to one. This workflow uses sequential model execution
-(`model_batch_size=1`) in both stages so the random learner retains the same training
-RNG stream when the uncertainty arm is added. Logs and results are local; W&B logging
-is not supported by this entry point.
+GPU memory permits; it defaults to one. The same search command supports two modes:
+`--mode compare` (the default) evaluates every sampled configuration with all UQ metrics;
+`--mode tune-random` tunes random selection on validation and tests only the frozen winner.
+You can also set `"mode": "tune-random"` in JSON, as the supplied configuration does.
+Both modes share sampling, progress, W&B logging, exports, and resume handling.
+
+`model_batch_size` accepts 1–4 in both modes. With `1` (the tuning config's default),
+learners train sequentially. With `2` or more, validation trains one vectorized random
+learner, and the final comparison batches its two learners together. Random-only tuning
+never trains an uncertainty learner or scores uncertainty. Changing the number of active
+learners changes vectorized dropout draws, so batched tuning and final training are not
+bit-for-bit identical trajectories; their hyperparameters and update budgets match.
+The final comparison always starts from a fresh bootstrap shared by both arms.
+
+Set `"wandb_enabled": true` to log tuning and final comparison runs. Validation runs
+contain only random-selection metrics and are marked `evaluation_split=validation`;
+final runs contain both arms and are marked `evaluation_split=test`. Online logging
+requires `WANDB_API_KEY` from the environment or project `.env`; `WANDB_MODE=offline`
+needs no credentials. Credentials are checked before loading data or training.
 
 1. Keep the original five seed sentences and 84 test sentences. Before tuning, use a
    fixed local RNG to hold out 66 of the 328 pool sentences for validation, leaving
@@ -201,12 +216,16 @@ informed the study design, treat the test comparison as exploratory.
 Repeat the same command to resume. Completed trials are retained; an interrupted trial
 or final comparison restarts from bootstrap. The final comparison waits for every
 validation trial to finish. Changing scientific settings requires a new `sweep_name`;
-worker count may change on resume. Run one process per sweep. Existing sweep artifacts
-and their analysis notebooks remain unchanged; this workflow has its own output directory.
+worker count and W&B preferences may change on resume. Completed runs are not logged
+retroactively. Run one process per sweep. Existing sweep artifacts and their analysis
+notebooks remain unchanged; tuning has its own output directory. The former
+`bert_token_uq_tune_random.py` entry point has been removed; use the mode flag above.
+Its saved tuning plans and completed outputs with the same scientific settings can resume
+through the shared command.
 
 ## Random hyperparameter sweep
 
-`scripts/bert_token_uq_search.py` samples a fixed set of distinct configurations
+In its default `--mode compare`, `scripts/bert_token_uq_search.py` samples a fixed set of distinct configurations
 uniformly without replacement, using a local seeded RNG. It saves the entire plan
 before loading data or training. Scores never change the plan, run order, or budget.
 Every configuration runs entropy, least confidence, and margin against a matched
@@ -378,7 +397,7 @@ Use `--list` on an `add` command to inspect a repository before installing it, o
 | `notebooks/bert_token_uq.py` | controls, experiment run, tables, and plots |
 | `notebooks/fixed_all_metrics_analysis.py` | read-only analysis of saved historical sweeps |
 | `notebooks/charts.py` | shared chart builders and W&B comparison media |
-| `scripts/bert_token_uq_search.py` | fixed random sweep, paired test evaluation, resume, and summaries |
+| `scripts/bert_token_uq_search.py` | random sweep or baseline tuning, shared execution, resume, and summaries |
 | `notebooks/test_analysis.py` | individual test curves and sweep-wide paired gaps |
 | `notebooks/random_search_analysis.py` | random-sweep summaries and per-configuration drill-downs |
 | `tests/test_token_uq.py` | focused offline invariant tests |

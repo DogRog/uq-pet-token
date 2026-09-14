@@ -1,5 +1,6 @@
 """Verify validation-only baseline selection, final isolation, and resumable execution."""
 
+import argparse
 import importlib.util
 import json
 import random
@@ -8,16 +9,24 @@ from pathlib import Path
 
 import pytest
 
+from test_random_search import fake_wandb as fake_wandb
 from uq_pet.experiment import RandomBaselineSearchConfig
 from uq_pet.pet_data import split_tuning_pool
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
-SPEC = importlib.util.spec_from_file_location(
-    "tune_random", SCRIPTS / "bert_token_uq_tune_random.py"
-)
+SPEC = importlib.util.spec_from_file_location("tune_random", SCRIPTS / "bert_token_uq_search.py")
 tune = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(tune)
+
+
+def run_tuning(config, *, dry_run=False):
+    parser = argparse.ArgumentParser()
+    tune.configure_parser(parser)
+    args = ["--config-json", config.model_dump_json()]
+    if dry_run:
+        args.append("--dry-run")
+    tune.run(parser.parse_args(args), parser)
 
 
 def rows(score, *, arm="random", seeds=(0, 1)):
@@ -28,6 +37,9 @@ def rows(score, *, arm="random", seeds=(0, 1)):
             "round": idx,
             "total_rounds": 2,
             "percent_acquired": percent,
+            "n_acquired": percent,
+            "scoreable_pool_tokens": 100,
+            "token_budget": 100,
             "entity_f1": score if idx else 0.1,
         }
         for seed in seeds
@@ -93,13 +105,15 @@ def test_plan_locks_objective_metric_and_split_but_allows_worker_changes():
         {"objective": "random_validation_final_entity_f1"},
     ):
         assert plan != tune.tuning_plan(config.model_copy(update=update))
+    assert RandomBaselineSearchConfig(model_batch_size=2, wandb_enabled=True).wandb_enabled
     with pytest.raises(ValueError):
-        RandomBaselineSearchConfig(model_batch_size=2)
+        RandomBaselineSearchConfig(model_batch_size=5)
 
 
 @pytest.fixture
 def fake_search(tmp_path, monkeypatch):
-    monkeypatch.setattr("bert_token_uq_search.SEARCH_SPACE", {"k": (8, 16)})
+    monkeypatch.setattr(tune, "SEARCH_SPACE", {"k": (8, 16)})
+    monkeypatch.setattr(tune, "PROJECT_ROOT", tmp_path)
     config = RandomBaselineSearchConfig(
         num_configs=2,
         sweeps_dir=tmp_path,
@@ -127,7 +141,7 @@ def fake_search(tmp_path, monkeypatch):
         assert not {r["tokens"][0] for r in p} & {r["tokens"][0] for r in evaluation}
         calls.append(("validation", kwargs))
         output = rows(0.8 if kwargs["k"] == 16 else 0.3)
-        kwargs["progress_callback"](output)
+        # Publish complete rounds in the shared engine stub below.
         return output, [{"arm": "random", "token": "selected"}]
 
     def run_pair(s, p, g, evaluation, **kwargs):
@@ -140,22 +154,37 @@ def fake_search(tmp_path, monkeypatch):
             for row in tune.write_summary(root, tune.tuning_plan(config))["trials"]
         )
         random_kwargs = next(kw for stage, kw in calls if stage == "validation" and kw["k"] == 16)
-        assert {key: val for key, val in kwargs.items() if key != "progress_callback"} == {
-            key: val for key, val in random_kwargs.items() if key != "progress_callback"
+        assert {
+            key: val
+            for key, val in kwargs.items()
+            if key not in {"progress_callback", "random_only"}
+        } == {
+            key: val
+            for key, val in random_kwargs.items()
+            if key not in {"progress_callback", "random_only"}
         }
         calls.append(("test", kwargs))
         output = rows(0.4) + rows(0.6, arm="uncertainty")
-        kwargs["progress_callback"](output)
+        # Publish complete rounds in the shared engine stub below.
         return output, [{"arm": "uncertainty", "token": "selected"}]
 
-    monkeypatch.setattr(tune, "run_random_selection", run_random)
-    monkeypatch.setattr(tune, "run_active_learning", run_pair)
+    def run_comparisons(*args, **kwargs):
+        runner = run_random if kwargs["random_only"] else run_pair
+        output, selections = runner(*args, **kwargs)
+        output.sort(key=lambda row: (row["seed"], row["round"], row["arm"] == "random"))
+        width = 1 if kwargs["random_only"] else 2
+        metric = kwargs["uq_metrics"][0]
+        for end in range(width, len(output) + 1, width):
+            kwargs["progress_callback"](metric, output[:end])
+        return {metric: (output, selections)}
+
+    monkeypatch.setattr(tune, "run_metric_comparisons", run_comparisons)
     return config, root, calls
 
 
 def test_tune_then_freeze_then_test_and_completed_resume(fake_search, monkeypatch):
     config, root, calls = fake_search
-    tune.run(config)
+    run_tuning(config)
     assert [stage for stage, _ in calls] == ["validation", "validation", "test"]
     summary = json.loads((root / "summary.json").read_text())
     assert summary["complete"]
@@ -168,15 +197,15 @@ def test_tune_then_freeze_then_test_and_completed_resume(fake_search, monkeypatc
     monkeypatch.setattr(
         tune, "download_pet_ner", lambda: pytest.fail("complete resume loaded data")
     )
-    tune.run(config.model_copy(update={"seed_workers": 2}))
+    run_tuning(config.model_copy(update={"seed_workers": 2}))
     assert len(calls) == 3
-    with pytest.raises(ValueError, match="differs"):
-        tune.run(config.model_copy(update={"validation_seed": 999}))
+    with pytest.raises(SystemExit, match="2"):
+        run_tuning(config.model_copy(update={"validation_seed": 999}))
 
 
 def test_failed_tuning_never_selects_winner_or_tests_and_resumes(fake_search, monkeypatch):
     config, root, calls = fake_search
-    original = tune.run_random_selection
+    original = tune.run_metric_comparisons
     attempts = 0
 
     def fail_second(*args, **kwargs):
@@ -186,16 +215,16 @@ def test_failed_tuning_never_selects_winner_or_tests_and_resumes(fake_search, mo
             raise RuntimeError("interrupted")
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(tune, "run_random_selection", fail_second)
+    monkeypatch.setattr(tune, "run_metric_comparisons", fail_second)
     with pytest.raises(RuntimeError):
-        tune.run(config)
+        run_tuning(config)
     assert not (root / "best_config.json").exists()
     assert [stage for stage, _ in calls] == ["validation"]
     summary = json.loads((root / "summary.json").read_text())
     assert [r["status"] for r in summary["trials"]] == ["complete", "failed"]
     saved = summary["trials"][0]["run_dir"]
-    monkeypatch.setattr(tune, "run_random_selection", original)
-    tune.run(config)
+    monkeypatch.setattr(tune, "run_metric_comparisons", original)
+    run_tuning(config)
     assert len(calls) == 3
     assert json.loads((root / "summary.json").read_text())["trials"][0]["run_dir"] == saved
 
@@ -203,32 +232,104 @@ def test_failed_tuning_never_selects_winner_or_tests_and_resumes(fake_search, mo
 def test_dry_run_has_no_data_or_files(fake_search, monkeypatch):
     config, root, calls = fake_search
     monkeypatch.setattr(tune, "download_pet_ner", lambda: pytest.fail("dry run loaded data"))
-    tune.run(config, dry_run=True)
+    run_tuning(config, dry_run=True)
     assert not root.exists()
     assert calls == []
 
 
 def test_final_failure_reuses_frozen_winner_and_never_retunes(fake_search, monkeypatch):
     config, root, calls = fake_search
-    original = tune.run_active_learning
+    original = tune.run_metric_comparisons
     monkeypatch.setattr(
         tune,
-        "run_active_learning",
-        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("test failed")),
+        "run_metric_comparisons",
+        lambda *a, **kw: (
+            original(*a, **kw)
+            if kw["random_only"]
+            else (_ for _ in ()).throw(RuntimeError("test failed"))
+        ),
     )
     with pytest.raises(RuntimeError, match="test failed"):
-        tune.run(config)
+        run_tuning(config)
     frozen = (root / "best_config.json").read_text()
     assert json.loads((root / "summary.json").read_text())["final"]["status"] == "failed"
-    monkeypatch.setattr(tune, "run_active_learning", original)
+    monkeypatch.setattr(tune, "run_metric_comparisons", original)
     monkeypatch.setattr(
-        tune, "run_random_selection", lambda *a, **kw: pytest.fail("retuned winner")
+        tune,
+        "run_metric_comparisons",
+        lambda *a, **kw: pytest.fail("retuned winner") if kw["random_only"] else original(*a, **kw),
     )
-    tune.run(config)
+    run_tuning(config)
     assert (root / "best_config.json").read_text() == frozen
     assert [stage for stage, _ in calls] == ["validation", "validation", "test"]
     summary = json.loads((root / "summary.json").read_text())
     assert summary["complete"]
     (root / summary["trials"][0]["run_dir"] / "results.csv").unlink()
     with pytest.raises(ValueError, match="missing results.csv"):
-        tune.run(config)
+        run_tuning(config)
+
+
+def test_tuning_supports_model_batching_and_wandb_with_separate_validation_test_logs(
+    fake_search, fake_wandb
+):
+    config, root, calls = fake_search
+    config = config.model_copy(update={"model_batch_size": 2, "wandb_enabled": True})
+    run_tuning(config)
+    assert all(kwargs["model_batch_size"] == 2 for _, kwargs in calls)
+    assert len(fake_wandb.runs) == 6  # Two tuning configs and one final, each with two seeds.
+    validation_runs = [
+        r for r in fake_wandb.runs if r.settings["config"]["evaluation_split"] == "validation"
+    ]
+    test_runs = [r for r in fake_wandb.runs if r.settings["config"]["evaluation_split"] == "test"]
+    assert len(validation_runs) == 4 and len(test_runs) == 2
+    for run in validation_runs:
+        assert run.settings["config"]["random_only"]
+        assert all("evaluation/entity_f1/random" in log for log in run.logs)
+        assert all("evaluation/entity_f1/entropy" not in log for log in run.logs)
+        assert all("/entropy" not in args[0] for args, _ in run.metrics)
+    for run in test_runs:
+        assert not run.settings["config"]["random_only"]
+        assert all("evaluation/entity_f1/entropy" in log for log in run.logs)
+    for run in fake_wandb.runs:
+        assert [row["evaluation/round"] for row in run.logs] == [0, 1, 2]
+        assert run.exit_codes == [0]
+    # Changing logging preferences doesn't invalidate a completed scientific plan.
+    run_tuning(config.model_copy(update={"wandb_enabled": False}))
+    assert len(calls) == 3
+    assert json.loads((root / "best_config.json").read_text())["model_batch_size"] == 2
+
+
+def test_tuning_wandb_missing_credentials_fails_before_loading_data(fake_search, monkeypatch):
+    config, _, _ = fake_search
+    monkeypatch.delenv("WANDB_API_KEY", raising=False)
+    monkeypatch.delenv("WANDB_MODE", raising=False)
+    monkeypatch.setattr(tune, "download_pet_ner", lambda: pytest.fail("unexpected download"))
+    with pytest.raises(ValueError, match="WANDB_API_KEY is missing"):
+        run_tuning(config.model_copy(update={"wandb_enabled": True}))
+
+
+def test_tuning_wandb_offline_resume_retains_winner_and_closes_failed_runs(
+    fake_search, fake_wandb, monkeypatch
+):
+    config, root, calls = fake_search
+    config = config.model_copy(update={"wandb_enabled": True})
+    monkeypatch.setenv("WANDB_MODE", "offline")
+    monkeypatch.delenv("WANDB_API_KEY")
+    original = tune.run_metric_comparisons
+
+    def fail_final(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if not kwargs["random_only"]:
+            raise RuntimeError("test interrupted")
+        return result
+
+    monkeypatch.setattr(tune, "run_metric_comparisons", fail_final)
+    with pytest.raises(RuntimeError, match="test interrupted"):
+        run_tuning(config)
+    assert not fake_wandb.logins
+    assert [r.exit_codes for r in fake_wandb.runs] == [[0]] * 4 + [[1]] * 2
+    frozen = (root / "best_config.json").read_bytes()
+    monkeypatch.setattr(tune, "run_metric_comparisons", original)
+    run_tuning(config.model_copy(update={"wandb_enabled": False, "wandb_project": "changed"}))
+    assert (root / "best_config.json").read_bytes() == frozen
+    assert [stage for stage, _ in calls] == ["validation", "validation", "test", "test"]

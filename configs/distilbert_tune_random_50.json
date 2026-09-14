@@ -1,4 +1,5 @@
 {
+  "mode": "tune-random",
   "num_configs": 50,
   "sweep_name": "distilbert-random-baseline-50",
   "sweeps_dir": "results/random_baseline_search",

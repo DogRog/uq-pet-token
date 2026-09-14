@@ -557,4 +557,4 @@ def test_progress_tracks_each_seed_and_resets_between_configurations(
     assert snapshots[2][2] == (0, 1, "Seed 1 · entropy · round 0/1")
     assert snapshots[2][0][0] == pytest.approx(0.75)
     assert displays[0].tasks[0].completed == displays[0].tasks[0].total == 6
-    assert displays[0].tasks[0].description == "Configurations 2/2"
+    assert displays[0].tasks[0].description == "Test config_0001"

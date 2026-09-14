@@ -189,6 +189,7 @@ class ExperimentConfig(BaseModel):
 class RandomSearchConfig(ExperimentConfig):
     """Fixed random-sweep budget and settings, validated before any training."""
 
+    mode: Literal["compare", "tune-random"] = "compare"
     num_configs: int = Field(ge=1)
     sweep_name: str = "bert-token-uq-random"
     sweeps_dir: Path = RESULTS_DIR / "random_search"
@@ -213,6 +214,7 @@ class RandomSearchConfig(ExperimentConfig):
 class RandomBaselineSearchConfig(RandomSearchConfig):
     """Tune random acquisition on validation, then test one frozen paired configuration."""
 
+    mode: Literal["tune-random"] = "tune-random"
     num_configs: int = Field(default=50, ge=1)
     sweep_name: str = "distilbert-random-baseline-50"
     sweeps_dir: Path = RESULTS_DIR / "random_baseline_search"
@@ -221,9 +223,7 @@ class RandomBaselineSearchConfig(RandomSearchConfig):
     objective: Literal["random_validation_entity_f1_auc", "random_validation_final_entity_f1"] = (
         "random_validation_entity_f1_auc"
     )
-    # Keep the random training stream identical when adding the UQ arm at final evaluation.
-    model_batch_size: Literal[1] = 1
-    wandb_enabled: Literal[False] = False
+    model_batch_size: int = Field(default=1, ge=1, le=4)
 
 
 def execute_experiment(
@@ -353,38 +353,42 @@ def summarize_label_category_coverage(
     )
 
 
-def configure_wandb_metrics(wandb_run, uq_metric: str) -> None:
+def configure_wandb_metrics(wandb_run, uq_metric: str, *, random_only: bool = False) -> None:
     """Keep bookkeeping out of auto-panels and use acquisition as the x-axis."""
+    arms = ("random",) if random_only else (uq_metric, "random")
     for field in _WANDB_COMMON_FIELDS:
         wandb_run.define_metric(f"evaluation/{field}", hidden=True)
     for field in _WANDB_HIDDEN_ARM_FIELDS:
-        for arm in (uq_metric, "random"):
+        for arm in arms:
             wandb_run.define_metric(f"evaluation/{field}/{arm}", hidden=True)
     for field in _WANDB_TRACKED_ARM_FIELDS:
-        for arm in (uq_metric, "random"):
+        for arm in arms:
             wandb_run.define_metric(
                 f"evaluation/{field}/{arm}",
                 step_metric="evaluation/percent_acquired",
             )
 
 
-def make_wandb_evaluation_log(rows: list[dict], uq_metric: str) -> dict:
+def make_wandb_evaluation_log(
+    rows: list[dict], uq_metric: str, *, random_only: bool = False
+) -> dict:
     """Build one W&B step with a separate scalar series for each arm."""
-    if len(rows) != len(_WANDB_ARMS):
+    arms = ("random",) if random_only else _WANDB_ARMS
+    if len(rows) != len(arms):
         raise ValueError("a W&B evaluation step requires exactly one row per arm")
 
     rows_by_arm = {row["arm"]: row for row in rows}
-    if set(rows_by_arm) != set(_WANDB_ARMS):
-        raise ValueError("a W&B evaluation step requires uncertainty and random rows")
+    if set(rows_by_arm) != set(arms):
+        raise ValueError(f"a W&B evaluation step requires {' and '.join(arms)} rows")
 
-    first = rows_by_arm[_WANDB_ARMS[0]]
+    first = rows_by_arm[arms[0]]
     for field in _WANDB_COMMON_FIELDS:
-        if any(rows_by_arm[arm][field] != first[field] for arm in _WANDB_ARMS[1:]):
+        if any(rows_by_arm[arm][field] != first[field] for arm in arms[1:]):
             raise ValueError(f"W&B evaluation rows disagree on {field}")
 
     payload = {f"evaluation/{field}": first[field] for field in _WANDB_COMMON_FIELDS}
     arm_fields = set(first) - set(_WANDB_COMMON_FIELDS) - {"arm"}
-    for arm in _WANDB_ARMS:
+    for arm in arms:
         if set(rows_by_arm[arm]) - set(_WANDB_COMMON_FIELDS) - {"arm"} != arm_fields:
             raise ValueError("W&B evaluation rows have different metric fields")
         for field in sorted(arm_fields):

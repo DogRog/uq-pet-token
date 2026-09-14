@@ -233,8 +233,8 @@ def run_metric_comparisons(
         raise ValueError(f"uq_metrics must be drawn from {UQ_METRICS}")
     if not 1 <= model_batch_size <= 4:
         raise ValueError("model_batch_size must be between 1 and 4")
-    if random_only and (model_batch_size != 1 or len(uq_metrics) != 1):
-        raise ValueError("random_only requires model_batch_size=1 and one metric key")
+    if random_only and len(uq_metrics) != 1:
+        raise ValueError("random_only requires one metric key")
     precision = resolve_precision(precision, device)
     if bootstrap_epochs < 0:
         raise ValueError(f"bootstrap_epochs must be non-negative, got {bootstrap_epochs}")
@@ -558,7 +558,8 @@ def _run_batched_metrics(
 ):
     """Run groups of UQ/random learners in lockstep, reusing one random trajectory."""
     uq_metrics = settings["uq_metrics"]
-    lane_order = [uq_metrics[0], "random", *uq_metrics[1:]]
+    random_only = settings.get("random_only", False)
+    lane_order = ["random"] if random_only else [uq_metrics[0], "random", *uq_metrics[1:]]
     random_results, random_selections = {}, {}
     width = settings["model_batch_size"]
     for start in range(0, len(lane_order), width):
@@ -574,7 +575,8 @@ def _run_batched_metrics(
         )
         acquired = {lane: set() for lane in lanes}
         replay_banks = {lane: seed_replay_items(seed_examples) for lane in lanes}
-        for metric in metrics:
+        export_metrics = uq_metrics if random_only else metrics
+        for metric in export_metrics:
             results, _ = comparisons[metric]
             results.extend(
                 _result_row(
@@ -587,14 +589,18 @@ def _run_batched_metrics(
                     token_budget=token_budget,
                     total_rounds=rounds,
                 )
-                for arm in ("uncertainty", "random")
+                for arm in (("random",) if random_only else ("uncertainty", "random"))
             )
             if progress_callback is not None:
                 progress_callback(metric, list(results))
         for round_idx in range(1, rounds + 1):
             round_k = min(settings["k"], token_budget - (round_idx - 1) * settings["k"])
-            score_maps = models.score(
-                pool_inputs, pool_batches, metrics, [acquired[metric] for metric in metrics]
+            score_maps = (
+                models.score(
+                    pool_inputs, pool_batches, metrics, [acquired[metric] for metric in metrics]
+                )
+                if metrics
+                else []
             )
             scores = dict(zip(metrics, score_maps, strict=True))
             chosen = {metric: select_top_k(scores[metric], round_k) for metric in metrics}
@@ -664,15 +670,19 @@ def _run_batched_metrics(
             if "random" in lanes:
                 random_results[round_idx] = round_results["random"]
                 random_selections[round_idx] = round_selections["random"]
-            for metric in metrics:
+            for metric in export_metrics:
                 results, selections = comparisons[metric]
-                pair = [round_results[metric], dict(random_results[round_idx])]
+                pair = ([] if random_only else [round_results[metric]]) + [
+                    dict(random_results[round_idx])
+                ]
                 results.extend(pair)
-                selections.extend(round_selections[metric])
+                if not random_only:
+                    selections.extend(round_selections[metric])
                 selections.extend(dict(row) for row in random_selections[round_idx])
                 if progress_callback is not None:
                     progress_callback(metric, list(results))
-                CONSOLE.print(_round_progress_table({row["arm"]: row for row in pair}, metric))
+                if not random_only:
+                    CONSOLE.print(_round_progress_table({row["arm"]: row for row in pair}, metric))
         del models
 
 

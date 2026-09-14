@@ -349,3 +349,28 @@ def test_random_only_matches_paired_random_and_never_scores_pool(
     assert random_selections == [row for row in paired_selections if row["arm"] == "random"]
     assert [len(snapshot) for snapshot in snapshots] == list(range(1, len(random_rows) + 1))
     assert all(row["arm"] == "random" for snapshot in snapshots for row in snapshot)
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_batched_random_only_is_reproducible_and_skips_uq(tiny_experiment, monkeypatch, workers):
+    args, kwargs = tiny_experiment
+    kwargs = {**kwargs, "model_batch_size": 2, "seed_workers": workers, "model_seeds": [11, 3]}
+    previous = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        _, paired_selections = active_learning.run_active_learning(*args, **kwargs)
+        monkeypatch.setattr(
+            BatchedTokenModels, "score", lambda *a, **kw: pytest.fail("random-only scored pool")
+        )
+        snapshots = []
+        first = active_learning.run_random_selection(
+            *args, **kwargs, progress_callback=snapshots.append
+        )
+        second = active_learning.run_random_selection(*args, **kwargs)
+    finally:
+        torch.set_num_threads(previous)
+    assert first == second
+    rows, selections = first
+    assert all(row["arm"] == "random" for row in rows)
+    assert selections == [row for row in paired_selections if row["arm"] == "random"]
+    assert [len(snapshot) for snapshot in snapshots] == list(range(1, len(rows) + 1))
