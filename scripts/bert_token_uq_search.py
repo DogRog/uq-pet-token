@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a paired hyperparameter sweep or tune random selection before testing UQ."""
+"""Run a paired hyperparameter sweep or tune random selection and save the winning hyperparameters."""
 
 import argparse
 import hashlib
@@ -156,10 +156,10 @@ def write_json(path: Path, value: dict) -> None:
 
 
 def tuning_plan(config: RandomBaselineSearchConfig) -> dict:
-    """Lock sampling, holdout, objective, and final acquisition rule before training."""
+    """Lock random-only sampling, validation holdout, and objective before training."""
     sampled = sample_plan(config)
     return {
-        "version": 2,
+        "version": 3,
         "mode": "random_baseline_tuning",
         "sampling": sampled["sampling"],
         "sampler_seed": config.sampler_seed,
@@ -171,10 +171,7 @@ def tuning_plan(config: RandomBaselineSearchConfig) -> dict:
         "validation_seed": config.validation_seed,
         "objective": config.objective,
         "tie_break": "config_id_ascending",
-        "final_uq_metric": config.uq_metric,
         "tuning_evaluation_split": "validation",
-        "final_evaluation_split": "test",
-        "final_pool": "original_328_sentences",
     }
 
 
@@ -225,12 +222,25 @@ def completed_run(root: Path, slot: Path) -> dict | None:
 
 
 def scientific_plan(plan: dict) -> dict:
-    """Ignore logging fields in older plans without relaxing any experiment settings."""
+    """Ignore logging and last-bit rate roundoff when comparing saved scientific plans.
+
+    The exact saved rates remain authoritative for execution.
+    """
     return {
         **plan,
         "fixed_config": {
             key: value for key, value in plan["fixed_config"].items() if key not in WANDB_FIELDS
         },
+        "configurations": [
+            {
+                **entry,
+                "parameters": {
+                    **entry["parameters"],
+                    "learning_rate": float(format(entry["parameters"]["learning_rate"], ".14g")),
+                },
+            }
+            for entry in plan["configurations"]
+        ],
     }
 
 
@@ -263,14 +273,16 @@ def wandb_comparison_logging(
             seed = pair[0]["seed"]
             key = (metric, seed)
             if key not in runs:
-                name = (
-                    f"{config.wandb_run_name or config.sweep_name}-{config_id}-{metric}-seed{seed}"
-                )
+                acquisition = "random" if random_only else metric
+                name = f"{config.wandb_run_name or config.sweep_name}-{config_id}-{acquisition}-seed{seed}"
                 if random_only:
                     name += "-validation-random"
                 settings = experiment.model_copy(
                     update={"uq_metric": metric, "model_seeds": [seed]}
                 )
+                logged_settings = settings.resolved_dict()
+                if random_only:
+                    logged_settings.pop("uq_metric", None)
                 run = wandb.init(
                     project=config.wandb_project,
                     name=name,
@@ -280,7 +292,7 @@ def wandb_comparison_logging(
                     settings={"quiet": True, "console": "off"},
                     dir=str(slots[metric]),
                     config={
-                        **settings.resolved_dict(),
+                        **logged_settings,
                         "wandb_run_name": name,
                         "seed": seed,
                         "config_id": config_id,
@@ -336,14 +348,13 @@ def write_summary(root: Path, plan: dict) -> dict:
             {**entry, **run_status(root, root / "tuning" / entry["config_id"])}
             for entry in plan["configurations"]
         ]
-        final = run_status(root, root / "final")
         summary = {
             "mode": plan["mode"],
             "objective": plan["objective"],
-            "complete": final["status"] == "complete"
-            and all(row["status"] == "complete" for row in trials),
+            "complete": all(row["status"] == "complete" for row in trials)
+            and (root / "best_config.json").is_file()
+            and (root / "selection.json").is_file(),
             "trials": trials,
-            "final": final,
         }
         write_json(root / "summary.json", summary)
         return summary
@@ -397,7 +408,7 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         "--mode",
         choices=("compare", "tune-random"),
         default=argparse.SUPPRESS,
-        help="Compare every configuration on test (default), or tune random on validation then test the winner.",
+        help="Compare every configuration on test (default), or tune random on validation and save the winner without running UQ.",
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Print the plan without loading data or models."
@@ -458,10 +469,24 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     root = config.sweeps_dir / config.sweep_name
     plan_path = root / "plan.json"
     if plan_path.exists():
-        if scientific_plan(json.loads(plan_path.read_text())) != scientific_plan(plan):
+        saved_plan = json.loads(plan_path.read_text())
+        if tuning and saved_plan.get("version") == 2:
+            # Retain completed random-only trials from the old two-stage workflow.
+            random_plan = {
+                key: value
+                for key, value in saved_plan.items()
+                if key not in {"final_uq_metric", "final_evaluation_split", "final_pool"}
+            }
+            random_plan["version"] = 3
+            if scientific_plan(random_plan) == scientific_plan(plan):
+                preserve_json(root / "plan.v2.json", saved_plan)
+                saved_plan = random_plan
+                write_json(plan_path, saved_plan)
+        if scientific_plan(saved_plan) != scientific_plan(plan):
             parser.error(
                 "Existing sweep has a different plan; choose a new --sweep-name. The budget is fixed, not additional runs."
             )
+        plan = saved_plan
     else:
         if root.exists() and any(root.iterdir()):
             parser.error("Sweep directory is nonempty but has no plan; choose a new --sweep-name.")
@@ -508,7 +533,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 "test_sentences": len(test_examples),
             },
         )
-    total = config.num_configs + 1 if tuning else config.num_configs * len(plan["uq_metrics"])
+    total = config.num_configs if tuning else config.num_configs * len(plan["uq_metrics"])
     completed_runs = sum(
         row["status"] == "complete" for row in summary["trials" if tuning else "comparisons"]
     )
@@ -525,7 +550,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             for seed in config.model_seeds
         }
 
-        def execute(entry, pending_metrics, *, stage, final=False):
+        def execute(entry, pending_metrics, *, stage):
             nonlocal completed_runs
             random_only = stage == "validation"
             inputs, gold, evaluation = (
@@ -535,9 +560,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             )
             slots = {
                 metric: (
-                    root / "final"
-                    if final
-                    else root / "tuning" / entry["config_id"]
+                    root / "tuning" / entry["config_id"]
                     if random_only
                     else root / "runs" / entry["config_id"] / metric
                 )
@@ -552,7 +575,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                     **entry["parameters"],
                 }
             )
-            description = f"{'Final test' if final else stage.capitalize()} {entry['config_id']}"
+            description = f"{stage.capitalize()} {entry['config_id']}"
             progress.update(overall_task, description=description)
             for seed, task in seed_tasks.items():
                 progress.reset(task, total=1, description=f"Seed {seed} · waiting / bootstrap")
@@ -615,14 +638,6 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                             if random_only
                             else paired_summary(results)
                         )
-                        if final:
-                            stats["per_seed"] = [
-                                {
-                                    "seed": seed,
-                                    **paired_summary([r for r in results if r["seed"] == seed]),
-                                }
-                                for seed in config.model_seeds
-                            ]
                         metadata = {
                             **run_config.resolved_dict(),
                             "effective_precision": effective_precision,
@@ -640,6 +655,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                             evaluation
                         )
                         if tuning:
+                            metadata.pop("uq_metric", None)
                             metadata["objective"] = config.objective
                         run_dir = write_run(metadata, results, selections, results_dir=slot)
                         write_json(
@@ -663,6 +679,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
 
         for entry in plan["configurations"]:
             if tuning:
+                # The shared engine requires a routing key; random_only disables UQ scoring.
                 pending_metrics = (
                     [config.uq_metric]
                     if completed_run(root, root / "tuning" / entry["config_id"]) is None
@@ -683,7 +700,9 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 raise ValueError("All tuning configurations must finish before selecting a winner")
             best = min(trials, key=lambda row: (-row["score"], row["config_id"]))
             frozen = {
-                **config.experiment_config().model_dump(exclude={"seed_workers", *WANDB_FIELDS}),
+                **config.experiment_config().model_dump(
+                    exclude={"seed_workers", "uq_metric", *WANDB_FIELDS}
+                ),
                 **best["parameters"],
             }
             winner_path = root / "best_config.json"
@@ -691,7 +710,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 saved = {
                     key: value
                     for key, value in json.loads(winner_path.read_text()).items()
-                    if key not in WANDB_FIELDS
+                    if key not in {*WANDB_FIELDS, "uq_metric"}
                 }
                 if saved != frozen:
                     raise ValueError("Saved best_config.json differs; choose a new sweep_name")
@@ -709,13 +728,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             CONSOLE.print(
                 f"Frozen winner: {best['config_id']} · validation score {best['score']:.6f}"
             )
-            # Use the persisted scientific configuration; current logging/worker settings may vary.
-            execute(
-                {"config_id": best["config_id"], "parameters": frozen},
-                [config.uq_metric],
-                stage="test",
-                final=True,
-            )
+            write_summary(root, plan)
     CONSOLE.print(f"Search complete. Results: {root / 'summary.json'}")
 
 

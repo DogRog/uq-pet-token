@@ -84,12 +84,12 @@ def test_plan_is_unique_reproducible_local_and_covers_all_metrics():
     assert "uq_metric" not in plan["search_space"]
     for row in plan["configurations"]:
         assert all(row["parameters"][key] in values for key, values in search.SEARCH_SPACE.items())
-        assert 1e-5 <= row["parameters"]["learning_rate"] <= 5e-5
+        assert 1e-6 <= row["parameters"]["learning_rate"] <= 1e-4
     assert len({row["parameters"]["learning_rate"] for row in plan["configurations"]}) == 200
     assert plan["search_space"]["learning_rate"] == {
         "distribution": "log_uniform",
-        "low": 1e-5,
-        "high": 5e-5,
+        "low": 1e-6,
+        "high": 1e-4,
     }
     assert "learning_rate" not in plan["fixed_config"]
     assert plan == search.sample_plan(config.model_copy(update={"learning_rate": 3e-5}))

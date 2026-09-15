@@ -212,7 +212,7 @@ class RandomSearchConfig(ExperimentConfig):
 
 
 class RandomBaselineSearchConfig(RandomSearchConfig):
-    """Tune random acquisition on validation, then test one frozen paired configuration."""
+    """Tune random acquisition on validation and save the winning configuration."""
 
     mode: Literal["tune-random"] = "tune-random"
     num_configs: int = Field(default=50, ge=1)

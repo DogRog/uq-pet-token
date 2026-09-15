@@ -138,90 +138,58 @@ Larger groups increase activation memory and may not be faster than sequential e
 with fused attention. Compare complete-run time with the same checkpoint, hyperparameters,
 seeds, precision, and worker count; `model_batch_size=1` versus `2` is the first comparison.
 
-## Tune the random baseline, then compare uncertainty
+## Tune the random baseline
 
-Use this workflow to find the strongest **random-selection configuration**, freeze its
-hyperparameters, and assess whether uncertainty selection improves performance:
+Use `tune-random` to search hyperparameters with **random selection only**, save the
+validation winner, and stop. It never launches UQ acquisition or evaluates the test
+split. Run your UQ experiments separately using the saved settings when ready.
 
 ```bash
-uv run scripts/bert_token_uq_search.py --mode tune-random --config configs/distilbert_tune_random_50.json --dry-run
-uv run scripts/bert_token_uq_search.py --mode tune-random --config configs/distilbert_tune_random_50.json
+uv run scripts/bert_token_uq_search.py --config configs/distilbert_tune_random_100.json --dry-run
+uv run scripts/bert_token_uq_search.py --config configs/distilbert_tune_random_100.json
 ```
 
-The supplied configuration samples **50 distinct hyperparameter configurations** for
-DistilBERT with five model seeds. The dry run prints the plan without loading data or
-models. The second command starts training. Increase `seed_workers` in the JSON if
-GPU memory permits; it defaults to one. The same search command supports two modes:
-`--mode compare` (the default) evaluates every sampled configuration with all UQ metrics;
-`--mode tune-random` tunes random selection on validation and tests only the frozen winner.
-You can also set `"mode": "tune-random"` in JSON, as the supplied configuration does.
-Both modes share sampling, progress, W&B logging, exports, and resume handling.
+The supplied configuration samples 100 configurations for DistilBERT with five model
+seeds and five seed workers. Dry run prints the plan without loading data or models.
+`--mode compare` remains a separate workflow that compares UQ methods against random;
+`--mode tune-random` only tunes the random baseline. The JSON config selects the mode.
 
-`model_batch_size` accepts 1–4 in both modes. With `1` (the tuning config's default),
-learners train sequentially. With `2` or more, validation trains one vectorized random
-learner, and the final comparison batches its two learners together. Random-only tuning
-never trains an uncertainty learner or scores uncertainty. Changing the number of active
-learners changes vectorized dropout draws, so batched tuning and final training are not
-bit-for-bit identical trajectories; their hyperparameters and update budgets match.
-The final comparison always starts from a fresh bootstrap shared by both arms.
-
-Set `"wandb_enabled": true` to log tuning and final comparison runs. Validation runs
-contain only random-selection metrics and are marked `evaluation_split=validation`;
-final runs contain both arms and are marked `evaluation_split=test`. Online logging
-requires `WANDB_API_KEY` from the environment or project `.env`; `WANDB_MODE=offline`
-needs no credentials. Credentials are checked before loading data or training.
-
-1. Keep the original five seed sentences and 84 test sentences. Before tuning, use a
-   fixed local RNG to hold out 66 of the 328 pool sentences for validation, leaving
-   262 acquisition sentences. Validation sentences cannot be acquired or replayed.
-2. Train **only random selection** for each sampled configuration. Select the largest
-   seed-mean normalized validation entity-F1 AUC against acquired-pool percentage,
-   including round 0. This objective rewards performance throughout acquisition.
-   To optimize only the endpoint, set `objective` to
+1. Keep the original five seed sentences and 84 test sentences. Hold out 66 of the
+   328 pool sentences for validation with a fixed local RNG, leaving 262 acquisition
+   sentences. Validation sentences cannot be acquired or replayed.
+2. Train only random selection for each sampled configuration. Maximize the seed-mean
+   normalized validation entity-F1 AUC against acquired-pool percentage, including
+   round 0. To optimize the endpoint instead, set `objective` to
    `random_validation_final_entity_f1` before starting. Ties use ascending config ID.
-3. Save the winning hyperparameters before any final test evaluation. Start a fresh
-   bootstrap with the original five seed sentences, restore the full 328-sentence
-   pool, and compare random with entropy selection using the winner's hyperparameters.
-   Both arms clone the same bootstrap model and optimizer and keep independent states.
-   The 84 test sentences are evaluation-only throughout.
+3. Save the winning hyperparameters and validation score, then exit. No model is
+   trained after selecting the winner and no final test comparison is scheduled.
 
-The candidate ranges match `scripts/bert_token_uq_search.py`: `k` in 32/64,
-bootstrap epochs 10, update passes 1/2/4, learning rate sampled log-uniformly from 0.00001 to 0.00005,
-batch size 32/64, replay ratio 0/1/2, and weight decay 0/0.01.
-The sampled settings overwrite the corresponding input fields. Acquisition percentage,
-checkpoint, seeds, and all other settings stay fixed. `uq_metric` defaults to entropy
-and must be chosen before the run; it is not tuned using the final test results.
+The search uses `k` 32/64, bootstrap epochs 10, update passes 1/2/4, batch size 32/64,
+replay ratio 0/1/2, weight decay 0/0.01, and learning rates sampled log-uniformly from
+1e-6 to 1e-4. Other experiment settings remain fixed. The inherited `uq_metric` field
+is unused for acquisition in this mode and is omitted from new trial metadata and
+winning settings. `model_batch_size` accepts 1–4; random-only tuning always trains a
+single random learner. W&B logs validation random metrics only when enabled.
 
-The validation holdout size and seed, objective, search space, sample, final UQ metric,
-and effective precision are locked in `plan.json`. The original dataset hash and
-validation/acquisition index mapping are recorded in `split.json`. The original
-5/328/84 split used by ordinary experiments is unchanged.
+Outputs under `results/random_baseline_search/<sweep-name>/`:
 
-Outputs live under `results/random_baseline_search/<sweep-name>/`:
+- `plan.json` and `split.json`: fixed search settings and validation split provenance.
+- `tuning/<config-id>/`: validation settings, results, selections, progress, and completion score.
+- `best_config.json`: winning experiment settings, ready for a separate experiment.
+- `selection.json`: winner ID, objective, and validation score.
+- `summary.json`: every trial's status and score; complete after both winner files exist.
 
-- `tuning/<config-id>/`: random-only validation progress, settings, results, selections,
-  and a completion marker with its objective score.
-- `best_config.json` and `selection.json`: frozen experiment settings, winning ID,
-  validation objective, and validation score.
-- `final/`: the paired test run, including all evaluation rows and selected tokens.
-- `summary.json`: every trial's status/score and the final mean and per-seed test F1
-  differences (uncertainty minus random), for both curve AUC and final acquisition.
+Repeat the command to resume. Completed trials are reused and interrupted trials restart
+from bootstrap. Older two-stage sweeps are accepted when their tuning settings match:
+`plan.v2.json` preserves the original plan, and historical `final/` artifacts are left
+untouched. Resuming never starts or resumes those historical UQ comparisons. Exact
+saved learning rates are retained despite insignificant sampling roundoff on comparison.
+Changing scientific settings requires a new sweep name; workers and W&B preferences
+may change on resume.
 
-Positive final gaps favor uncertainty. These are descriptive paired results across
-five seeds; a small positive mean alone does not establish a reliable improvement.
-The validation winner is the best of the sampled candidates under the chosen objective,
-not a guarantee of a global optimum. If earlier experiments on this same test split
-informed the study design, treat the test comparison as exploratory.
-
-Repeat the same command to resume. Completed trials are retained; an interrupted trial
-or final comparison restarts from bootstrap. The final comparison waits for every
-validation trial to finish. Changing scientific settings requires a new `sweep_name`;
-worker count and W&B preferences may change on resume. Completed runs are not logged
-retroactively. Run one process per sweep. Existing sweep artifacts and their analysis
-notebooks remain unchanged; tuning has its own output directory. The former
-`bert_token_uq_tune_random.py` entry point has been removed; use the mode flag above.
-Its saved tuning plans and completed outputs with the same scientific settings can resume
-through the shared command.
+The winner is the best sampled configuration on this validation split, not a guaranteed
+global optimum. Keep its settings frozen when assessing UQ methods separately; do not
+choose new hyperparameters from test results.
 
 ## Random hyperparameter sweep
 
