@@ -112,7 +112,18 @@ def test_plan_locks_objective_metric_and_split_but_allows_worker_changes():
 
 @pytest.fixture
 def fake_search(tmp_path, monkeypatch):
-    monkeypatch.setattr(tune, "SEARCH_SPACE", {"k": (8, 16)})
+    original_plan = tune.sample_plan
+
+    def fixed_candidates(config):
+        plan = original_plan(config)
+        # Keep winner-selection tests independent of random sampling. The second
+        # candidate must score better, so choosing the first trial cannot pass.
+        for candidate, k in zip(plan["configurations"], (8, 16), strict=True):
+            candidate["parameters"]["k"] = k
+        plan["search_space"]["k"] = [8, 16]
+        return plan
+
+    monkeypatch.setattr(tune, "sample_plan", fixed_candidates)
     monkeypatch.setattr(tune, "PROJECT_ROOT", tmp_path)
     config = RandomBaselineSearchConfig(
         num_configs=2,
@@ -188,6 +199,9 @@ def test_tune_then_freeze_then_test_and_completed_resume(fake_search, monkeypatc
     assert [stage for stage, _ in calls] == ["validation", "validation", "test"]
     summary = json.loads((root / "summary.json").read_text())
     assert summary["complete"]
+    frozen = json.loads((root / "best_config.json").read_text())
+    assert frozen["k"] == calls[1][1]["k"] == 16
+    assert frozen["learning_rate"] == calls[1][1]["learning_rate"]
     assert summary["final"]["mean_final_test_entity_f1_gap"] == pytest.approx(0.2)
     assert len(summary["final"]["per_seed"]) == 2
     for entry in [*summary["trials"], summary["final"]]:

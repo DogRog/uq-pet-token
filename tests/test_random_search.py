@@ -123,7 +123,8 @@ def test_file_config_and_explicit_overrides(tmp_path):
         '{"num_configs":1,"sweep_name":"../outside"}',
     ],
 )
-def test_invalid_config_has_no_side_effects(tmp_path, payload):
+def test_invalid_config_has_no_side_effects(tmp_path, monkeypatch, payload):
+    monkeypatch.setattr(search, "download_pet_ner", lambda: pytest.fail("unexpected download"))
     parser = argparse.ArgumentParser()
     search.configure_parser(parser)
     with pytest.raises(SystemExit, match="2"):

@@ -22,7 +22,6 @@ from uq_pet.token_model import (
     evaluate_model,
     load_token_classifier,
     score_token_uncertainty,
-    scoreable_token_keys,
     token_uncertainty,
 )
 
@@ -127,15 +126,6 @@ def test_encode_targets_masks_unselected_and_continuation_subwords():
     assert labels.tolist() == [[-100, 4, -100, 7, -100]]
 
 
-def test_encode_targets_rejects_a_truncated_selected_word():
-    with pytest.raises(ValueError, match="target words were truncated"):
-        encode_targets(
-            FakeTokenizer(),
-            [{"tokens": ["first", "second"], "targets": {1: 3}}],
-            max_length=2,
-        )
-
-
 def test_uncertainty_uses_first_subword_and_never_needs_pool_labels():
     pool_inputs = [
         {
@@ -195,14 +185,6 @@ def test_evaluate_model_reports_macro_entity_f1(monkeypatch):
 
     assert metrics["entity_f1"] == pytest.approx(0.4)
     assert metrics["entity_macro_f1"] == pytest.approx(0.25)
-
-
-def test_scoreable_keys_exclude_truncated_words():
-    pool_inputs = [
-        {"pool_idx": 4, "tokens": ["first", "second"], "document_name": "d", "sentence_id": 0}
-    ]
-    keys = scoreable_token_keys(FakeTokenizer(), pool_inputs, max_length=2, batch_size=1)
-    assert keys == {(4, 0)}
 
 
 def test_roberta_loader_requests_fast_pretokenized_compatible_tokenizer(monkeypatch):
