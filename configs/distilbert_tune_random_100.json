@@ -9,7 +9,6 @@
   "seed_workers": 5,
   "model_batch_size": 1,
   "precision": "auto",
-  "uq_metric": "entropy",
   "max_pool_percent": 100.0,
   "validation_sentences": 66,
   "validation_seed": 1729,
