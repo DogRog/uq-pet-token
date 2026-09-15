@@ -68,7 +68,7 @@ def test_mean_entity_f1_gap_auc_rejects_half_finished_round():
 
 
 def test_plan_is_unique_reproducible_local_and_covers_all_metrics():
-    config = search.RandomSearchConfig(num_configs=30)
+    config = search.RandomSearchConfig(num_configs=200)
     state = random.getstate()
     plan = search.sample_plan(config)
     assert random.getstate() == state
@@ -76,13 +76,23 @@ def test_plan_is_unique_reproducible_local_and_covers_all_metrics():
     assert plan != search.sample_plan(config.model_copy(update={"sampler_seed": 1}))
     assert plan == search.sample_plan(config.model_copy(update={"seed_workers": 5}))
     assert (
-        len({json.dumps(row["parameters"], sort_keys=True) for row in plan["configurations"]}) == 30
+        len({json.dumps(row["parameters"], sort_keys=True) for row in plan["configurations"]})
+        == 200
     )
     assert plan["uq_metrics"] == list(search.UQ_METRICS)
     assert plan["evaluation_split"] == "test"
     assert "uq_metric" not in plan["search_space"]
     for row in plan["configurations"]:
-        assert all(value in search.SEARCH_SPACE[key] for key, value in row["parameters"].items())
+        assert all(row["parameters"][key] in values for key, values in search.SEARCH_SPACE.items())
+        assert 1e-5 <= row["parameters"]["learning_rate"] <= 5e-5
+    assert len({row["parameters"]["learning_rate"] for row in plan["configurations"]}) == 200
+    assert plan["search_space"]["learning_rate"] == {
+        "distribution": "log_uniform",
+        "low": 1e-5,
+        "high": 5e-5,
+    }
+    assert "learning_rate" not in plan["fixed_config"]
+    assert plan == search.sample_plan(config.model_copy(update={"learning_rate": 3e-5}))
     assert plan["fixed_config"]["model_seeds"] == [0, 1, 2, 3, 4]
 
 
@@ -107,7 +117,6 @@ def test_file_config_and_explicit_overrides(tmp_path):
         "[]",
         "{}",
         '{"num_configs":0}',
-        '{"num_configs":999999}',
         '{"num_configs":1,"sampler":"tpe"}',
         '{"num_configs":1,"unknown":true}',
         '{"num_configs":1,"sampler_seed":-1}',

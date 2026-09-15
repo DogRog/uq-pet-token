@@ -186,8 +186,8 @@ needs no credentials. Credentials are checked before loading data or training.
    The 84 test sentences are evaluation-only throughout.
 
 The candidate ranges match `scripts/bert_token_uq_search.py`: `k` in 32/64,
-bootstrap epochs 10, update passes 1/2/4, learning rate 0.00002/0.00005,
-batch size 32/64, replay ratio 0/1/2, and weight decay 0/0.01 (144 combinations).
+bootstrap epochs 10, update passes 1/2/4, learning rate sampled log-uniformly from 0.00001 to 0.00005,
+batch size 32/64, replay ratio 0/1/2, and weight decay 0/0.01.
 The sampled settings overwrite the corresponding input fields. Acquisition percentage,
 checkpoint, seeds, and all other settings stay fixed. `uq_metric` defaults to entropy
 and must be chosen before the run; it is not tuned using the final test results.
@@ -226,7 +226,8 @@ through the shared command.
 ## Random hyperparameter sweep
 
 In its default `--mode compare`, `scripts/bert_token_uq_search.py` samples a fixed set of distinct configurations
-uniformly without replacement, using a local seeded RNG. It saves the entire plan
+using independent uniform categorical draws and log-uniform learning-rate draws
+with a local seeded RNG. It saves the entire plan
 before loading data or training. Scores never change the plan, run order, or budget.
 Every configuration runs entropy, least confidence, and margin against a matched
 random-acquisition arm on the original 5 seed / 328 pool / 84 test sentence split.
@@ -251,19 +252,21 @@ are not independent observations to pool across metrics.
 uv run scripts/bert_token_uq_search.py --config configs/distilbert_random_5_seeds.json
 ```
 
-The unchanged hyperparameter ranges are:
+The hyperparameter ranges are:
 
 | Setting | Values |
 | --- | --- |
 | `k` | 32, 64 |
 | `bootstrap_epochs` | 10 |
 | `update_passes` | 1, 2, 4 |
-| `learning_rate` | 0.00002, 0.00005 |
+| `learning_rate` | Log-uniform from 0.00001 to 0.00005 |
 | `batch_size` | 32, 64 |
 | `replay_ratio` | 0, 1, 2 |
 | `weight_decay` | 0, 0.01 |
 
-There are 144 distinct combinations. All supported UQ metrics are applied to each;
+The 72 categorical combinations can repeat with different learning rates. There is
+no finite grid limit on the budget. Each configuration uses the same sampled learning
+rate across all model seeds and acquisition arms. All supported UQ metrics are applied to each;
 `uq_metric` is not sampled. Values for sampled fields in the input configuration
 are overwritten by the saved plan. Other experiment settings remain fixed.
 Identical sampler seeds and budgets give identical sampled configurations across checkpoints.
@@ -306,8 +309,8 @@ already marked complete are retained even if saving a later metric fails. Only
 `seed_workers` and W&B logging settings may change without changing the scientific plan.
 Changing the budget, sampler seed, checkpoint, model seeds, search ranges, or other
 scientific settings requires a new sweep name. Run only one process per sweep.
-The model-batching implementation uses plan version 3 and requires a new sweep name
-for historical version 1/2 sweeps; their existing outputs remain readable and untouched.
+Log-uniform sampling uses comparison plan version 4 and tuning plan version 2.
+Sweeps created with the previous sampler require a new sweep name; their existing outputs remain readable and untouched.
 Choose the search space and budget before inspecting test curves; changing them in
 response to favorable test gaps would make the resulting assessment exploratory.
 

@@ -9,7 +9,6 @@ import os
 import random
 from collections.abc import Mapping, Sequence
 from contextlib import ExitStack, contextmanager
-from itertools import product
 from pathlib import Path
 
 import polars as pl
@@ -38,11 +37,11 @@ SEARCH_SPACE = {
     "k": (32, 64),
     "bootstrap_epochs": (10,),
     "update_passes": (1, 2, 4),
-    "learning_rate": (2e-5, 5e-5),
     "batch_size": (32, 64),
     "replay_ratio": (0, 1.0, 2.0),
     "weight_decay": (0.0, 0.01),
 }
+LEARNING_RATE_BOUNDS = (1e-5, 5e-5)
 
 
 @contextmanager
@@ -109,31 +108,42 @@ def mean_entity_f1_gap_auc(results: Sequence[Mapping[str, object]]) -> float:
 
 
 def sample_plan(config: RandomSearchConfig) -> dict:
-    """Choose distinct combinations uniformly before observing any results."""
-    combinations = list(product(*SEARCH_SPACE.values()))
-    if config.num_configs > len(combinations):
-        raise ValueError(f"num_configs cannot exceed the {len(combinations)} distinct combinations")
-    sampled = random.Random(config.sampler_seed).sample(combinations, config.num_configs)
+    """Sample categorical settings and log-uniform rates before observing results."""
+    rng = random.Random(config.sampler_seed)
+    sampled = []
+    for _ in range(config.num_configs):
+        parameters = {key: rng.choice(values) for key, values in SEARCH_SPACE.items()}
+        parameters["learning_rate"] = math.exp(
+            rng.uniform(*(math.log(bound) for bound in LEARNING_RATE_BOUNDS))
+        )
+        sampled.append(parameters)
     # Worker scheduling can change on resume; scientific settings cannot.
     fixed = config.experiment_config().model_dump(
-        exclude={"seed_workers", "uq_metric", *SEARCH_SPACE, *WANDB_FIELDS}
+        exclude={"seed_workers", "uq_metric", "learning_rate", *SEARCH_SPACE, *WANDB_FIELDS}
     )
     return {
-        "version": 3,
+        "version": 4,
         "shared_bootstrap_and_random": True,
         "evaluation_split": "test",
-        "sampling": "uniform_without_replacement",
+        "sampling": "independent_categorical_and_log_uniform",
         "sampler_seed": config.sampler_seed,
         "num_configs": config.num_configs,
         "fixed_config": fixed,
-        "search_space": {key: list(values) for key, values in SEARCH_SPACE.items()},
+        "search_space": {
+            **{key: list(values) for key, values in SEARCH_SPACE.items()},
+            "learning_rate": {
+                "distribution": "log_uniform",
+                "low": LEARNING_RATE_BOUNDS[0],
+                "high": LEARNING_RATE_BOUNDS[1],
+            },
+        },
         "uq_metrics": list(UQ_METRICS),
         "configurations": [
             {
                 "config_id": f"config_{index:04d}",
-                "parameters": dict(zip(SEARCH_SPACE, values, strict=True)),
+                "parameters": parameters,
             }
-            for index, values in enumerate(sampled)
+            for index, parameters in enumerate(sampled)
         ],
     }
 
@@ -149,7 +159,7 @@ def tuning_plan(config: RandomBaselineSearchConfig) -> dict:
     """Lock sampling, holdout, objective, and final acquisition rule before training."""
     sampled = sample_plan(config)
     return {
-        "version": 1,
+        "version": 2,
         "mode": "random_baseline_tuning",
         "sampling": sampled["sampling"],
         "sampler_seed": config.sampler_seed,
