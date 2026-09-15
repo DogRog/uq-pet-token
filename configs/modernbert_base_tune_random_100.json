@@ -1,11 +1,17 @@
 {
   "mode": "tune-random",
   "num_configs": 100,
-  "sweep_name": "distilbert-random-baseline-100",
+  "sweep_name": "modernbert-base-random-baseline-100",
   "sweeps_dir": "results/random_baseline_search",
   "sampler_seed": 0,
-  "checkpoint": "distilbert-base-cased",
-  "model_seeds": [0, 1, 2, 3, 4],
+  "checkpoint": "answerdotai/ModernBERT-base",
+  "model_seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
   "seed_workers": 2,
   "model_batch_size": 1,
   "precision": "auto",

@@ -149,6 +149,19 @@ uv run scripts/bert_token_uq_search.py --config configs/distilbert_tune_random_1
 uv run scripts/bert_token_uq_search.py --config configs/distilbert_tune_random_100.json
 ```
 
+To tune all five models (DistilBERT, BERT, RoBERTa, DeBERTa-v3, and ModernBERT)
+sequentially, use:
+
+```bash
+bash scripts/tune_random_all_models.sh --dry-run
+bash scripts/tune_random_all_models.sh
+```
+
+Each `configs/*_tune_random_100.json` uses 100 configurations, five model seeds,
+five seed workers, the same validation split and objective, and a separate output
+folder. The launcher stops on the first failure; rerun it to resume saved searches.
+It runs random-only tuning and saves each model's winning settings without launching UQ.
+
 The supplied configuration samples 100 configurations for DistilBERT with five model
 seeds and five seed workers. Dry run prints the plan without loading data or models.
 `--mode compare` remains a separate workflow that compares UQ methods against random;
