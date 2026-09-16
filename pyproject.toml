@@ -19,6 +19,7 @@ dependencies = [
     "torch>=2.12.1",
     "transformers>=5.12.1",
     "wandb>=0.25",
+    "wandb-workspaces>=0.4.11",
     "wigglystuff>=0.2.30",
 ]
 
@@ -72,4 +73,4 @@ convention = "google"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["notebooks"]
+pythonpath = ["notebooks", "scripts"]

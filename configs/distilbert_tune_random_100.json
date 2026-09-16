@@ -13,5 +13,6 @@
   "validation_sentences": 66,
   "validation_seed": 1729,
   "objective": "random_validation_entity_f1_auc",
-  "wandb_enabled": false
+  "wandb_enabled": true,
+  "wandb_project": "distilbert-random-baseline"
 }

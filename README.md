@@ -184,6 +184,31 @@ is unused for acquisition in this mode and is omitted from new trial metadata an
 winning settings. `model_batch_size` accepts 1–4; random-only tuning always trains a
 single random learner. W&B logs validation random metrics only when enabled.
 
+The five tuning configs enable W&B and use separate projects:
+`distilbert-random-baseline`, `bert-base-random-baseline`, `roberta-base-random-baseline`,
+`deberta-v3-base-random-baseline`, and `modernbert-base-random-baseline`.
+Online runs create a real W&B sweep and a saved workspace chart automatically.
+The local seeded plan still schedules the search; no W&B agents or UQ runs are launched.
+
+The sweep contains **one summary run per completed configuration**, averaged over all
+model seeds. Its objective is `random_validation_entity_f1_auc` (or the configured
+endpoint objective). The saved parallel-coordinates chart explicitly includes learning
+rate (log scale), batch size, `k`, update passes, replay ratio, weight decay, final
+validation F1, and validation F1 AUC, with the objective as its last/color axis.
+Constant checkpoint/bootstrap settings are excluded from its axes. Per-seed live logs
+remain separate and are excluded from this saved chart.
+
+Sweep IDs, chart links, and published configuration IDs are saved in `wandb_sweeps.json`.
+Resuming reuses the sweep and publishes any completed configurations not yet uploaded.
+A completed search can be published without loading data or training:
+
+```bash
+uv run scripts/bert_token_uq_search.py --config configs/distilbert_tune_random_100.json --publish-wandb-only
+```
+
+This requires an existing local plan and online W&B credentials. Offline mode keeps
+per-seed local logs; create the online sweep later with the publication command.
+
 Outputs under `results/random_baseline_search/<sweep-name>/`:
 
 - `plan.json` and `split.json`: fixed search settings and validation split provenance.

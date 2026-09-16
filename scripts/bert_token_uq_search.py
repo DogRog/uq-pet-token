@@ -30,6 +30,7 @@ from uq_pet.experiment import (
 )
 from uq_pet.pet_data import PROJECT_ROOT, download_pet_ner, load_pet_splits, split_tuning_pool
 from uq_pet.token_model import UQ_METRICS, get_device, resolve_precision
+from wandb_tuning import ensure_sweep, publish_trial
 
 CONSOLE = Console()
 WANDB_FIELDS = {"wandb_enabled", "wandb_project", "wandb_run_name"}
@@ -413,6 +414,11 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--dry-run", action="store_true", help="Print the plan without loading data or models."
     )
+    parser.add_argument(
+        "--publish-wandb-only",
+        action="store_true",
+        help="Create the W&B tuning sweep/chart and publish saved completed trials without training.",
+    )
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--config", type=Path, help="JSON file with sweep and experiment settings.")
     source.add_argument("--config-json", help="Inline JSON with sweep and experiment settings.")
@@ -440,7 +446,7 @@ def load_search_config(
             {
                 key: value
                 for key, value in vars(args).items()
-                if key not in {"config", "config_json", "dry_run"}
+                if key not in {"config", "config_json", "dry_run", "publish_wandb_only"}
             }
         )
         config_class = (
@@ -459,6 +465,8 @@ def load_search_config(
 def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     config = load_search_config(args, parser)
     tuning = config.mode == "tune-random"
+    if args.publish_wandb_only and (not tuning or not config.wandb_enabled):
+        parser.error("--publish-wandb-only requires tune-random and wandb_enabled=true")
     plan = tuning_plan(config) if tuning else sample_plan(config)
     device = get_device()
     effective_precision = resolve_precision(config.precision, device)
@@ -468,6 +476,8 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         return
     root = config.sweeps_dir / config.sweep_name
     plan_path = root / "plan.json"
+    if args.publish_wandb_only and not plan_path.exists():
+        parser.error("--publish-wandb-only requires an existing saved tuning plan")
     if plan_path.exists():
         saved_plan = json.loads(plan_path.read_text())
         if tuning and saved_plan.get("version") == 2:
@@ -494,20 +504,34 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         write_json(plan_path, plan)
     write_json(root / "search_config.json", config.model_dump(mode="json"))
     summary = write_summary(root, plan)
-    if summary["complete"]:
+    if summary["complete"] and not (tuning and config.wandb_enabled):
         CONSOLE.print(f"Sweep already complete: {root}")
         return
 
+    publication = None
     if config.wandb_enabled:
         load_dotenv(PROJECT_ROOT / ".env", override=False)
         require_wandb_credentials(os.environ)
         if os.environ.get("WANDB_MODE", "").strip().lower() == "offline":
-            CONSOLE.print("W&B offline: logging locally; no online project link is available.")
+            if args.publish_wandb_only:
+                parser.error("--publish-wandb-only requires online W&B mode")
+            CONSOLE.print("W&B offline: logging locally; no online sweep or chart is created.")
         else:
             import wandb
 
             wandb.login(key=os.environ["WANDB_API_KEY"], verify=True)
             CONSOLE.print(f"W&B enabled: {config.wandb_project} (links appear at round 0).")
+            if tuning:
+                publication = ensure_sweep(config, plan, root)
+                for entry in plan["configurations"]:
+                    publish_trial(config, root, entry, publication, random_validation_score)
+                CONSOLE.print(f"Tuning chart: {publication[1][publication[2]]['workspace_url']}")
+    if args.publish_wandb_only:
+        CONSOLE.print(f"Saved tuning results published; no training required: {root}")
+        return
+    if summary["complete"]:
+        CONSOLE.print(f"Sweep already complete: {root}")
+        return
     CONSOLE.print(
         f"[bold cyan]Compute precision:[/] [bold]{effective_precision.upper()}[/]"
         f" · device: {device} · parameters/AdamW: FP32"
@@ -667,6 +691,8 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                         progress.update(
                             overall_task, completed=completed_runs, description=description
                         )
+                if random_only and publication is not None:
+                    publish_trial(config, root, entry, publication, random_validation_score)
             except BaseException as error:
                 for slot in slots.values():
                     if not (slot / "completed.json").exists():

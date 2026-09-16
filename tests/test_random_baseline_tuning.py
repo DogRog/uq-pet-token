@@ -248,8 +248,20 @@ def test_tuning_wandb_logs_only_random_validation(fake_search, fake_wandb):
     config = config.model_copy(update={"model_batch_size": 2, "wandb_enabled": True})
     run_tuning(config)
     assert all(kwargs["model_batch_size"] == 2 for _, kwargs in calls)
-    assert len(fake_wandb.runs) == 4
-    for run in fake_wandb.runs:
+    assert len(fake_wandb.runs) == 6  # Four seed logs, two configuration summaries.
+    summaries = [r for r in fake_wandb.runs if r.settings["job_type"] == "random_tuning_summary"]
+    assert len(summaries) == 2
+    assert len(fake_wandb.sweeps) == 1
+    assert fake_wandb.sweeps[0][0]["metric"] == {"name": config.objective, "goal": "maximize"}
+    for run in summaries:
+        assert run.settings["settings"]["sweep_id"] == "sweep-1"
+        assert run.logs[0][config.objective] == pytest.approx(
+            tune.random_validation_score(
+                rows(0.8 if run.settings["config"]["k"] == 16 else 0.3), config.objective
+            )
+        )
+        assert "random_validation_final_entity_f1" in run.logs[0]
+    for run in [r for r in fake_wandb.runs if r not in summaries]:
         assert run.settings["config"]["evaluation_split"] == "validation"
         assert run.settings["config"]["random_only"]
         assert all("evaluation/entity_f1/random" in log for log in run.logs)
@@ -307,3 +319,44 @@ def test_plan_comparison_rejects_material_rate_changes():
     changed = json.loads(json.dumps(plan))
     changed["configurations"][0]["parameters"]["learning_rate"] *= 1.00001
     assert tune.scientific_plan(plan) != tune.scientific_plan(changed)
+
+
+def test_publish_completed_search_creates_sweep_without_training(
+    fake_search, fake_wandb, monkeypatch
+):
+    config, root, calls = fake_search
+    run_tuning(config)
+    monkeypatch.setattr(tune, "download_pet_ner", lambda: pytest.fail("publication loaded data"))
+    online = config.model_copy(update={"wandb_enabled": True, "wandb_project": "random-tuning"})
+    parser = argparse.ArgumentParser()
+    tune.configure_parser(parser)
+    args = parser.parse_args(["--config-json", online.model_dump_json(), "--publish-wandb-only"])
+    tune.run(args, parser)
+    assert len(calls) == 2
+    assert len(fake_wandb.runs) == 2 and len(fake_wandb.sweeps) == 1
+    state = json.loads((root / "wandb_sweeps.json").read_text())["test/random-tuning"]
+    assert len(state["published"]) == 2
+    tune.run(args, parser)
+    assert len(fake_wandb.runs) == 2 and len(fake_wandb.sweeps) == 1
+
+
+def test_offline_tuning_does_not_create_remote_sweep(fake_search, fake_wandb, monkeypatch):
+    config, _, calls = fake_search
+    monkeypatch.setenv("WANDB_MODE", "offline")
+    run_tuning(config.model_copy(update={"wandb_enabled": True}))
+    assert len(calls) == 2
+    assert not fake_wandb.sweeps
+    assert len(fake_wandb.runs) == 4
+
+
+def test_tuning_workspace_axes_include_objective_and_f1():
+    from wandb_tuning import AXES, chart_workspace
+
+    workspace = chart_workspace("test", "project", "example", "random_validation_entity_f1_auc")
+    columns = workspace.sections[0].panels[0].columns
+    assert [column.metric.name for column in columns] == [
+        *AXES,
+        "random_validation_final_entity_f1",
+        "random_validation_entity_f1_auc",
+    ]
+    assert columns[0].log

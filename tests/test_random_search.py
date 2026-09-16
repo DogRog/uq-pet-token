@@ -373,9 +373,27 @@ def fake_wandb(monkeypatch):
             self.runs.append(run)
             return run
 
+        sweeps = []
+
+        def sweep(self, definition, **kwargs):
+            self.sweeps.append((definition, kwargs))
+            return f"sweep-{len(self.sweeps)}"
+
+        def Api(self):
+            return type("API", (), {"default_entity": "test"})()
+
         def login(self, **kwargs):
             self.logins.append(kwargs)
 
+    import wandb_tuning
+
+    class Workspace:
+        url = "https://wandb.ai/test/pet/workspace?view=tuning"
+
+        def save(self):
+            pass
+
+    monkeypatch.setattr(wandb_tuning, "chart_workspace", lambda *args: Workspace())
     sdk = SDK()
     monkeypatch.setitem(sys.modules, "wandb", sdk)
     monkeypatch.setenv("WANDB_API_KEY", "test-key")
