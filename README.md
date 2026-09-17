@@ -217,6 +217,18 @@ Outputs under `results/random_baseline_search/<sweep-name>/`:
 - `selection.json`: winner ID, objective, and validation score.
 - `summary.json`: every trial's status and score; complete after both winner files exist.
 
+Check trial completeness and view the best configuration for each model:
+
+```bash
+uv run marimo edit notebooks/random_baseline_analysis.py
+```
+
+The notebook uses saved validation scores and excludes incomplete sweeps. Its download
+button provides `create_best_uq_configs.py`: run it from the project root to create
+winning configurations for entropy, least confidence, and margin in `configs/best_uq/`.
+Add `--run` to execute all generated configurations against random acquisition using
+the experiment notebook's batch mode. The analysis notebook itself only reads local files.
+
 Repeat the command to resume. Completed trials are reused and interrupted trials restart
 from bootstrap. Older two-stage sweeps are accepted when their tuning settings match:
 `plan.v2.json` preserves the original plan, and historical `final/` artifacts are left
@@ -409,6 +421,7 @@ Use `--list` on an `add` command to inspect a repository before installing it, o
 | `scripts/bert_token_uq_search.py` | random sweep or baseline tuning, shared execution, resume, and summaries |
 | `notebooks/test_analysis.py` | individual test curves and sweep-wide paired gaps |
 | `notebooks/random_search_analysis.py` | random-sweep summaries and per-configuration drill-downs |
+| `notebooks/random_baseline_analysis.py` | trial completeness, best configurations, and UQ configuration script download |
 | `tests/test_token_uq.py` | focused offline invariant tests |
 | `skills-lock.json` | project skill sources and content hashes |
 
