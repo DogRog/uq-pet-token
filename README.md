@@ -73,6 +73,39 @@ uv run notebooks/bert_token_uq.py --config-json \
   '{"checkpoint":"microsoft/deberta-v3-base","model_seeds":[0],"update_passes":2,"learning_rate":0.00003}'
 ```
 
+To run all three UQ metrics with fixed settings, use:
+
+```bash
+uv run scripts/run_uq_metrics.py --config configs/best_uq/bert_base.json
+```
+
+This runs entropy, least confidence, and margin sequentially, each against its own
+matched random baseline, using all configured seeds. Each comparison saves its own
+timestamped results directory. Settings are validated before any run starts, and a
+failed comparison stops the script. Re-running starts fresh experiments.
+
+Use `--uq-metrics entropy margin` to select a subset and `--dry-run` to print the
+validated configurations without downloading data or training. `--config-json`
+accepts inline JSON instead of a file. The metric arguments override any `uq_metric`
+in the input configuration; all other experiment settings stay fixed.
+
+Configuration files are grouped by purpose:
+
+- `configs/best_uq/`: exact saved winners from the five completed random-baseline searches.
+- `configs/tune_random/`: random-baseline hyperparameter tuning settings.
+- `configs/random_search/`: sampled UQ-versus-random comparison settings.
+
+Run every saved winner with all three UQ metrics (five models × three metrics × five
+seeds, with matched random baselines):
+
+```bash
+bash scripts/run_best_uq_all_models.sh
+```
+
+Pass `--dry-run` to validate and preview all 15 configurations without training,
+or `--uq-metrics entropy margin` to run a subset. Models and metrics run sequentially;
+the script stops on the first failure. Winner provenance is in `configs/best_uq/README.md`.
+
 To share a large GPU across independent seeds, set **Concurrent seeds** in the notebook
 or pass `seed_workers` in JSON (default `1`):
 
@@ -145,8 +178,8 @@ validation winner, and stop. It never launches UQ acquisition or evaluates the t
 split. Run your UQ experiments separately using the saved settings when ready.
 
 ```bash
-uv run scripts/bert_token_uq_search.py --config configs/distilbert_tune_random_100.json --dry-run
-uv run scripts/bert_token_uq_search.py --config configs/distilbert_tune_random_100.json
+uv run scripts/bert_token_uq_search.py --config configs/tune_random/distilbert_tune_random_100.json --dry-run
+uv run scripts/bert_token_uq_search.py --config configs/tune_random/distilbert_tune_random_100.json
 ```
 
 To tune all five models (DistilBERT, BERT, RoBERTa, DeBERTa-v3, and ModernBERT)
@@ -157,7 +190,7 @@ bash scripts/tune_random_all_models.sh --dry-run
 bash scripts/tune_random_all_models.sh
 ```
 
-Each `configs/*_tune_random_100.json` uses 100 configurations, five model seeds,
+Each `configs/tune_random/*_tune_random_100.json` uses 100 configurations, five model seeds,
 five seed workers, the same validation split and objective, and a separate output
 folder. The launcher stops on the first failure; rerun it to resume saved searches.
 It runs random-only tuning and saves each model's winning settings without launching UQ.
@@ -203,7 +236,7 @@ Resuming reuses the sweep and publishes any completed configurations not yet upl
 A completed search can be published without loading data or training:
 
 ```bash
-uv run scripts/bert_token_uq_search.py --config configs/distilbert_tune_random_100.json --publish-wandb-only
+uv run scripts/bert_token_uq_search.py --config configs/tune_random/distilbert_tune_random_100.json --publish-wandb-only
 ```
 
 This requires an existing local plan and online W&B credentials. Offline mode keeps
@@ -252,7 +285,7 @@ random-acquisition arm on the original 5 seed / 328 pool / 84 test sentence spli
 Test metrics are evaluated after bootstrap (round 0) and each acquisition round.
 There is no validation holdout, optimization objective, pruning, or best-gap selection.
 
-The five files in `configs/*_random_5_seeds.json` retain the model checkpoints and
+The five files in `configs/random_search/*_random_5_seeds.json` retain the model checkpoints and
 five seeds. Each budgets **30 hyperparameter configurations × 3 UQ metrics = 90
 paired comparisons**, with five concurrent seeds and 100% pool acquisition. This is a larger
 workload than the old 30-trial search, which sampled only one UQ metric per trial.
@@ -267,7 +300,7 @@ Each metric retains a complete paired export and live chart. The shared random b
 are not independent observations to pool across metrics.
 
 ```bash
-uv run scripts/bert_token_uq_search.py --config configs/distilbert_random_5_seeds.json
+uv run scripts/bert_token_uq_search.py --config configs/random_search/distilbert_random_5_seeds.json
 ```
 
 The hyperparameter ranges are:
@@ -434,7 +467,7 @@ and evaluation inputs stay on the selected device across rounds.
 Compare 1, 2, and 5 workers on the server (stop other experiment runs first):
 
 ```bash
-uv run scripts/benchmark_seed_workers.py --config configs/distilbert_random_5_seeds.json > worker_timings.json
+uv run scripts/benchmark_seed_workers.py --config configs/random_search/distilbert_random_5_seeds.json > worker_timings.json
 ```
 
 This runs all configured seeds for each worker count, twice, using fixed experiment

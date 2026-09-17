@@ -5,11 +5,11 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 configs=(
-  configs/distilbert_tune_random_100.json
-  configs/bert_base_tune_random_100.json
-  configs/roberta_base_tune_random_100.json
-  configs/deberta_v3_base_tune_random_100.json
-  configs/modernbert_base_tune_random_100.json
+  configs/tune_random/distilbert_tune_random_100.json
+  configs/tune_random/bert_base_tune_random_100.json
+  configs/tune_random/roberta_base_tune_random_100.json
+  configs/tune_random/deberta_v3_base_tune_random_100.json
+  configs/tune_random/modernbert_base_tune_random_100.json
 )
 
 for config in "${configs[@]}"; do

@@ -1,0 +1,22 @@
+{
+  "checkpoint": "microsoft/deberta-v3-base",
+  "model_seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "model_batch_size": 1,
+  "precision": "auto",
+  "k": 32,
+  "max_pool_percent": 100.0,
+  "bootstrap_epochs": 10,
+  "update_passes": 4,
+  "replay_ratio": 2.0,
+  "learning_rate": 4.174235934404346e-05,
+  "weight_decay": 0.0,
+  "batch_size": 32,
+  "score_batch_size": 256,
+  "max_length": 256
+}
