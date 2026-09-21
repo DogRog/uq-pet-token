@@ -28,4 +28,7 @@ random-baseline training are shared across metrics. Results and summaries are gr
 under `results/best_uq/<checkpoint>-best-uq/`, with metric outputs in
 `runs/config_0000/<metric>/`. Re-running skips completed comparisons. Use
 `--seed-workers N` to change concurrency or `--sweep-name NAME` for a fresh result group.
-W&B logging remains disabled by default, as the saved winners contain no W&B settings.
+W&B logging is enabled in all five configs, with a separate `<model>-best-uq` project
+for each model. Set `WANDB_API_KEY` in the environment or the project's `.env` file
+before running. Completed comparisons are skipped and are not uploaded retroactively;
+use a new `--sweep-name NAME` to rerun them with W&B logging.
