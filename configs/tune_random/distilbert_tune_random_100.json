@@ -7,7 +7,6 @@
   "checkpoint": "distilbert-base-cased",
   "model_seeds": [0, 1, 2, 3, 4],
   "seed_workers": 2,
-  "model_batch_size": 1,
   "precision": "auto",
   "max_pool_percent": 100.0,
   "validation_sentences": 66,

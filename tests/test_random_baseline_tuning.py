@@ -107,9 +107,7 @@ def test_plan_locks_objective_metric_and_split_but_allows_worker_changes():
         assert plan != tune.tuning_plan(config.model_copy(update=update))
     assert not any(key.startswith("final_") for key in plan)
     assert plan == tune.tuning_plan(config.model_copy(update={"uq_metric": "margin"}))
-    assert RandomBaselineSearchConfig(model_batch_size=2, wandb_enabled=True).wandb_enabled
-    with pytest.raises(ValueError):
-        RandomBaselineSearchConfig(model_batch_size=5)
+    assert RandomBaselineSearchConfig(wandb_enabled=True).wandb_enabled
 
 
 @pytest.fixture
@@ -245,9 +243,8 @@ def test_resume_finishes_winner_publication_without_retuning(fake_search, monkey
 
 def test_tuning_wandb_logs_only_random_validation(fake_search, fake_wandb):
     config, root, calls = fake_search
-    config = config.model_copy(update={"model_batch_size": 2, "wandb_enabled": True})
+    config = config.model_copy(update={"wandb_enabled": True})
     run_tuning(config)
-    assert all(kwargs["model_batch_size"] == 2 for _, kwargs in calls)
     assert len(fake_wandb.runs) == 6  # Four seed logs, two configuration summaries.
     summaries = [r for r in fake_wandb.runs if r.settings["job_type"] == "random_tuning_summary"]
     assert len(summaries) == 2

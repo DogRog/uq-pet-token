@@ -13,7 +13,7 @@ from transformers import BertConfig, BertForTokenClassification, PreTrainedToken
 import uq_pet.active_learning as active_learning
 from uq_pet.experiment import ExperimentConfig, make_wandb_evaluation_log
 from uq_pet.pet_data import NER_TAGS
-from uq_pet.token_model import BatchedTokenModels, set_seed
+from uq_pet.token_model import set_seed
 
 
 @pytest.fixture
@@ -61,7 +61,6 @@ def tiny_experiment(tmp_path):
     config = ExperimentConfig(
         checkpoint=str(tmp_path),
         model_seeds=[11, 3, 8],
-        model_batch_size=1,
         k=2,
         bootstrap_epochs=1,
         batch_size=2,
@@ -242,86 +241,6 @@ def test_shared_metrics_match_spawned_seeds_and_publish_separate_paired_streams(
         torch.set_num_threads(old_threads)
 
 
-@pytest.mark.parametrize("width", [2, 3, 4])
-def test_model_batching_preserves_budgets_shared_random_and_paired_progress(
-    tiny_experiment, monkeypatch, width
-):
-    args, kwargs = tiny_experiment
-    settings = {key: value for key, value in kwargs.items() if key != "uq_metric"}
-    settings.update(model_batch_size=width, model_seeds=[11])
-    metrics = ["entropy", "least_confidence", "margin"]
-    snapshots = {metric: [] for metric in metrics}
-    updates = []
-    bootstraps = []
-    original_train = BatchedTokenModels.train
-    original_scalar_train = active_learning.train_items
-
-    def record_train(group, tokenizer, items, **options):
-        updates.append((group.count, [len(lane) for lane in items]))
-        return original_train(group, tokenizer, items, **options)
-
-    def record_bootstrap(*args, **options):
-        bootstraps.append(options)
-        return original_scalar_train(*args, **options)
-
-    def record(metric, rows):
-        previous = snapshots[metric][-1] if snapshots[metric] else []
-        assert rows[:-2] == previous
-        make_wandb_evaluation_log(rows[-2:], metric)
-        snapshots[metric].append(rows)
-
-    monkeypatch.setattr(BatchedTokenModels, "train", record_train)
-    monkeypatch.setattr(active_learning, "train_items", record_bootstrap)
-    old_threads = torch.get_num_threads()
-    torch.set_num_threads(1)
-    try:
-        comparisons = active_learning.run_metric_comparisons(
-            *args, **settings, uq_metrics=metrics, progress_callback=record
-        )
-        assert len(bootstraps) == 1
-        # Four learner trajectories (three UQ plus random), each with four updates.
-        assert sum(count for count, _ in updates) == 16
-        assert max(count for count, _ in updates) <= width
-        assert sum(count for count, sizes in updates if set(sizes) == {2}) == 4
-        random_rows, random_tokens = [], []
-        for metric, (results, selections) in comparisons.items():
-            assert len(snapshots[metric]) == 5
-            assert snapshots[metric][-1] == results
-            random_rows.append([row for row in results if row["arm"] == "random"])
-            random_tokens.append([row for row in selections if row["arm"] == "random"])
-            for arm in ("uncertainty", "random"):
-                rows = [row for row in results if row["arm"] == arm]
-                assert [row["n_new"] for row in rows] == [0, 2, 2, 2, 1]
-                assert [row["n_replay"] for row in rows] == [0, 2, 2, 2, 1]
-                selected = [row for row in selections if row["arm"] == arm]
-                assert len({(row["pool_idx"], row["word_idx"]) for row in selected}) == 7
-        assert random_rows[0] == random_rows[1] == random_rows[2]
-        assert random_tokens[0] == random_tokens[1] == random_tokens[2]
-        repeated = active_learning.run_metric_comparisons(*args, **settings, uq_metrics=metrics)
-        assert repeated == comparisons
-    finally:
-        torch.set_num_threads(old_threads)
-
-
-def test_vectorized_models_match_spawned_execution(tiny_experiment):
-    args, kwargs = tiny_experiment
-    settings = {key: value for key, value in kwargs.items() if key != "uq_metric"}
-    settings.update(model_batch_size=2, model_seeds=[11, 3])
-    old_threads = torch.get_num_threads()
-    torch.set_num_threads(1)
-    try:
-        sequential = active_learning.run_metric_comparisons(
-            *args, **settings, uq_metrics=["entropy", "margin"]
-        )
-        parallel = active_learning.run_metric_comparisons(
-            *args, **{**settings, "seed_workers": 2}, uq_metrics=["entropy", "margin"]
-        )
-        assert parallel == sequential
-        assert not seed_children()
-    finally:
-        torch.set_num_threads(old_threads)
-
-
 @pytest.mark.parametrize("workers", [1, 2])
 def test_random_only_matches_paired_random_and_never_scores_pool(
     tiny_experiment, monkeypatch, workers
@@ -349,28 +268,3 @@ def test_random_only_matches_paired_random_and_never_scores_pool(
     assert random_selections == [row for row in paired_selections if row["arm"] == "random"]
     assert [len(snapshot) for snapshot in snapshots] == list(range(1, len(random_rows) + 1))
     assert all(row["arm"] == "random" for snapshot in snapshots for row in snapshot)
-
-
-@pytest.mark.parametrize("workers", [1, 2])
-def test_batched_random_only_is_reproducible_and_skips_uq(tiny_experiment, monkeypatch, workers):
-    args, kwargs = tiny_experiment
-    kwargs = {**kwargs, "model_batch_size": 2, "seed_workers": workers, "model_seeds": [11, 3]}
-    previous = torch.get_num_threads()
-    torch.set_num_threads(1)
-    try:
-        _, paired_selections = active_learning.run_active_learning(*args, **kwargs)
-        monkeypatch.setattr(
-            BatchedTokenModels, "score", lambda *a, **kw: pytest.fail("random-only scored pool")
-        )
-        snapshots = []
-        first = active_learning.run_random_selection(
-            *args, **kwargs, progress_callback=snapshots.append
-        )
-        second = active_learning.run_random_selection(*args, **kwargs)
-    finally:
-        torch.set_num_threads(previous)
-    assert first == second
-    rows, selections = first
-    assert all(row["arm"] == "random" for row in rows)
-    assert selections == [row for row in paired_selections if row["arm"] == "random"]
-    assert [len(snapshot) for snapshot in snapshots] == list(range(1, len(rows) + 1))

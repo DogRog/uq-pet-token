@@ -63,12 +63,6 @@ class ExperimentConfig(BaseModel):
         ge=1,
         description="Concurrent seed processes on the selected device; capped by the seed count.",
     )
-    model_batch_size: int = Field(
-        default=2,
-        ge=1,
-        le=4,
-        description="Learners vectorized per seed; 1 uses sequential execution.",
-    )
     precision: Literal["auto", "fp32", "bf16"] = Field(
         default="auto",
         description="Auto uses BF16 on supported CUDA GPUs and FP32 elsewhere.",
@@ -238,7 +232,6 @@ class RandomBaselineSearchConfig(RandomSearchConfig):
     objective: Literal["random_validation_entity_f1_auc", "random_validation_final_entity_f1"] = (
         "random_validation_entity_f1_auc"
     )
-    model_batch_size: int = Field(default=1, ge=1, le=4)
 
 
 def execute_experiment(

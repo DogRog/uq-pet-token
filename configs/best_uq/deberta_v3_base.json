@@ -7,7 +7,6 @@
     3,
     4
   ],
-  "model_batch_size": 1,
   "precision": "auto",
   "k": 32,
   "max_pool_percent": 100.0,

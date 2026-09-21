@@ -151,31 +151,8 @@ otherwise. The notebook exposes the same selector. Exports record the requested
 BF16 can change predictions and acquisition order, so compare speed and learning curves
 under a new sweep name rather than mixing precision within an existing sweep.
 
-`model_batch_size` defaults to **2 learners per seed**. PyTorch `vmap` applies the model
-to stacked parameter tensors, using batched matrix operations for different learners.
-With all three UQ metrics, entropy and random train/evaluate together, followed by
-least confidence and margin together. Pool scoring batches the UQ learners in each group;
-the random learner does not score the pool. Set `model_batch_size` to `1` for the previous
-sequential path, or `3`/`4` to test larger groups. This is separate from sentence batch
-size, training batch size, and annotation `k`: each learner still gets the same number
-of newly labelled words, replay items, and optimizer updates.
-
-Every learner has its own FP32 parameter slice and AdamW moment slices, cloned from
-bootstrap. Per-model mean losses are summed before backward so gradients are not divided
-by the number of learners. The common AdamW step counter is valid because every learner
-in a group has the same number of updates. Each learner retains its original seeded
-shuffle, selection, and replay; vectorized dropout uses distinct draws per learner from
-an isolated seed/round RNG stream. Grouping and shared padding change dropout draws, so
-batched runs are reproducible but are not bit-for-bit continuations of sequential runs.
-Changing group size requires a new sweep name.
-
-The batched path uses eager attention for `vmap` compatibility across the five supported
-architectures. Pool/test attention masks are prepared once per group outside `vmap`.
-In BF16 mode, differentiable BF16 execution copies prevent FP32 biases from promoting
-vectorized linear outputs back to FP32; master parameters and optimizer moments stay FP32.
-Larger groups increase activation memory and may not be faster than sequential execution
-with fused attention. Compare complete-run time with the same checkpoint, hyperparameters,
-seeds, precision, and worker count; `model_batch_size=1` versus `2` is the first comparison.
+Learners execute sequentially within each seed, each retaining its own model and
+optimizer state cloned from the shared bootstrap.
 
 ## Tune the random baseline
 
@@ -220,8 +197,7 @@ The search uses `k` 32/64, bootstrap epochs 10, update passes 1/2/4, batch size 
 replay ratio 0/1/2, weight decay 0/0.01, and learning rates sampled log-uniformly from
 1e-6 to 1e-4. Other experiment settings remain fixed. The inherited `uq_metric` field
 is unused for acquisition in this mode and is omitted from new trial metadata and
-winning settings. `model_batch_size` accepts 1–4; random-only tuning always trains a
-single random learner. W&B logs validation random metrics only when enabled.
+winning settings. Random-only tuning trains a single random learner. W&B logs validation random metrics only when enabled.
 
 The five tuning configs enable W&B and use separate projects:
 `distilbert-random-baseline`, `bert-base-random-baseline`, `roberta-base-random-baseline`,

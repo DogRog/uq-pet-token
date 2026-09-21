@@ -19,7 +19,7 @@ SEARCH_PATH = Path(__file__).resolve().parents[1] / "scripts" / "bert_token_uq_s
                 "tune-random",
                 "--dry-run",
                 "--config-json",
-                '{"model_batch_size":2,"wandb_enabled":true}',
+                '{"wandb_enabled":true}',
             ],
             0,
             '"num_configs": 50',
