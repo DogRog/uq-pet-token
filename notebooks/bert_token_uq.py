@@ -19,13 +19,6 @@ def _():
     import wandb
     from wigglystuff import EnvConfig
 
-    from charts import (
-        make_learning_chart,
-        make_tag_category_coverage_chart,
-        make_tag_coverage_chart,
-        make_variance_chart,
-        make_wandb_comparison_media,
-    )
     from uq_pet.active_learning import acquisition_schedule
     from uq_pet.config import DEFAULT_CHECKPOINTS, ExperimentConfig
     from uq_pet.experiment import execute_experiment
@@ -35,6 +28,13 @@ def _():
         configure_wandb_metrics,
         make_wandb_evaluation_log,
         require_wandb_credentials,
+    )
+    from utils.charts import (
+        make_learning_chart,
+        make_tag_category_coverage_chart,
+        make_tag_coverage_chart,
+        make_variance_chart,
+        make_wandb_comparison_media,
     )
 
     alt.renderers.set_embed_options(scaleFactor=3)

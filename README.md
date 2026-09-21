@@ -481,7 +481,7 @@ Use `--list` on an `add` command to inspect a repository before installing it, o
 | `src/uq_pet/utils/wandb_logging.py` | W&B credentials, evaluation records, and comparison run lifecycles |
 | `notebooks/bert_token_uq.py` | controls, experiment run, tables, and plots |
 | `notebooks/fixed_all_metrics_analysis.py` | read-only analysis of saved historical sweeps |
-| `notebooks/charts.py` | shared chart builders and W&B comparison media |
+| `notebooks/utils/` | shared notebook helpers, including chart builders and W&B comparison media |
 | `src/uq_pet/search.py` | random sweep or baseline tuning, shared execution, resume, and summaries |
 | `scripts/bert_token_uq_search.py` | CLI entry point for search and tuning |
 | `notebooks/random_search_analysis.py` | random-sweep summaries and per-configuration drill-downs |

@@ -20,7 +20,7 @@ def _():
     import marimo as mo
     import polars as pl
 
-    from charts import (
+    from utils.charts import (
         make_tag_category_coverage_chart,
         make_tag_coverage_chart,
         make_variance_chart,
