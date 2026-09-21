@@ -440,26 +440,6 @@ Use `--list` on an `add` command to inspect a repository before installing it, o
 | `tests/test_token_uq.py` | focused offline invariant tests |
 | `skills-lock.json` | project skill sources and content hashes |
 
-### Benchmark seed concurrency
-
-Training reuses label-free sentence tokenization in RAM within each seed. Targets
-are rebuilt per batch; no model states are cached or written to disk. Prepared pool
-and evaluation inputs stay on the selected device across rounds.
-
-Compare 1, 2, and 5 workers on the server (stop other experiment runs first):
-
-```bash
-uv run scripts/benchmark_seed_workers.py --config configs/random_search/distilbert_random_5_seeds.json > worker_timings.json
-```
-
-This runs all configured seeds for each worker count, twice, using fixed experiment
-settings from the JSON (or their defaults), rather than sampling configurations.
-It uses the original test split, caps acquisition at 5%, and prints timings plus
-the fastest worker count when finished. It does not write a sweep or change the config.
-Optional JSON fields are `worker_counts`, `repeats`, and `benchmark_pool_percent`.
-Set `seed_workers` in the search config after comparing the results. Timings include
-model loading and bootstrap; confirm the winner on a longer workload if close.
-
 ### Plot test performance
 
 ```bash
