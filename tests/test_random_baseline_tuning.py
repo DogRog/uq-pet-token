@@ -1,24 +1,16 @@
 """Verify validation-only baseline selection, final isolation, and resumable execution."""
 
 import argparse
-import importlib.util
 import json
 import math
 import random
-import sys
-from pathlib import Path
 
 import pytest
 
 from test_random_search import fake_wandb as fake_wandb
+from uq_pet import search as tune
 from uq_pet.experiment import RandomBaselineSearchConfig
 from uq_pet.pet_data import split_tuning_pool
-
-SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
-sys.path.insert(0, str(SCRIPTS))
-SPEC = importlib.util.spec_from_file_location("tune_random", SCRIPTS / "bert_token_uq_search.py")
-tune = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(tune)
 
 
 def run_tuning(config, *, dry_run=False):
@@ -347,7 +339,7 @@ def test_offline_tuning_does_not_create_remote_sweep(fake_search, fake_wandb, mo
 
 
 def test_tuning_workspace_axes_include_objective_and_f1():
-    from wandb_tuning import AXES, chart_workspace
+    from uq_pet.utils.wandb_tuning import AXES, chart_workspace
 
     workspace = chart_workspace("test", "project", "example", "random_validation_entity_f1_auc")
     columns = workspace.sections[0].panels[0].columns

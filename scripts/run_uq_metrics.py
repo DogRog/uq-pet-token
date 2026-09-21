@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-import bert_token_uq_search as search
+from uq_pet import search
 from uq_pet.experiment import ExperimentConfig
 from uq_pet.token_model import UQ_METRICS
 

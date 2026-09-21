@@ -3,8 +3,34 @@
 Does a PET token classifier learn faster when each online update uses its most
 uncertain unlabelled words instead of the same number of random words?
 
-This branch, `bert-token-uq`, implements the experiment as a small marimo workflow.
-The earlier sentence-level BERT experiment remains on `bert-uq`.
+The project provides an interactive marimo experiment, random-baseline hyperparameter
+tuning, fixed comparisons of all three uncertainty metrics, and resumable random
+searches. The supplied configurations cover DistilBERT, BERT, RoBERTa, DeBERTa-v3,
+and ModernBERT.
+
+## Quick start
+
+Use Python 3.12 or newer and `uv`. From the project root:
+
+```bash
+uv sync
+uv run notebooks/bert_token_uq.py
+uv run marimo edit notebooks/bert_token_uq.py
+```
+
+The plain script command validates the notebook with synthetic display data and does
+not download data or train. In the editor, choose settings and press **Run experiment**
+to start a real run. Real runs download PET and model weights when needed; PET is
+cached at `data/raw/PETv1.1-entities.jsonl`.
+
+| Task | Entry point |
+| --- | --- |
+| Run one UQ metric against random | `notebooks/bert_token_uq.py` |
+| Compare all UQ metrics with saved validation winners | `scripts/run_best_uq_all_models.sh` |
+| Tune random acquisition on a validation holdout | `scripts/tune_random_all_models.sh` |
+| Sample hyperparameters and compare UQ against random | `scripts/bert_token_uq_search.py` |
+| Inspect tuning completeness and winners | `notebooks/random_baseline_analysis.py` |
+| Inspect random-search test curves and selections | `notebooks/random_search_analysis.py` |
 
 ## Protocol
 
@@ -36,14 +62,24 @@ probabilities and all ranked with larger values meaning more uncertain:
 - `least_confidence`: one minus the largest class probability.
 - `margin`: one minus the gap between the two largest class probabilities.
 
-## Run it
+## Interactive experiment
 
-```bash
-uv sync
-uv run marimo edit notebooks/bert_token_uq.py
-```
+The notebook uses the validated defaults in `src/uq_pet/experiment.py`:
 
-Choose the settings and press **Run experiment**. A completed run writes:
+| Setting | Default |
+| --- | --- |
+| Checkpoint / model seeds | `distilbert-base-cased` / `0,1,2,3,4` |
+| UQ metric / new words per round | `entropy` / `32` |
+| Pool acquisition budget | `100%` of scoreable words |
+| Bootstrap epochs / online update passes | `20` / `1` |
+| Replay ratio | `1` older labelled token per new word |
+| Learning rate / weight decay | `5e-5` / `0.01` |
+| Training / scoring batch size | `8` items / `256` sentences |
+| Maximum tokenizer length | `256` |
+| Concurrent seeds / precision | `1` / `auto` |
+| W&B logging | Disabled |
+
+Saved sweep and winner configurations override these defaults. A completed run writes:
 
 ```text
 results/bert_token_uq_<timestamp>/
@@ -52,11 +88,12 @@ results/bert_token_uq_<timestamp>/
 └── selections.json
 ```
 
-The entity F1 and token-accuracy charts appear after bootstrap evaluation and update
-live after both arms finish every round. The notebook also shows selected label counts,
-the run description, paired gap against random, and the token-level selection log.
+The entity F1, macro entity F1, and token-accuracy charts appear after bootstrap
+evaluation and update live after both arms finish every round. The notebook also shows selected label counts,
+the run description, paired gap against random, cumulative NER-tag coverage, and the
+token-level selection log.
 
-For a read-only presentation view, use:
+For the app view without the code editor, use:
 
 ```bash
 uv run marimo run notebooks/bert_token_uq.py
@@ -126,9 +163,9 @@ throughput improves and peak GPU memory permits. The worker count is capped at t
 number of seeds. Each seed's rounds remain sequential; live updates append only complete
 two-arm rounds as they arrive, and saved records retain the configured seed order.
 Errors or interruption stop the remaining workers. `seed_workers` also applies to the
-seeds within each sweep configuration. Within a seed, learner groups share
-one bootstrap and random trajectory. Seeds can be working on different metric groups at the
-same time. Worker count can change when resuming without changing the saved plan.
+seeds within each sweep configuration. Within a seed, metrics run sequentially and share
+one bootstrap and random trajectory. Different seeds may be working on different metrics
+at the same time. Worker count can change when resuming without changing the saved plan.
 
 Pool and evaluation tokenization and first-subword positions are cached once per seed.
 Uncertainty is computed in batches on the model device, transferring only one score per
@@ -174,12 +211,12 @@ bash scripts/tune_random_all_models.sh
 ```
 
 Each `configs/tune_random/*_tune_random_100.json` uses 100 configurations, five model seeds,
-five seed workers, the same validation split and objective, and a separate output
+two seed workers, the same validation split and objective, and a separate output
 folder. The launcher stops on the first failure; rerun it to resume saved searches.
 It runs random-only tuning and saves each model's winning settings without launching UQ.
 
 The supplied configuration samples 100 configurations for DistilBERT with five model
-seeds and five seed workers. Dry run prints the plan without loading data or models.
+seeds and two seed workers. Dry run prints the plan without loading data or models.
 `--mode compare` remains a separate workflow that compares UQ methods against random;
 `--mode tune-random` only tunes the random baseline. The JSON config selects the mode.
 
@@ -238,13 +275,19 @@ Check trial completeness and view the best configuration for each model:
 uv run marimo edit notebooks/random_baseline_analysis.py
 ```
 
-The notebook uses saved validation scores and excludes incomplete sweeps. Its download
-button provides `create_best_uq_configs.py`: run it from the project root to create
-winning configurations for entropy, least confidence, and margin in `configs/best_uq/`.
-Add `--run` to execute all generated configurations against random acquisition using
-the experiment notebook's batch mode. The analysis notebook itself only reads local files.
+The notebook reads local saved validation scores, reports trial completeness, and
+shows the highest-scoring configuration in each completed sweep. Incomplete sweeps
+are excluded from the winner table. To compare a newly tuned winner across UQ metrics:
 
-Repeat the command to resume. Completed trials are reused and interrupted trials restart
+```bash
+uv run scripts/run_uq_metrics.py \
+  --config results/random_baseline_search/distilbert-random-baseline-100/best_config.json
+```
+
+The checked-in winners and their provenance are documented in
+[configs/best_uq/README.md](configs/best_uq/README.md).
+
+Repeat the tuning command to resume. Completed trials are reused and interrupted trials restart
 from bootstrap. Older two-stage sweeps are accepted when their tuning settings match:
 `plan.v2.json` preserves the original plan, and historical `final/` artifacts are left
 untouched. Resuming never starts or resumes those historical UQ comparisons. Exact
@@ -258,7 +301,7 @@ choose new hyperparameters from test results.
 
 ## Random hyperparameter sweep
 
-In its default `--mode compare`, `scripts/bert_token_uq_search.py` samples a fixed set of distinct configurations
+In its default `--mode compare`, `scripts/bert_token_uq_search.py` samples a fixed set of configurations
 using independent uniform categorical draws and log-uniform learning-rate draws
 with a local seeded RNG. It saves the entire plan
 before loading data or training. Scores never change the plan, run order, or budget.
@@ -274,7 +317,7 @@ workload than the old 30-trial search, which sampled only one UQ metric per tria
 For each configuration and seed, bootstrap runs once. Its fitted weights and optimizer
 state are held in CPU memory and cloned into each arm. The first UQ metric trains beside
 random; later metrics train their own UQ arms and reuse the random evaluation rows
-and selected-token records. With the default group size, at most two learner states
+and selected-token records. At most two learner states
 reside on the GPU per seed (plus transient BF16 execution copies and activations).
 For three metrics this removes two bootstrap runs and two random trajectories per seed;
 all three UQ trajectories retain separate model and optimizer histories.
@@ -292,7 +335,7 @@ The hyperparameter ranges are:
 | `k` | 32, 64 |
 | `bootstrap_epochs` | 10 |
 | `update_passes` | 1, 2, 4 |
-| `learning_rate` | Log-uniform from 0.00001 to 0.00005 |
+| `learning_rate` | Log-uniform from 0.000001 to 0.0001 |
 | `batch_size` | 32, 64 |
 | `replay_ratio` | 0, 1, 2 |
 | `weight_decay` | 0, 0.01 |
@@ -342,7 +385,8 @@ already marked complete are retained even if saving a later metric fails. Only
 `seed_workers` and W&B logging settings may change without changing the scientific plan.
 Changing the budget, sampler seed, checkpoint, model seeds, search ranges, or other
 scientific settings requires a new sweep name. Run only one process per sweep.
-Log-uniform sampling uses comparison plan version 4 and tuning plan version 2.
+Log-uniform sampling uses comparison plan version 4 and tuning plan version 3.
+Fixed comparisons use plan version 1.
 Sweeps created with the previous sampler require a new sweep name; their existing outputs remain readable and untouched.
 Choose the search space and budget before inspecting test curves; changing them in
 response to favorable test gaps would make the resulting assessment exploratory.
@@ -378,6 +422,9 @@ uv run ruff format --check src tests notebooks scripts
 uv run marimo check notebooks/bert_token_uq.py
 uv run notebooks/bert_token_uq.py
 uv run scripts/bert_token_uq_search.py --help
+uv run scripts/run_uq_metrics.py --help
+bash scripts/run_best_uq_all_models.sh --dry-run
+bash scripts/tune_random_all_models.sh --dry-run
 ```
 
 Running the notebook as a plain script uses small synthetic display data. It validates
@@ -433,36 +480,38 @@ Use `--list` on an `add` command to inspect a repository before installing it, o
 | `notebooks/bert_token_uq.py` | controls, experiment run, tables, and plots |
 | `notebooks/fixed_all_metrics_analysis.py` | read-only analysis of saved historical sweeps |
 | `notebooks/charts.py` | shared chart builders and W&B comparison media |
-| `scripts/bert_token_uq_search.py` | random sweep or baseline tuning, shared execution, resume, and summaries |
-| `notebooks/test_analysis.py` | individual test curves and sweep-wide paired gaps |
+| `src/uq_pet/search.py` | random sweep or baseline tuning, shared execution, resume, and summaries |
+| `scripts/bert_token_uq_search.py` | CLI entry point for search and tuning |
 | `notebooks/random_search_analysis.py` | random-sweep summaries and per-configuration drill-downs |
-| `notebooks/random_baseline_analysis.py` | trial completeness, best configurations, and UQ configuration script download |
-| `tests/test_token_uq.py` | focused offline invariant tests |
+| `notebooks/random_baseline_analysis.py` | trial completeness and best saved validation configurations |
+| `scripts/run_uq_metrics.py` | fixed multi-metric comparisons from one experiment configuration |
+| `scripts/run_best_uq_all_models.sh` | fixed comparisons for all five saved winners |
+| `scripts/tune_random_all_models.sh` | random-only tuning for all five checkpoints |
+| `src/uq_pet/utils/wandb_tuning.py` | tuning sweep publication and workspace charts |
+| `configs/` | saved winners, tuning configs, and random-search configs |
+| `tests/` | offline protocol, model-boundary, CLI, concurrency, resume, and logging checks |
 | `skills-lock.json` | project skill sources and content hashes |
 
-### Plot test performance
+## Analyze saved results
 
 ```bash
-uv run marimo edit notebooks/test_analysis.py
-```
-
-This read-only notebook plots held-out test F1 and token accuracy after bootstrap
-(round 0) and every acquisition round, with seed means and SD bands. Select a sweep
-or regular experiments, then a checkpoint, UQ metric, and saved run. Runs with
-different settings remain separate. It also shows cumulative acquired NER-tag coverage.
-
-For random sweeps, it shows all configuration-level AUC gaps around zero, a per-metric
-summary table, and pending/failed comparisons. Sweep summaries always cover all completed
-configurations in that sweep, independently of the individual-run selectors below.
-
-It reads regular exports directly under `results/bert_token_uq_*` and completed sweeps
-under `results/random_search/*` (the default output directory). It never downloads or
-trains a model. Legacy top-level regular exports without an evaluation split marker
-are supported; sweep exports must explicitly identify the test split.
-
-For a random-sweep-only view with sweep status, aggregate metric results, and a
-per-configuration drill-down, run:
-
-```bash
+uv run marimo edit notebooks/random_baseline_analysis.py
 uv run marimo edit notebooks/random_search_analysis.py
 ```
+
+The baseline notebook reads `results/random_baseline_search/` and displays trial
+completeness and validation winners. The random-search notebook reads test sweep
+summaries under `results/random_search/`, with aggregate metric results, pending or
+failed comparisons, and a per-configuration drill-down. It plots seed means and
+standard-deviation bands for entity F1, macro entity F1 (when available), and token
+accuracy, plus acquired NER-tag coverage and selected words with sentence context.
+Sentence context requires the local `data/raw/PETv1.1-entities.jsonl` file.
+
+These notebooks read saved files and do not train models. The random-search viewer
+does not currently discover `results/best_uq/`; fixed comparisons save the same
+per-metric exports and summary files there for inspection.
+
+`notebooks/fixed_all_metrics_analysis.py` is a historical analysis notebook tied to
+`results/sweeps/bert_token_uq_20260825_090329_945236_fixed-all-metrics/`. It requires
+that sweep's `combined_results.csv` and selection files; it is not a general viewer
+for new fixed comparisons.

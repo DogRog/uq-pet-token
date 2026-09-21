@@ -1,20 +1,14 @@
 import argparse
-import importlib.util
 import json
 import random
 import sys
 from io import StringIO
-from pathlib import Path
 
 import pytest
 from rich.console import Console
 
-SEARCH_PATH = Path(__file__).resolve().parents[1] / "scripts" / "bert_token_uq_search.py"
-SPEC = importlib.util.spec_from_file_location("bert_token_uq_search", SEARCH_PATH)
-assert SPEC is not None and SPEC.loader is not None
-search = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(search)
-mean_entity_f1_gap_auc = search.mean_entity_f1_gap_auc
+from uq_pet import search
+from uq_pet.search import mean_entity_f1_gap_auc
 
 
 @pytest.fixture(autouse=True)
@@ -378,7 +372,7 @@ def fake_wandb(monkeypatch):
         def login(self, **kwargs):
             self.logins.append(kwargs)
 
-    import wandb_tuning
+    from uq_pet.utils import wandb_tuning
 
     class Workspace:
         url = "https://wandb.ai/test/pet/workspace?view=tuning"
