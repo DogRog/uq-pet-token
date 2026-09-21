@@ -79,19 +79,25 @@ To run all three UQ metrics with fixed settings, use:
 uv run scripts/run_uq_metrics.py --config configs/best_uq/bert_base.json
 ```
 
-This runs entropy, least confidence, and margin sequentially, each against its own
-matched random baseline, using all configured seeds. Each comparison saves its own
-timestamped results directory. Settings are validated before any run starts, and a
-failed comparison stops the script. Re-running starts fresh experiments.
+This compares entropy, least confidence, and margin using exactly one supplied
+configuration, sharing bootstrap training and the matched random baseline across
+metrics. The saved best-UQ configs run all five seeds concurrently; use `--seed-workers N` to
+override this. Configs without `seed_workers` default to two concurrent seeds.
+No hyperparameters are sampled.
+
+Results are grouped under `results/best_uq/<checkpoint>-best-uq/`, with `plan.json`,
+`search_config.json`, `summary.json`, and per-metric outputs under
+`runs/config_0000/<metric>/`. Each metric retains settings, evaluation rows, and
+selected tokens. Re-running skips completed comparisons; an interrupted comparison
+restarts. Changed scientific settings require a new `--sweep-name`.
 
 Use `--uq-metrics entropy margin` to select a subset and `--dry-run` to print the
-validated configurations without downloading data or training. `--config-json`
-accepts inline JSON instead of a file. The metric arguments override any `uq_metric`
-in the input configuration; all other experiment settings stay fixed.
+validated plan without downloading data or training. `--config-json` accepts inline
+JSON instead of a file; `--sweeps-dir` changes the output parent directory.
 
 Configuration files are grouped by purpose:
 
-- `configs/best_uq/`: exact saved winners from the five completed random-baseline searches.
+- `configs/best_uq/`: saved winners from the five completed random-baseline searches, with five concurrent seeds.
 - `configs/tune_random/`: random-baseline hyperparameter tuning settings.
 - `configs/random_search/`: sampled UQ-versus-random comparison settings.
 
@@ -102,9 +108,9 @@ seeds, with matched random baselines):
 bash scripts/run_best_uq_all_models.sh
 ```
 
-Pass `--dry-run` to validate and preview all 15 configurations without training,
-or `--uq-metrics entropy margin` to run a subset. Models and metrics run sequentially;
-the script stops on the first failure. Winner provenance is in `configs/best_uq/README.md`.
+Pass `--dry-run` to preview the five fixed plans (three metrics each) without training,
+or `--uq-metrics entropy margin` to run a subset. Models run sequentially, with parallel
+seeds within each model; the script stops on the first failure. Winner provenance is in `configs/best_uq/README.md`.
 
 To share a large GPU across independent seeds, set **Concurrent seeds** in the notebook
 or pass `seed_workers` in JSON (default `1`):

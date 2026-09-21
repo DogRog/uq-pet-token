@@ -211,6 +211,21 @@ class RandomSearchConfig(ExperimentConfig):
         )
 
 
+class FixedComparisonConfig(RandomSearchConfig):
+    """Compare one supplied configuration without sampling hyperparameters."""
+
+    mode: Literal["compare-fixed"] = "compare-fixed"
+    num_configs: Literal[1] = 1
+    uq_metrics: list[str] = Field(default_factory=lambda: list(UQ_METRICS), min_length=1)
+
+    @field_validator("uq_metrics")
+    @classmethod
+    def validate_metrics(cls, value):
+        if len(set(value)) != len(value) or any(metric not in UQ_METRICS for metric in value):
+            raise ValueError("uq-metrics must be unique supported metrics")
+        return value
+
+
 class RandomBaselineSearchConfig(RandomSearchConfig):
     """Tune random acquisition on validation and save the winning configuration."""
 

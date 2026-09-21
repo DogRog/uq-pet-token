@@ -1,11 +1,10 @@
-"""Run fixed experiment settings once per UQ metric through the notebook batch entry."""
+"""Compare one fixed configuration using shared training and organized, resumable results."""
 
 import argparse
 import json
-import subprocess
-import sys
 from pathlib import Path
 
+import bert_token_uq_search as search
 from uq_pet.experiment import ExperimentConfig
 from uq_pet.token_model import UQ_METRICS
 
@@ -22,45 +21,42 @@ def main(argv: list[str] | None = None) -> int:
         nargs="+",
         choices=UQ_METRICS,
         default=list(UQ_METRICS),
-        help="Metrics to run in order (default: all three); overrides config uq_metric.",
+        help="Metrics to compare (default: all three); overrides config uq_metric.",
     )
-    parser.add_argument(
-        "--dry-run", action="store_true", help="Validate and print settings without training."
-    )
+    parser.add_argument("--seed-workers", type=int, help="Concurrent seeds (default: config or 2).")
+    parser.add_argument("--sweep-name", help="Result group name (default: checkpoint-best-uq).")
+    parser.add_argument("--sweeps-dir", type=Path, default=PROJECT_ROOT / "results" / "best_uq")
+    parser.add_argument("--dry-run", action="store_true", help="Print the plan without training.")
     args = parser.parse_args(argv)
     try:
         payload = args.config.read_text() if args.config is not None else args.config_json
         settings = json.loads(payload)
         if not isinstance(settings, dict):
             raise ValueError("configuration must be a JSON object")
-        if len(set(args.uq_metrics)) != len(args.uq_metrics):
-            raise ValueError("uq-metrics must be unique")
-        configs = [
-            ExperimentConfig.model_validate({**settings, "uq_metric": metric})
-            for metric in args.uq_metrics
-        ]
+        settings["seed_workers"] = (
+            args.seed_workers if args.seed_workers is not None else settings.get("seed_workers", 2)
+        )
+        config = ExperimentConfig.model_validate(settings)
     except (OSError, ValueError) as error:
         parser.error(str(error))
 
-    if args.dry_run:
-        print(json.dumps([config.model_dump() for config in configs], indent=2))
-        return 0
-
-    for index, config in enumerate(configs, start=1):
-        print(f"[{index}/{len(configs)}] Running {config.uq_metric} vs random", flush=True)
-        completed = subprocess.run(
-            [
-                sys.executable,
-                str(PROJECT_ROOT / "notebooks" / "bert_token_uq.py"),
-                "--config-json",
-                config.model_dump_json(),
-            ],
-            cwd=PROJECT_ROOT,
-            check=False,
-        )
-        if completed.returncode:
-            print(f"Stopped: {config.uq_metric} run failed.", file=sys.stderr)
-            return completed.returncode if completed.returncode > 0 else 1
+    name = config.checkpoint.rsplit("/", maxsplit=1)[-1] + "-best-uq"
+    search_args = argparse.Namespace(
+        config=None,
+        config_json=json.dumps(
+            {
+                **config.model_dump(),
+                "mode": "compare-fixed",
+                "num_configs": 1,
+                "uq_metrics": args.uq_metrics,
+                "sweep_name": args.sweep_name or name,
+                "sweeps_dir": str(args.sweeps_dir),
+            }
+        ),
+        dry_run=args.dry_run,
+        publish_wandb_only=False,
+    )
+    search.run(search_args, parser)
     return 0
 
 

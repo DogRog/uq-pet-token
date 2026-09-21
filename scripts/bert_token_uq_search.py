@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a paired hyperparameter sweep or tune random selection and save the winning hyperparameters."""
+"""Run sampled or fixed UQ comparisons, or tune random selection on validation."""
 
 import argparse
 import hashlib
@@ -22,6 +22,7 @@ from uq_pet import active_learning
 from uq_pet.active_learning import run_metric_comparisons, write_run
 from uq_pet.experiment import (
     ExperimentConfig,
+    FixedComparisonConfig,
     RandomBaselineSearchConfig,
     RandomSearchConfig,
     configure_wandb_metrics,
@@ -109,7 +110,32 @@ def mean_entity_f1_gap_auc(results: Sequence[Mapping[str, object]]) -> float:
 
 
 def sample_plan(config: RandomSearchConfig) -> dict:
-    """Sample categorical settings and log-uniform rates before observing results."""
+    """Freeze supplied settings or sample a sweep before observing results."""
+    if isinstance(config, FixedComparisonConfig):
+        experiment = config.experiment_config().model_dump()
+        return {
+            "version": 1,
+            "mode": "fixed_comparison",
+            "shared_bootstrap_and_random": True,
+            "evaluation_split": "test",
+            "sampling": "none",
+            "num_configs": 1,
+            "fixed_config": {
+                key: value
+                for key, value in experiment.items()
+                if key
+                not in {"seed_workers", "uq_metric", "learning_rate", *SEARCH_SPACE, *WANDB_FIELDS}
+            },
+            "uq_metrics": config.uq_metrics,
+            "configurations": [
+                {
+                    "config_id": "config_0000",
+                    "parameters": {
+                        key: experiment[key] for key in (*SEARCH_SPACE, "learning_rate")
+                    },
+                }
+            ],
+        }
     rng = random.Random(config.sampler_seed)
     sampled = []
     for _ in range(config.num_configs):
@@ -407,9 +433,9 @@ def write_summary(root: Path, plan: dict) -> dict:
 def configure_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--mode",
-        choices=("compare", "tune-random"),
+        choices=("compare", "tune-random", "compare-fixed"),
         default=argparse.SUPPRESS,
-        help="Compare every configuration on test (default), or tune random on validation and save the winner without running UQ.",
+        help="Compare sampled configurations on test (compare), compare one supplied configuration (compare-fixed), or tune random on validation (tune-random).",
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Print the plan without loading data or models."
@@ -431,6 +457,8 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--sweep-name", default=argparse.SUPPRESS)
     parser.add_argument("--sweeps-dir", type=Path, default=argparse.SUPPRESS)
     parser.add_argument("--sampler-seed", type=int, default=argparse.SUPPRESS)
+    parser.add_argument("--seed-workers", type=int, default=argparse.SUPPRESS)
+    parser.add_argument("--uq-metrics", nargs="+", choices=UQ_METRICS, default=argparse.SUPPRESS)
 
 
 def load_search_config(
@@ -452,6 +480,8 @@ def load_search_config(
         config_class = (
             RandomBaselineSearchConfig
             if settings.get("mode") == "tune-random"
+            else FixedComparisonConfig
+            if settings.get("mode") == "compare-fixed"
             else RandomSearchConfig
         )
         config = config_class.model_validate(settings)
@@ -668,7 +698,9 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                             "shared_bootstrap_and_random": not random_only,
                             "random_only": random_only,
                             "evaluation_split": stage,
-                            "mode": "random_baseline_tuning" if tuning else "random_search",
+                            "mode": "random_baseline_tuning"
+                            if tuning
+                            else plan.get("mode", "random_search"),
                             "sweep_name": config.sweep_name,
                             "config_id": entry["config_id"],
                             "seed_sentences": len(seed_examples),

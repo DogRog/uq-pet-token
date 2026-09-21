@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Run all saved winners with all UQ metrics. Pass --dry-run to preview without training.
+# Run one saved winner per model with shared metric training and concurrent seeds.
+# Results are grouped by model and metric; completed comparisons resume automatically.
+# Pass --dry-run to preview without training or --seed-workers N to set concurrency.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
