@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from uq_pet import search
-from uq_pet.experiment import ExperimentConfig
+from uq_pet.config import ExperimentConfig
 from uq_pet.token_model import UQ_METRICS
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

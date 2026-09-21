@@ -27,16 +27,15 @@ def _():
         make_wandb_comparison_media,
     )
     from uq_pet.active_learning import acquisition_schedule
-    from uq_pet.experiment import (
-        DEFAULT_CHECKPOINTS,
-        ExperimentConfig,
+    from uq_pet.config import DEFAULT_CHECKPOINTS, ExperimentConfig
+    from uq_pet.experiment import execute_experiment
+    from uq_pet.pet_data import RESULTS_DIR
+    from uq_pet.token_model import UQ_METRICS
+    from uq_pet.utils.wandb_logging import (
         configure_wandb_metrics,
-        execute_experiment,
         make_wandb_evaluation_log,
         require_wandb_credentials,
     )
-    from uq_pet.pet_data import RESULTS_DIR
-    from uq_pet.token_model import UQ_METRICS
 
     alt.renderers.set_embed_options(scaleFactor=3)
     return (

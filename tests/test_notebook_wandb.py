@@ -5,12 +5,9 @@ import pytest
 
 import charts
 import uq_pet.experiment as experiment
-from uq_pet.experiment import (
-    ExperimentConfig,
-    configure_wandb_metrics,
-    execute_experiment,
-    make_wandb_evaluation_log,
-)
+from uq_pet.config import ExperimentConfig
+from uq_pet.experiment import execute_experiment
+from uq_pet.utils.wandb_logging import configure_wandb_metrics, make_wandb_evaluation_log
 
 
 def result_row(arm, round_idx, accuracy):

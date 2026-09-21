@@ -64,7 +64,7 @@ probabilities and all ranked with larger values meaning more uncertain:
 
 ## Interactive experiment
 
-The notebook uses the validated defaults in `src/uq_pet/experiment.py`:
+The notebook uses the validated defaults in `src/uq_pet/config.py`:
 
 | Setting | Default |
 | --- | --- |
@@ -476,7 +476,9 @@ Use `--list` on an `add` command to inspect a repository before installing it, o
 | `src/uq_pet/token_model.py` | masking, training, UQ metrics, inference, and evaluation |
 | `src/uq_pet/utils/truncation.py` | word alignment and truncation checks |
 | `src/uq_pet/active_learning.py` | acquisition rounds, replay, orchestration, and outputs |
-| `src/uq_pet/experiment.py` | shared configuration, run execution, summaries, and W&B records |
+| `src/uq_pet/config.py` | shared validated experiment and search configuration |
+| `src/uq_pet/experiment.py` | run execution and label coverage summaries |
+| `src/uq_pet/utils/wandb_logging.py` | W&B credentials, evaluation records, and comparison run lifecycles |
 | `notebooks/bert_token_uq.py` | controls, experiment run, tables, and plots |
 | `notebooks/fixed_all_metrics_analysis.py` | read-only analysis of saved historical sweeps |
 | `notebooks/charts.py` | shared chart builders and W&B comparison media |

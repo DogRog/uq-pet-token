@@ -50,6 +50,7 @@ Real runs start from the notebook's **Run experiment** button or that batch mode
 
 Do not add YAML configuration, a CLI framework, metric registries, callbacks, model
 checkpoint management, or generalized experiment abstractions without a concrete
-need. Keep the validated experiment configuration in `experiment.py`, UI controls in
-the marimo notebook, and data, model operations, and active-learning orchestration in
-their focused modules.
+need. Keep validated experiment and search configuration in `config.py`, UI controls
+in the marimo notebook, and shared W&B logging in `utils/wandb_logging.py`. Keep data,
+model operations, and active-learning orchestration in their focused modules, and
+search planning, resume handling, and search summaries together in `search.py`.

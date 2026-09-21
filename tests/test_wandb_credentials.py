@@ -1,6 +1,6 @@
 import pytest
 
-from uq_pet.experiment import require_wandb_credentials
+from uq_pet.utils.wandb_logging import require_wandb_credentials
 
 
 def test_online_wandb_launch_requires_api_key():

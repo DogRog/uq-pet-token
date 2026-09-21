@@ -7,7 +7,7 @@ import math
 import os
 import random
 from collections.abc import Mapping, Sequence
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from pathlib import Path
 
 import polars as pl
@@ -19,17 +19,15 @@ from transformers.utils import logging as transformers_logging
 
 from uq_pet import active_learning
 from uq_pet.active_learning import run_metric_comparisons, write_run
-from uq_pet.experiment import (
+from uq_pet.config import (
     ExperimentConfig,
     FixedComparisonConfig,
     RandomBaselineSearchConfig,
     RandomSearchConfig,
-    configure_wandb_metrics,
-    make_wandb_evaluation_log,
-    require_wandb_credentials,
 )
 from uq_pet.pet_data import PROJECT_ROOT, download_pet_ner, load_pet_splits, split_tuning_pool
 from uq_pet.token_model import UQ_METRICS, get_device, resolve_precision
+from uq_pet.utils.wandb_logging import require_wandb_credentials, wandb_comparison_logging
 from uq_pet.utils.wandb_tuning import ensure_sweep, publish_trial
 
 CONSOLE = Console()
@@ -268,78 +266,6 @@ def scientific_plan(plan: dict) -> dict:
             for entry in plan["configurations"]
         ],
     }
-
-
-@contextmanager
-def wandb_comparison_logging(
-    config,
-    experiment,
-    config_id,
-    effective_precision,
-    slots,
-    *,
-    evaluation_split="test",
-    random_only=False,
-):
-    """Own one W&B run per metric/seed in the parent, with separate acquisition axes."""
-    if not config.wandb_enabled:
-        yield None
-        return
-
-    import wandb
-
-    runs = {}
-    success = False
-    offline = os.environ.get("WANDB_MODE", "").strip().lower() == "offline"
-    with ExitStack() as cleanup:
-
-        def log_evaluation(metric, rows):
-            pair = rows[-1:] if random_only else rows[-2:]
-            payload = make_wandb_evaluation_log(pair, metric, random_only=random_only)
-            seed = pair[0]["seed"]
-            key = (metric, seed)
-            if key not in runs:
-                acquisition = "random" if random_only else metric
-                name = f"{config.wandb_run_name or config.sweep_name}-{config_id}-{acquisition}-seed{seed}"
-                if random_only:
-                    name += "-validation-random"
-                settings = experiment.model_copy(
-                    update={"uq_metric": metric, "model_seeds": [seed]}
-                )
-                logged_settings = settings.resolved_dict()
-                if random_only:
-                    logged_settings.pop("uq_metric", None)
-                run = wandb.init(
-                    project=config.wandb_project,
-                    name=name,
-                    group=config.sweep_name,
-                    job_type="random_search",
-                    reinit="create_new",
-                    settings={"quiet": True, "console": "off"},
-                    dir=str(slots[metric]),
-                    config={
-                        **logged_settings,
-                        "wandb_run_name": name,
-                        "seed": seed,
-                        "config_id": config_id,
-                        "sweep_name": config.sweep_name,
-                        "evaluation_split": evaluation_split,
-                        "random_only": random_only,
-                        "effective_precision": effective_precision,
-                        "shared_bootstrap_and_random": not random_only,
-                    },
-                )
-                cleanup.callback(lambda run=run: run.finish(exit_code=0 if success else 1))
-                runs[key] = run
-                configure_wandb_metrics(run, metric, random_only=random_only)
-                if not offline:
-                    if len(runs) == 1:
-                        CONSOLE.print(f"W&B project: {run.get_project_url()}", markup=False)
-                    CONSOLE.print(f"W&B run ({metric}, seed {seed}): {run.get_url()}", markup=False)
-            runs[key].log(payload)
-
-        yield log_evaluation
-        success = True
 
 
 def paired_summary(results: list[dict]) -> dict:
@@ -665,6 +591,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                     entry["config_id"],
                     effective_precision,
                     slots,
+                    console=CONSOLE,
                     evaluation_split=stage,
                     random_only=random_only,
                 ) as log_evaluation:

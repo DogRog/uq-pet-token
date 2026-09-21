@@ -11,9 +11,10 @@ from tokenizers.processors import TemplateProcessing
 from transformers import BertConfig, BertForTokenClassification, PreTrainedTokenizerFast
 
 import uq_pet.active_learning as active_learning
-from uq_pet.experiment import ExperimentConfig, make_wandb_evaluation_log
+from uq_pet.config import ExperimentConfig
 from uq_pet.pet_data import NER_TAGS
 from uq_pet.token_model import set_seed
+from uq_pet.utils.wandb_logging import make_wandb_evaluation_log
 
 
 @pytest.fixture
