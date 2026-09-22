@@ -31,6 +31,7 @@ cached at `data/raw/PETv1.1-entities.jsonl`.
 | Sample hyperparameters and compare UQ against random | `scripts/bert_token_uq_search.py` |
 | Inspect tuning completeness and winners | `notebooks/random_baseline_analysis.py` |
 | Inspect random-search test curves and selections | `notebooks/random_search_analysis.py` |
+| Compare best-config UQ results and learning curves | `notebooks/best_uq_analysis.py` |
 
 ## Protocol
 
@@ -499,6 +500,7 @@ Use `--list` on an `add` command to inspect a repository before installing it, o
 ```bash
 uv run marimo edit notebooks/random_baseline_analysis.py
 uv run marimo edit notebooks/random_search_analysis.py
+uv run marimo edit notebooks/best_uq_analysis.py
 ```
 
 The baseline notebook reads `results/random_baseline_search/` and displays trial
