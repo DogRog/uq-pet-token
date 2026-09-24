@@ -192,15 +192,17 @@ def make_tag_category_coverage_chart(
 def make_variance_chart(
     results_frame: pl.DataFrame, uq_metric: str, acquisition_percent: float | None = None
 ):
-    """Plot seed means and clipped ±1 SD bands, including older runs without macro F1."""
+    """Plot seed means and clipped ±1 SD bands, including available precision and recall metrics."""
     metrics = [
         (field, title, y_title)
         for field, title, y_title in (
             ("entity_f1", "Entity F1", "F1"),
             ("entity_macro_f1", "Macro entity F1", "Macro F1"),
             ("token_accuracy", "Token accuracy", "Accuracy"),
+            ("entity_precision", "Entity precision", "Precision"),
+            ("entity_recall", "Entity recall", "Recall"),
         )
-        if field != "entity_macro_f1" or field in results_frame.columns
+        if field in results_frame.columns
     ]
     summary = (
         results_frame.with_columns(pl.col("arm").replace({"uncertainty": uq_metric}))
@@ -267,9 +269,15 @@ def make_variance_chart(
             )
         return alt.layer(*layers).properties(title=title, width=500, height=320)
 
-    return alt.hconcat(*(metric_chart(*metric) for metric in metrics), spacing=35).resolve_scale(
-        color="shared"
-    )
+    # Explicit rows let marimo hydrate data in every nested chart.
+    panels = [metric_chart(*metric) for metric in metrics]
+    return alt.vconcat(
+        *(
+            alt.hconcat(*panels[start : start + 3], spacing=35)
+            for start in range(0, len(panels), 3)
+        ),
+        spacing=35,
+    ).resolve_scale(color="shared")
 
 
 def make_wandb_comparison_media(wandb_module, result_records: list[dict], uq_metric: str) -> dict:

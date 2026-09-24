@@ -17,7 +17,7 @@ def _():
     import altair as alt
     import polars as pl
     import wandb
-    from wigglystuff import EnvConfig
+    from wigglystuff import EnvConfig, FloatingPanel
 
     from uq_pet.active_learning import acquisition_schedule
     from uq_pet.config import DEFAULT_CHECKPOINTS, ExperimentConfig
@@ -515,9 +515,9 @@ def _(config, mo):
             The first chart normalizes within each gold-label category so rare tags
             remain visible. The original all-pool-share chart is shown underneath.
             """),
-            selection_coverage_slider,
         ]
     )
+    FloatingPanel(selection_coverage_slider, corner="top-right")
     return (selection_coverage_slider,)
 
 
