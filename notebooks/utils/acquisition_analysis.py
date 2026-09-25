@@ -37,6 +37,7 @@ def acquisition_diagnostics(selections: list[dict], results: pl.DataFrame) -> di
     }
     composition, coverage, timing, validation = [], [], [], []
     positions = {}
+    uncertainty_scores = {}
     for (seed, arm), rows in sorted(groups.items()):
         rounds = defaultdict(list)
         for row in rows:
@@ -63,6 +64,8 @@ def acquisition_diagnostics(selections: list[dict], results: pl.DataFrame) -> di
                     raise ValueError("A token was acquired more than once within a seed/arm.")
                 seen.add(key)
                 positions[seed, arm, key] = 100 * midpoint / pool_size
+                if arm == "uncertainty":
+                    uncertainty_scores[seed, key] = row.get("uq_score")
                 words.add(row["token"].lower())
                 sentences.add(row["pool_idx"])
                 documents.add(row["document_name"])
@@ -125,6 +128,7 @@ def acquisition_diagnostics(selections: list[dict], results: pl.DataFrame) -> di
                     "label": label,
                     "entity_type": label[2:] if label != "O" else "O",
                     "BIO": label[0],
+                    "uq_score": uncertainty_scores[seed, key],
                     "random_position_percent": positions[seed, "random", key],
                     "uq_position_percent": positions[seed, "uncertainty", key],
                     "advance_pp": positions[seed, "random", key]
@@ -145,6 +149,7 @@ def acquisition_diagnostics(selections: list[dict], results: pl.DataFrame) -> di
         "label": pl.String,
         "entity_type": pl.String,
         "BIO": pl.String,
+        "uq_score": pl.Float64,
         "random_position_percent": pl.Float64,
         "uq_position_percent": pl.Float64,
         "advance_pp": pl.Float64,

@@ -27,8 +27,8 @@ def _():
     import altair as alt
     import marimo as mo
     import polars as pl
-    from wigglystuff import FloatingPanel
     from scipy import stats
+    from wigglystuff import FloatingPanel
 
     from utils.charts import (
         make_tag_category_coverage_chart,
@@ -633,6 +633,7 @@ def _(Path, json, mo, pl, timing_data):
             "pool_idx", "word_idx", "document_name", "sentence_id", "token", "label"
         )
         .agg(
+            pl.col("uq_score").mean().alias("mean_uncertainty_score"),
             pl.col("advance_pp").mean().alias("mean_advance_pp"),
             pl.col("advance_pp").min().alias("min_advance_pp"),
             (pl.col("advance_pp") > 0).sum().alias("seeds_earlier"),
@@ -673,6 +674,8 @@ def _(Path, json, mo, pl, timing_data):
                 "### Inspect tokens brought forward or delayed\n"
                 "Sorted by mean timing advantage. Sort ascending to inspect delayed tokens. "
                 "`seeds_earlier` and `paired_seeds` distinguish consistency from a large mean. "
+                "`mean_uncertainty_score` averages the uncertainty arm's score at acquisition "
+                "across paired seeds (higher means more uncertain; missing scores are excluded). "
                 "Context is read only from the local PET file; no data is downloaded."
             ),
             mo.ui.table(
@@ -682,6 +685,9 @@ def _(Path, json, mo, pl, timing_data):
                 wrapped_columns=["sentence_context"],
                 column_widths={"sentence_context": 420},
                 format_mapping={
+                    "mean_uncertainty_score": "{:.3g}",
+                    "mean_advance_pp": "{:.3f}",
+                    "min_advance_pp": "{:.3f}",
                     "sentence_context": lambda value: mo.md(value).style(
                         {"white-space": "normal", "overflow-wrap": "anywhere"}
                     )
@@ -702,7 +708,6 @@ def _(mo):
 
 @app.cell
 def _(Path, json, mo, stats):
-
     def build_ttest_report(root):
         rows = []
 
@@ -714,8 +719,7 @@ def _(Path, json, mo, stats):
                 gaps = [
                     row["mean_test_entity_f1_gap_auc"]
                     for row in summary["comparisons"]
-                    if row["uq_metric"] == metric
-                    and row["status"] == "complete"
+                    if row["uq_metric"] == metric and row["status"] == "complete"
                 ]
 
                 if len(gaps) < 2:
@@ -724,18 +728,36 @@ def _(Path, json, mo, stats):
                 test = stats.ttest_1samp(gaps, 0, alternative="two-sided")
                 ci = test.confidence_interval(confidence_level=0.95)
 
-                rows.append({
-                    "Model": model,
-                    "UQ metric": metric,
-                    "Configurations": len(gaps),
-                    "Mean improvement (pp)": 100 * sum(gaps) / len(gaps),
-                    "95% CI lower (pp)": 100 * ci.low,
-                    "95% CI upper (pp)": 100 * ci.high,
-                    "p-value": float(test.pvalue),
-                })
+                rows.append(
+                    {
+                        "Model": model,
+                        "UQ metric": metric,
+                        "Configurations": len(gaps),
+                        "Mean improvement (pp)": 100 * sum(gaps) / len(gaps),
+                        "95% CI lower (pp)": 100 * ci.low,
+                        "95% CI upper (pp)": 100 * ci.high,
+                        "p-value": float(test.pvalue),
+                    }
+                )
+
+        for model in {row["Model"] for row in rows}:
+            model_rows = sorted(
+                (row for row in rows if row["Model"] == model),
+                key=lambda row: (row["p-value"] != row["p-value"], row["p-value"]),
+            )
+            # Correct across the three planned UQ comparisons within each model.
+            holm_p = 0.0
+            for rank, row in enumerate(model_rows):
+                p = row["p-value"]
+                if p != p:
+                    row["Adjusted p-value (Holm)"] = p
+                    row["Adjusted p-value (Bonferroni)"] = p
+                    continue
+                holm_p = max(holm_p, min(1.0, (3 - rank) * p))
+                row["Adjusted p-value (Holm)"] = holm_p
+                row["Adjusted p-value (Bonferroni)"] = min(1.0, 3 * p)
 
         return rows
-
 
     ttest_report = build_ttest_report(Path("results/random_search"))
 
@@ -749,6 +771,8 @@ def _(Path, json, mo, stats):
             "95% CI lower (pp)": "{:.2f}",
             "95% CI upper (pp)": "{:.2f}",
             "p-value": "{:.3g}",
+            "Adjusted p-value (Holm)": "{:.3g}",
+            "Adjusted p-value (Bonferroni)": "{:.3g}",
         },
     )
     return
