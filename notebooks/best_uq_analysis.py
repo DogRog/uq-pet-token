@@ -28,6 +28,7 @@ def _():
     import marimo as mo
     import polars as pl
     from wigglystuff import FloatingPanel
+    from scipy import stats
 
     from utils.charts import (
         make_tag_category_coverage_chart,
@@ -45,6 +46,7 @@ def _():
         make_variance_chart,
         mo,
         pl,
+        stats,
     )
 
 
@@ -690,8 +692,65 @@ def _(Path, json, mo, pl, timing_data):
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## T-test based on 30 configurations for each model (results/random_search)
+    """)
+    return
+
+
 @app.cell
-def _():
+def _(Path, json, mo, stats):
+
+    def build_ttest_report(root):
+        rows = []
+
+        for path in sorted(root.glob("*/summary.json")):
+            summary = json.loads(path.read_text())
+            model = path.parent.name.removesuffix("-random-5-seeds")
+
+            for metric in ("entropy", "least_confidence", "margin"):
+                gaps = [
+                    row["mean_test_entity_f1_gap_auc"]
+                    for row in summary["comparisons"]
+                    if row["uq_metric"] == metric
+                    and row["status"] == "complete"
+                ]
+
+                if len(gaps) < 2:
+                    continue
+
+                test = stats.ttest_1samp(gaps, 0, alternative="two-sided")
+                ci = test.confidence_interval(confidence_level=0.95)
+
+                rows.append({
+                    "Model": model,
+                    "UQ metric": metric,
+                    "Configurations": len(gaps),
+                    "Mean improvement (pp)": 100 * sum(gaps) / len(gaps),
+                    "95% CI lower (pp)": 100 * ci.low,
+                    "95% CI upper (pp)": 100 * ci.high,
+                    "p-value": float(test.pvalue),
+                })
+
+        return rows
+
+
+    ttest_report = build_ttest_report(Path("results/random_search"))
+
+    mo.ui.table(
+        ttest_report,
+        label="UQ versus random — normalized learning-curve AUC",
+        selection=None,
+        page_size=20,
+        format_mapping={
+            "Mean improvement (pp)": "{:.2f}",
+            "95% CI lower (pp)": "{:.2f}",
+            "95% CI upper (pp)": "{:.2f}",
+            "p-value": "{:.3g}",
+        },
+    )
     return
 
 
