@@ -190,9 +190,16 @@ def make_tag_category_coverage_chart(
 
 
 def make_variance_chart(
-    results_frame: pl.DataFrame, uq_metric: str, acquisition_percent: float | None = None
+    results_frame: pl.DataFrame,
+    uq_metric: str,
+    acquisition_percent: float | None = None,
+    supervised: pl.DataFrame | None = None,
 ):
-    """Plot seed means and clipped ±1 SD bands, including available precision and recall metrics."""
+    """Plot seed means and clipped ±1 SD bands, including available precision and recall metrics.
+
+    Optional supervised rows add a horizontal reference at their largest pool budget
+    (the fully supervised upper bound) and, with several budgets, a sentence-level curve.
+    """
     metrics = [
         (field, title, y_title)
         for field, title, y_title in (
@@ -204,40 +211,61 @@ def make_variance_chart(
         )
         if field in results_frame.columns
     ]
-    summary = (
-        results_frame.with_columns(pl.col("arm").replace({"uncertainty": uq_metric}))
-        .group_by(["arm", "n_acquired", "percent_acquired"])
-        .agg(
-            expression
-            for field, _, _ in metrics
-            for expression in (
-                pl.col(field).mean().alias(f"{field}_mean"),
-                pl.col(field).std().fill_null(0.0).alias(f"{field}_std"),
+
+    def summarize(frame):
+        return (
+            frame.group_by(["arm", "n_acquired", "percent_acquired"])
+            .agg(
+                expression
+                for field, _, _ in metrics
+                for expression in (
+                    pl.col(field).mean().alias(f"{field}_mean"),
+                    pl.col(field).std().fill_null(0.0).alias(f"{field}_std"),
+                )
             )
+            .with_columns(
+                (pl.col(f"{field}_mean") + sign * pl.col(f"{field}_std"))
+                .clip(0.0, 1.0)
+                .alias(f"{field}_{bound}")
+                for field, _, _ in metrics
+                for bound, sign in (("lower", -1), ("upper", 1))
+            )
+            .sort(["arm", "percent_acquired"])
         )
-        .with_columns(
-            (pl.col(f"{field}_mean") + sign * pl.col(f"{field}_std"))
-            .clip(0.0, 1.0)
-            .alias(f"{field}_{bound}")
-            for field, _, _ in metrics
-            for bound, sign in (("lower", -1), ("upper", 1))
-        )
-        .sort(["arm", "percent_acquired"])
-    )
+
+    columns = ["arm", "n_acquired", "percent_acquired", *(field for field, _, _ in metrics)]
+    curves = [results_frame.with_columns(pl.col("arm").replace({"uncertainty": uq_metric}))]
     arm_order = ["random", uq_metric]
+    upper_bound = None
+    if supervised is not None and not supervised.is_empty():
+        supervised = supervised.with_columns(pl.lit("supervised").alias("arm"))
+        arm_order.append("supervised")
+        upper_bound = summarize(
+            supervised.filter(pl.col("percent_acquired") == pl.col("percent_acquired").max())
+            .with_columns(pl.col("percent_acquired").max().over("arm"))
+            .select(columns)
+        )
+        if supervised["percent_acquired"].n_unique() > 1:
+            curves.append(supervised)
+    summary = summarize(
+        pl.concat([frame.select(columns) for frame in curves], how="vertical_relaxed")
+    )
+    color = alt.Color(
+        "arm:N",
+        title=None,
+        sort=arm_order,
+        scale=alt.Scale(
+            domain=arm_order, range=["#4C78A8", "#F58518", "#54A24B"][: len(arm_order)]
+        ),
+        legend=alt.Legend(orient="top"),
+    )
     base = alt.Chart(summary).encode(
         x=alt.X(
             "percent_acquired:Q",
             title="Scoreable pool acquired (%)",
             scale=alt.Scale(domain=[0, 100]),
         ),
-        color=alt.Color(
-            "arm:N",
-            title=None,
-            sort=arm_order,
-            scale=alt.Scale(domain=arm_order, range=["#4C78A8", "#F58518"]),
-            legend=alt.Legend(orient="top"),
-        ),
+        color=color,
     )
 
     def metric_chart(field, title, y_title):
@@ -256,6 +284,25 @@ def make_variance_chart(
             ],
         )
         layers = [band, mean_line]
+        if upper_bound is not None:
+            reference = alt.Chart(upper_bound).encode(color=color)
+            layers += [
+                reference.mark_rect(opacity=0.12).encode(
+                    x=alt.datum(0),
+                    x2=alt.datum(100),
+                    y=alt.Y(f"{field}_lower:Q"),
+                    y2=alt.Y2(f"{field}_upper:Q"),
+                ),
+                reference.mark_rule(strokeDash=[6, 4], strokeWidth=2).encode(
+                    y=alt.Y(f"{field}_mean:Q"),
+                    tooltip=[
+                        alt.Tooltip("arm:N", title="Reference"),
+                        alt.Tooltip("percent_acquired:Q", title="Pool labelled", format=".2f"),
+                        alt.Tooltip(f"{field}_mean:Q", title="Mean", format=".3f"),
+                        alt.Tooltip(f"{field}_std:Q", title="Std. dev.", format=".3f"),
+                    ],
+                ),
+            ]
         if acquisition_percent is not None:
             layers.append(
                 alt.Chart(pl.DataFrame({"selected_percent": [float(acquisition_percent)]}))
