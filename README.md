@@ -32,6 +32,7 @@ cached at `data/raw/PETv1.1-entities.jsonl`.
 | Inspect tuning completeness and winners | `notebooks/random_baseline_analysis.py` |
 | Inspect random-search test curves and selections | `notebooks/random_search_analysis.py` |
 | Compare best-config UQ results and learning curves | `notebooks/best_uq_analysis.py` |
+| Tune and train the fully supervised upper bound | `scripts/run_supervised.py` |
 
 ## Protocol
 
@@ -191,6 +192,52 @@ under a new sweep name rather than mixing precision within an existing sweep.
 
 Learners execute sequentially within each seed, each retaining its own model and
 optimizer state cloned from the shared bootstrap.
+
+## Supervised baseline
+
+Following Vacareanu et al. (LREC-COLING 2024), the fully supervised baseline gives the
+upper bound for active learning. A fresh pretrained model is trained on fully labelled
+sentences for a fixed number of epochs (default 20, no early stopping). Only first
+subwords are supervised, and truncated pool words are excluded as in acquisition.
+
+1. **Grid search on validation.** Every combination of learning rate
+   (1e-5, 2e-5, 3e-5, 5e-5, 1e-4), batch size (8, 16, 32), and weight decay (0, 0.01)
+   is trained for each model seed on the 5 seed sentences plus the 262 tuning-pool
+   sentences, then scored on the same 66-sentence validation holdout used by
+   random-baseline tuning. The highest seed-mean validation entity F1 wins; ties go to
+   the lowest config ID. The test split is not read.
+2. **Test runs.** The frozen winner is retrained from scratch for each seed on the seed
+   sentences plus `sentence_percents` of the 328 pool sentences, then evaluated once on
+   the 84 test sentences. The default `[100]` uses the complete training set. Other
+   percentages, such as `[10, 50, 100]`, take nested prefixes of a label-free,
+   seed-specific sentence order for a sentence-level annotation curve.
+
+```bash
+uv run scripts/run_supervised.py --config configs/supervised/distilbert.json --dry-run
+uv run scripts/run_supervised.py --config configs/supervised/distilbert.json
+bash scripts/run_supervised_all_models.sh
+```
+
+`--stage tune` stops after freezing the winner, and `--stage test` requires it. Rerunning
+resumes. Completed trials and budgets are skipped, and failed ones are retried. Adding
+percentages later reuses the saved tuning. Changing the grid, epochs, seeds, checkpoint,
+validation split, or effective precision requires a new `sweep_name`, which defaults to
+`<checkpoint>-supervised`.
+
+Outputs under `results/supervised/<sweep-name>/`:
+
+- `plan.json`, `split.json`, and `run_config.json`: the frozen grid and settings.
+- `tuning/<config-id>/`: validation rows per seed and `completed.json` with the score.
+- `best_config.json` and `selection.json`: the winning settings and validation score.
+- `test/pool_<percent>pct/`: test rows per seed, the chosen sentences, and the mean
+  and standard deviation of test entity F1.
+- `summary.json`: every trial's status, the winner, and every test budget.
+
+`notebooks/best_uq_analysis.py` draws the saved test rows for the selected run's
+checkpoint as a dashed reference line with a ±1 SD band on the learning curves. With
+several percentages, it also draws the sentence-level curve. The AL arms use their own
+online recipe, so the baseline marks the value of labelling everything rather than a
+matched-hyperparameter arm.
 
 ## Tune the random baseline
 
@@ -426,6 +473,7 @@ uv run scripts/bert_token_uq_search.py --help
 uv run scripts/run_uq_metrics.py --help
 bash scripts/run_best_uq_all_models.sh --dry-run
 bash scripts/tune_random_all_models.sh --dry-run
+bash scripts/run_supervised_all_models.sh --dry-run
 ```
 
 Running the notebook as a plain script uses small synthetic display data. It validates
@@ -490,6 +538,9 @@ Use `--list` on an `add` command to inspect a repository before installing it, o
 | `scripts/run_uq_metrics.py` | fixed multi-metric comparisons from one experiment configuration |
 | `scripts/run_best_uq_all_models.sh` | fixed comparisons for all five saved winners |
 | `scripts/tune_random_all_models.sh` | random-only tuning for all five checkpoints |
+| `src/uq_pet/supervised.py` | supervised grid search, fixed-epoch test runs, resume, and summaries |
+| `scripts/run_supervised.py` | CLI entry point for the supervised baseline |
+| `scripts/run_supervised_all_models.sh` | supervised baseline for all five checkpoints |
 | `src/uq_pet/utils/wandb_tuning.py` | tuning sweep publication and workspace charts |
 | `configs/` | saved winners, tuning configs, and random-search configs |
 | `tests/` | offline protocol, model-boundary, CLI, concurrency, resume, and logging checks |

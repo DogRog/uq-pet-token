@@ -183,19 +183,53 @@ def _(Path, json, mo, model_runs, pl, run_selector):
     results = pl.read_csv(run_dir / "results.csv")
     settings = json.loads((run_dir / "config.json").read_text())
     mo.accordion({"Saved experiment settings": mo.json(settings)})
-    return results, selected_run
+    return results, selected_run, settings
 
 
 @app.cell
-def _(make_variance_chart, mo, results, selected_run, tag_coverage_percent):
-    _chart = make_variance_chart(results, selected_run["uq_metric"], tag_coverage_percent.value)
+def _(Path, settings):
+    from uq_pet.supervised import load_test_results
+
+    supervised_saved = load_test_results(
+        Path(__file__).resolve().parents[1] / "results" / "supervised", settings["checkpoint"]
+    )
+    supervised_sweep, supervised_results = supervised_saved or (None, None)
+    return supervised_results, supervised_sweep
+
+
+@app.cell
+def _(
+    make_variance_chart,
+    mo,
+    results,
+    selected_run,
+    supervised_results,
+    supervised_sweep,
+    tag_coverage_percent,
+):
+    _chart = make_variance_chart(
+        results,
+        selected_run["uq_metric"],
+        tag_coverage_percent.value,
+        supervised=supervised_results,
+    )
     chart = mo.ui.altair_chart(_chart)
+    supervised_note = (
+        f"The green dashed line and band show the fully supervised baseline from "
+        f"`results/supervised/{supervised_sweep}/`: fresh models trained for a fixed number "
+        "of epochs on every labelled seed and pool sentence, with hyperparameters chosen by "
+        "a separate validation grid search. It is an upper bound, not a matched-budget arm."
+        if supervised_sweep is not None
+        else "No supervised baseline is saved for this checkpoint; run "
+        "`scripts/run_supervised.py` to add the upper-bound reference."
+    )
     mo.vstack(
         [
             mo.md(
                 "## Test learning curves\nLines show seed means; bands show ±1 standard "
                 "deviation, not confidence intervals. The dashed vertical line marks the "
-                "pool percentage selected in the cumulative NER-tag coverage slider below."
+                "pool percentage selected in the cumulative NER-tag coverage slider below.\n\n"
+                + supervised_note
             ),
             chart,
         ]
@@ -690,7 +724,7 @@ def _(Path, json, mo, pl, timing_data):
                     "min_advance_pp": "{:.3f}",
                     "sentence_context": lambda value: mo.md(value).style(
                         {"white-space": "normal", "overflow-wrap": "anywhere"}
-                    )
+                    ),
                 },
             ),
         ]

@@ -209,3 +209,72 @@ class RandomBaselineSearchConfig(RandomSearchConfig):
     objective: Literal["random_validation_entity_f1_auc", "random_validation_final_entity_f1"] = (
         "random_validation_entity_f1_auc"
     )
+
+
+class SupervisedConfig(BaseModel):
+    """Fully labelled sentence training: validation grid search, then fixed-epoch test runs."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    checkpoint: str = Field(default=DEFAULT_CHECKPOINTS[0], min_length=1)
+    model_seeds: list[int] = Field(
+        default_factory=lambda: list(DEFAULT_MODEL_SEEDS),
+        min_length=1,
+        description="Model initialization seeds; each also orders the pool sentences.",
+    )
+    precision: Literal["auto", "fp32", "bf16"] = "auto"
+    epochs: int = Field(default=20, ge=1, description="Fixed passes; no early stopping.")
+    learning_rates: list[float] = Field(
+        default_factory=lambda: [1e-5, 2e-5, 3e-5, 5e-5, 1e-4], min_length=1
+    )
+    batch_sizes: list[int] = Field(default_factory=lambda: [8, 16, 32], min_length=1)
+    weight_decays: list[float] = Field(default_factory=lambda: [0.0, 0.01], min_length=1)
+    score_batch_size: int = Field(default=256, ge=1)
+    max_length: int = Field(default=256, ge=4)
+    validation_sentences: int = Field(default=66, ge=1)
+    validation_seed: int = Field(default=1729, ge=0)
+    sentence_percents: list[float] = Field(
+        default_factory=lambda: [100.0],
+        min_length=1,
+        description="Pool sentence percentages trained on for the test runs; 100 is the upper bound.",
+    )
+    sweep_name: str = ""
+    sweeps_dir: Path = RESULTS_DIR / "supervised"
+
+    @field_validator("model_seeds", mode="before")
+    @classmethod
+    def parse_model_seeds(cls, value):
+        return ExperimentConfig.parse_model_seeds(value)
+
+    @field_validator("checkpoint")
+    @classmethod
+    def validate_checkpoint(cls, value):
+        return ExperimentConfig.validate_checkpoint(value)
+
+    @field_validator("sweep_name")
+    @classmethod
+    def validate_sweep_name(cls, value):
+        if value and not all(c.isalnum() or c in "-_" for c in value):
+            raise ValueError(
+                "sweep_name must contain only letters, numbers, hyphens or underscores"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def validate_grid(self) -> Self:
+        if any(seed < 0 for seed in self.model_seeds):
+            raise ValueError("model seeds must be non-negative")
+        for name in ("model_seeds", "learning_rates", "batch_sizes", "weight_decays"):
+            values = getattr(self, name)
+            if len(values) != len(set(values)):
+                raise ValueError(f"{name} must be unique")
+        if any(value <= 0 for value in (*self.learning_rates, *self.batch_sizes)):
+            raise ValueError("learning rates and batch sizes must be positive")
+        if any(value < 0 for value in self.weight_decays):
+            raise ValueError("weight decays must be non-negative")
+        percents = self.sentence_percents
+        if percents != sorted(set(percents)) or not all(0 <= p <= 100 for p in percents):
+            raise ValueError("sentence_percents must be sorted, unique, and within [0, 100]")
+        if not self.sweep_name:
+            self.sweep_name = self.checkpoint.rsplit("/", maxsplit=1)[-1] + "-supervised"
+        return self
