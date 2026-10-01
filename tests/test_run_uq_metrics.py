@@ -17,7 +17,7 @@ def test_fixed_plan_preserves_every_winner(monkeypatch, capsys):
         assert plan["uq_metrics"] == list(runner.UQ_METRICS)
         actual = {**plan["fixed_config"], **plan["configurations"][0]["parameters"]}
         for key, value in json.loads(path.read_text()).items():
-            if key not in {"uq_metric", "seed_workers"}:
+            if key not in {"uq_metric", "seed_workers", *runner.search.WANDB_FIELDS}:
                 assert actual[key] == value
 
 

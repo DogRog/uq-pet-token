@@ -42,6 +42,7 @@ def _():
         DEFAULT_CHECKPOINTS,
         EnvConfig,
         ExperimentConfig,
+        FloatingPanel,
         Path,
         RESULTS_DIR,
         UQ_METRICS,
@@ -506,7 +507,7 @@ def _(config, mo, pl, results_df):
 
 
 @app.cell(hide_code=True)
-def _(config, mo):
+def _(FloatingPanel, config, mo):
     selection_coverage_slider = mo.ui.slider(
         start=0.0,
         stop=float(config["effective_pool_percent"]),
