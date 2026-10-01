@@ -1,10 +1,12 @@
 # AGENTS.md
 
-## Branch purpose
+## Project purpose
 
-`bert-token-uq` compares sequential acquisition of uncertain PET NER words with the
-same number of random words. The implementation is intentionally small: three focused
-experiment modules, one shared experiment entry layer, and one marimo notebook.
+`uq-pet-token` compares sequential acquisition of uncertain NER words (PET by default,
+CoNLL-2003 optionally) with the same number of random words. The implementation is
+intentionally small: three focused experiment modules, one shared experiment entry
+layer, and one marimo notebook. Sentence-level LLM selection lives in the separate
+`DogRog/uq-pet` repository; do not port code between the two.
 
 ## Commands
 
