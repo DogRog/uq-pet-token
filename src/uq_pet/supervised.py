@@ -21,8 +21,8 @@ from rich.console import Console
 from transformers.utils import logging as transformers_logging
 
 from uq_pet.active_learning import full_sentence_items, write_run
-from uq_pet.config import SupervisedConfig
-from uq_pet.pet_data import NER_TAGS, TokenKey, download_pet_ner, load_pet_splits, split_tuning_pool
+from uq_pet.config import SupervisedConfig, omit_default_dataset
+from uq_pet.pet_data import DATASET_TAGS, TokenKey, load_splits, split_tuning_pool
 from uq_pet.search import preserve_json, run_status, write_json
 from uq_pet.token_model import (
     evaluate_model,
@@ -46,9 +46,18 @@ def grid_plan(config: SupervisedConfig) -> dict:
     return {
         "version": 1,
         "mode": "supervised_grid",
-        "fixed_config": config.model_dump(
-            mode="json",
-            include={"checkpoint", "model_seeds", "epochs", "max_length", "score_batch_size"},
+        "fixed_config": omit_default_dataset(
+            config.model_dump(
+                mode="json",
+                include={
+                    "checkpoint",
+                    "dataset",
+                    "model_seeds",
+                    "epochs",
+                    "max_length",
+                    "score_batch_size",
+                },
+            )
         ),
         "search_space": {
             "learning_rate": config.learning_rates,
@@ -254,7 +263,7 @@ def tune(
                     list(range(len(tune_pool))),
                     validation_examples,
                     checkpoint=config.checkpoint,
-                    labels=NER_TAGS,
+                    labels=DATASET_TAGS[config.dataset],
                     seed=seed,
                     epochs=config.epochs,
                     **entry["parameters"],
@@ -351,7 +360,7 @@ def run_test(
                     indices,
                     test_examples,
                     checkpoint=config.checkpoint,
-                    labels=NER_TAGS,
+                    labels=DATASET_TAGS[config.dataset],
                     seed=seed,
                     epochs=config.epochs,
                     **parameters,
@@ -409,15 +418,18 @@ def run_test(
             write_summary(root, plan)
 
 
-def load_test_results(sweeps_dir: Path, checkpoint: str) -> tuple[str, pl.DataFrame] | None:
-    """Return the first saved supervised sweep for a checkpoint and its test rows."""
+def load_test_results(
+    sweeps_dir: Path, checkpoint: str, dataset: str = "pet"
+) -> tuple[str, pl.DataFrame] | None:
+    """Return the first saved supervised sweep for a checkpoint and dataset, with test rows."""
     for sweep in sorted(path for path in Path(sweeps_dir).glob("*") if path.is_dir()):
         frames = []
         for marker in sorted(sweep.glob("test/*/completed.json")):
             run_dir = sweep / json.loads(marker.read_text())["run_dir"]
             if not (run_dir / "results.csv").is_file() or not (run_dir / "config.json").is_file():
                 continue
-            if json.loads((run_dir / "config.json").read_text()).get("checkpoint") == checkpoint:
+            saved = json.loads((run_dir / "config.json").read_text())
+            if saved.get("checkpoint") == checkpoint and saved.get("dataset", "pet") == dataset:
                 frames.append(pl.read_csv(run_dir / "results.csv"))
         if frames:
             return sweep.name, pl.concat(frames, how="vertical_relaxed")
@@ -469,7 +481,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         f"configurations × {len(config.model_seeds)} seeds · {config.epochs} epochs · "
         f"{precision.upper()} on {device}"
     )
-    splits = load_pet_splits(download_pet_ner())
+    splits, _ = load_splits(config.dataset)
     model_bars = transformers_logging.is_progress_bar_enabled()
     data_bars = datasets_logging.is_progress_bar_enabled()
     transformers_logging.disable_progress_bar()

@@ -1,4 +1,3 @@
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -114,11 +113,13 @@ def test_execute_experiment_uses_shared_config_and_persists_derived_settings(mon
         },
     ]
 
-    monkeypatch.setattr(experiment, "download_pet_ner", lambda: Path("pet.jsonl"))
     monkeypatch.setattr(
         experiment,
-        "load_pet_splits",
-        lambda path: ([{"tokens": ["seed"]}], [{"tokens": ["pool"]}], {(0, 0): 0}, []),
+        "load_splits",
+        lambda dataset: (
+            ([{"tokens": ["seed"]}], [{"tokens": ["pool"]}], {(0, 0): 0}, []),
+            {"dataset_sha256": "unused"},
+        ),
     )
     monkeypatch.setattr(experiment, "get_device", lambda: "cpu")
 

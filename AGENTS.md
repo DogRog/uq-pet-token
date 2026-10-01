@@ -25,6 +25,10 @@ Real runs start from the notebook's **Run experiment** button or that batch mode
 ## Experiment invariants
 
 - Keep the default 5 seed / 328 pool / 84 test split and `datasets==2.19.2` pin.
+- `dataset` defaults to PET. CoNLL-2003 draws 5 seed sentences and the pool from its
+  train split and evaluates on its full test split, at the pinned `CONLL_REVISION`.
+  Leave PET implicit in saved plans (`omit_default_dataset`) so earlier sweeps still
+  resume.
 - The test split is evaluation-only.
 - Scoring accepts label-free pool inputs. Read a pool label only after selection.
 - A candidate is `(pool_sentence_index, word_index)` and cannot be selected twice.

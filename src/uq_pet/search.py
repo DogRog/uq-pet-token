@@ -1,7 +1,6 @@
 """Run sampled or fixed UQ comparisons, or tune random selection on validation."""
 
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -24,8 +23,9 @@ from uq_pet.config import (
     FixedComparisonConfig,
     RandomBaselineSearchConfig,
     RandomSearchConfig,
+    omit_default_dataset,
 )
-from uq_pet.pet_data import PROJECT_ROOT, download_pet_ner, load_pet_splits, split_tuning_pool
+from uq_pet.pet_data import PROJECT_ROOT, load_splits, split_tuning_pool
 from uq_pet.token_model import UQ_METRICS, get_device, resolve_precision
 from uq_pet.utils.wandb_logging import require_wandb_credentials, wandb_comparison_logging
 from uq_pet.utils.wandb_tuning import ensure_sweep, publish_trial
@@ -117,12 +117,20 @@ def sample_plan(config: RandomSearchConfig) -> dict:
             "evaluation_split": "test",
             "sampling": "none",
             "num_configs": 1,
-            "fixed_config": {
-                key: value
-                for key, value in experiment.items()
-                if key
-                not in {"seed_workers", "uq_metric", "learning_rate", *SEARCH_SPACE, *WANDB_FIELDS}
-            },
+            "fixed_config": omit_default_dataset(
+                {
+                    key: value
+                    for key, value in experiment.items()
+                    if key
+                    not in {
+                        "seed_workers",
+                        "uq_metric",
+                        "learning_rate",
+                        *SEARCH_SPACE,
+                        *WANDB_FIELDS,
+                    }
+                }
+            ),
             "uq_metrics": config.uq_metrics,
             "configurations": [
                 {
@@ -142,8 +150,10 @@ def sample_plan(config: RandomSearchConfig) -> dict:
         )
         sampled.append(parameters)
     # Worker scheduling can change on resume; scientific settings cannot.
-    fixed = config.experiment_config().model_dump(
-        exclude={"seed_workers", "uq_metric", "learning_rate", *SEARCH_SPACE, *WANDB_FIELDS}
+    fixed = omit_default_dataset(
+        config.experiment_config().model_dump(
+            exclude={"seed_workers", "uq_metric", "learning_rate", *SEARCH_SPACE, *WANDB_FIELDS}
+        )
     )
     return {
         "version": 4,
@@ -491,8 +501,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         f"[bold cyan]Compute precision:[/] [bold]{effective_precision.upper()}[/]"
         f" · device: {device} · parameters/AdamW: FP32"
     )
-    data_path = download_pet_ner()
-    seed_examples, pool_inputs, pool_gold, test_examples = load_pet_splits(data_path)
+    (seed_examples, pool_inputs, pool_gold, test_examples), identity = load_splits(config.dataset)
     if tuning:
         tune_pool, tune_gold, validation_examples, manifest = split_tuning_pool(
             pool_inputs,
@@ -504,7 +513,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             root / "split.json",
             {
                 **manifest,
-                "dataset_sha256": hashlib.sha256(Path(data_path).read_bytes()).hexdigest(),
+                **identity,
                 "seed_sentences": len(seed_examples),
                 "tuning_pool_sentences": len(tune_pool),
                 "validation_sentences": len(validation_examples),
@@ -684,8 +693,10 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 raise ValueError("All tuning configurations must finish before selecting a winner")
             best = min(trials, key=lambda row: (-row["score"], row["config_id"]))
             frozen = {
-                **config.experiment_config().model_dump(
-                    exclude={"seed_workers", "uq_metric", *WANDB_FIELDS}
+                **omit_default_dataset(
+                    config.experiment_config().model_dump(
+                        exclude={"seed_workers", "uq_metric", *WANDB_FIELDS}
+                    )
                 ),
                 **best["parameters"],
             }

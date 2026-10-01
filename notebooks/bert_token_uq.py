@@ -184,6 +184,8 @@ def _(DEFAULT_CHECKPOINTS, UQ_METRICS, default_config, mo):
 
         {checkpoint}
 
+        {dataset}
+
         {model_seeds} {seed_workers}
 
         {uq_metric} {k} {max_pool_percent}
@@ -204,6 +206,11 @@ def _(DEFAULT_CHECKPOINTS, UQ_METRICS, default_config, mo):
                 value=default_config["checkpoint"],
                 label="Hugging Face checkpoint",
                 full_width=True,
+            ),
+            dataset=mo.ui.dropdown(
+                options={"PET": "pet", "CoNLL-2003": "conll2003"},
+                value="PET",
+                label="Dataset",
             ),
             model_seeds=mo.ui.text(
                 value=",".join(str(seed) for seed in default_config["model_seeds"]),

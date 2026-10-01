@@ -7,7 +7,7 @@ import polars as pl
 
 from uq_pet.active_learning import run_active_learning, write_run
 from uq_pet.config import ExperimentConfig
-from uq_pet.pet_data import RESULTS_DIR, download_pet_ner, load_pet_splits
+from uq_pet.pet_data import RESULTS_DIR, load_splits
 from uq_pet.token_model import get_device, resolve_precision
 
 
@@ -17,11 +17,10 @@ def execute_experiment(
     results_dir: Path = RESULTS_DIR,
     progress_callback: Callable[[list[dict]], None] | None = None,
 ) -> tuple[dict, dict, list[dict], list[dict], Path]:
-    """Load PET, run both arms, persist the run, and return display-ready records."""
+    """Load the dataset, run both arms, persist the run, and return display-ready records."""
     device = get_device()
     effective_precision = resolve_precision(config.precision, device)
-    data_path = download_pet_ner()
-    seed_examples, pool_inputs, pool_gold, test_examples = load_pet_splits(data_path)
+    (seed_examples, pool_inputs, pool_gold, test_examples), _ = load_splits(config.dataset)
     results, selections = run_active_learning(
         seed_examples,
         pool_inputs,
@@ -45,6 +44,7 @@ def execute_experiment(
     run_config = {**config.resolved_dict(), **derived_config, "evaluation_split": "test"}
     dataset_summary = {
         "mode": "experiment",
+        "dataset": config.dataset,
         "seed_sentences": len(seed_examples),
         "pool_sentences": len(pool_inputs),
         "pool_tokens": len(pool_gold),

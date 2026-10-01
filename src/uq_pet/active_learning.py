@@ -16,7 +16,7 @@ from rich.console import Console
 from rich.table import Table
 from transformers.utils import logging as transformers_logging
 
-from uq_pet.pet_data import NER_TAGS, RESULTS_DIR, TokenKey
+from uq_pet.pet_data import DATASET_TAGS, RESULTS_DIR, TokenKey
 from uq_pet.token_model import (
     UQ_METRICS,
     evaluate_model,
@@ -215,6 +215,7 @@ def run_metric_comparisons(
     score_batch_size: int,
     max_length: int,
     device: torch.device,
+    dataset: str = "pet",
     seed_workers: int = 1,
     precision: str = "auto",
     random_only: bool = False,
@@ -240,13 +241,16 @@ def run_metric_comparisons(
         raise ValueError("seed_workers must be positive")
     if len(model_seeds) != len(set(model_seeds)):
         raise ValueError("model seeds must be unique")
-    labels = NER_TAGS
+    if dataset not in DATASET_TAGS:
+        raise ValueError(f"dataset must be one of {tuple(DATASET_TAGS)}")
+    labels = DATASET_TAGS[dataset]
     CONSOLE.print(
         f"[bold cyan]Compute precision:[/] [bold]{precision.upper()}[/]"
         f" · device: {device} · parameters/AdamW: FP32"
     )
     settings = {
         "checkpoint": checkpoint,
+        "dataset": dataset,
         "uq_metrics": uq_metrics,
         "precision": precision,
         "random_only": random_only,

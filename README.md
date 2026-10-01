@@ -37,9 +37,14 @@ cached at `data/raw/PETv1.1-entities.jsonl`.
 ## Protocol
 
 The stable PET split remains 5 labelled seed sentences, 328 pool sentences, and 84
-held-out test sentences. For every model seed:
+held-out test sentences. Setting `"dataset": "conll2003"` (or choosing it in the
+notebook) runs the same protocol on CoNLL-2003 instead, loaded from `eriktks/conll2003`
+at a pinned revision: 5 seed sentences and the pool come from CoNLL train (14,036 pool
+sentences) and evaluation uses the full CoNLL test split (3,453 sentences). For every
+model seed:
 
-1. Fine-tune a fresh 15-tag token classifier on the five seed sentences.
+1. Fine-tune a fresh token classifier (15 PET tags, 9 CoNLL tags) on the five seed
+   sentences.
 2. Clone the exact fitted weights and optimizer state into uncertainty and random arms.
 3. Evaluate both arms before acquisition (round 0).
 4. At each round, acquire `K` previously unseen pool words, or the remaining budget
@@ -521,7 +526,7 @@ Use `--list` on an `add` command to inspect a repository before installing it, o
 
 | Path | Purpose |
 | --- | --- |
-| `src/uq_pet/pet_data.py` | PET identity, download, stable split, and private label lookup |
+| `src/uq_pet/pet_data.py` | PET and CoNLL-2003 identity, download, stable splits, and private label lookup |
 | `src/uq_pet/token_model.py` | masking, training, UQ metrics, inference, and evaluation |
 | `src/uq_pet/utils/truncation.py` | word alignment and truncation checks |
 | `src/uq_pet/active_learning.py` | acquisition rounds, replay, orchestration, and outputs |
