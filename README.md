@@ -532,8 +532,16 @@ model (`distilbert-supervised`, `bert-base-supervised`, and so on). Each tuning 
 (`<sweep>-test-<percent>pct`, job type `supervised_test`) gets one run, grouped under
 the sweep name. It logs every seed's metrics as it finishes, then the seed mean and
 standard deviation of entity F1, so a run's summary holds `mean_entity_f1`. Run configs
-include the sampled hyperparameters and the evaluation split. Completed trials are
-not uploaded retroactively on resume.
+include the sampled hyperparameters and the evaluation split.
+
+As with the tuning sweeps, online runs also create a W&B sweep named after the local
+sweep and a saved parallel-coordinates chart (learning rate, batch size, weight decay,
+and mean validation entity F1). Each completed trial publishes **one summary run** into
+the sweep (job type `supervised_tuning_summary`) whose objective,
+`validation_entity_f1`, is the seed mean that selects the winner. Sweep IDs, the chart
+link, and published configuration IDs are saved in `wandb_sweeps.json`; every launch
+publishes completed trials not yet uploaded, including trials finished before the sweep
+existed. Per-seed trial runs are not uploaded retroactively on resume.
 
 ### Legacy outputs
 

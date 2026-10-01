@@ -44,6 +44,7 @@ from uq_pet.token_model import (
     train_items,
 )
 from uq_pet.utils.wandb_logging import require_wandb_credentials, wandb_supervised_logging
+from uq_pet.utils.wandb_tuning import ensure_supervised_sweep, publish_supervised_trial
 
 CONSOLE = Console()
 TUNED_FIELDS = ("learning_rate", "batch_size", "weight_decay")
@@ -301,6 +302,7 @@ def tune(
     device: torch.device,
     precision: str,
     executor: Executor | None = None,
+    publication: tuple | None = None,
 ) -> dict:
     """Random-search on the validation holdout and freeze the best configuration."""
     seed_examples, pool_inputs, pool_gold, test_examples = splits
@@ -389,6 +391,8 @@ def tune(
             raise
         finally:
             write_summary(root, plan)
+        if publication is not None:
+            publish_supervised_trial(config, root, entry, publication)
 
     trials = write_summary(root, plan)["trials"]
     best = min(trials, key=lambda row: (-row["score"], row["config_id"]))
@@ -576,16 +580,22 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     write_summary(root, plan)
     if args.stage == "test" and not (root / "best_config.json").is_file():
         parser.error("The test stage requires best_config.json; run the tune stage first")
+    publication = None
     if config.wandb_enabled:
         load_dotenv(PROJECT_ROOT / ".env", override=False)
         require_wandb_credentials(os.environ)
         if os.environ.get("WANDB_MODE", "").strip().lower() == "offline":
-            CONSOLE.print("W&B offline: logging locally.")
+            CONSOLE.print("W&B offline: logging locally; no online sweep or chart is created.")
         else:
             import wandb
 
             wandb.login(key=os.environ["WANDB_API_KEY"], verify=True)
             CONSOLE.print(f"W&B enabled: {config.wandb_project}")
+            # Trials completed before the sweep existed are published on the next launch.
+            publication = ensure_supervised_sweep(config, plan, root)
+            for entry in plan["configurations"]:
+                publish_supervised_trial(config, root, entry, publication)
+            CONSOLE.print(f"Tuning chart: {publication[1][publication[2]]['workspace_url']}")
 
     precision = plan["effective_precision"]
     seed_workers = min(config.seed_workers, len(config.model_seeds))
@@ -603,7 +613,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     try:
         stage_settings = {"device": device, "precision": precision, "executor": executor}
         if args.stage in {"tune", "all"}:
-            tune(config, root, plan, splits, **stage_settings)
+            tune(config, root, plan, splits, **stage_settings, publication=publication)
         if args.stage in {"test", "all"}:
             run_test(config, root, plan, splits, **stage_settings)
     finally:

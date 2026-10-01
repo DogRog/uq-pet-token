@@ -382,6 +382,7 @@ def fake_wandb(monkeypatch):
             pass
 
     monkeypatch.setattr(wandb_tuning, "chart_workspace", lambda *args: Workspace())
+    monkeypatch.setattr(wandb_tuning, "supervised_chart_workspace", lambda *args: Workspace())
     sdk = SDK()
     monkeypatch.setitem(sys.modules, "wandb", sdk)
     monkeypatch.setenv("WANDB_API_KEY", "test-key")

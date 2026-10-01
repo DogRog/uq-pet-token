@@ -242,17 +242,23 @@ def test_wandb_logs_each_trial_and_test_budget(fake_supervised, fake_wandb):
     names = [run.settings["name"] for run in fake_wandb.runs]
     assert names == [
         "example-config_0000",
+        "example-config_0000",
+        "example-config_0001",
         "example-config_0001",
         "example-test-50pct",
         "example-test-100pct",
     ]
-    for run in fake_wandb.runs:
+    summaries = [
+        r for r in fake_wandb.runs if r.settings["job_type"] == "supervised_tuning_summary"
+    ]
+    trials = [r for r in fake_wandb.runs if r not in summaries]
+    for run in trials:
         assert run.settings["project"] == "supervised"
         assert run.settings["group"] == "example"
         assert run.exit_codes == [0]
         assert [log["seed"] for log in run.logs[:2]] == [0, 1]
         assert set(run.logs[2]) == {"mean_entity_f1", "std_entity_f1"}
-    tuning, test = fake_wandb.runs[0], fake_wandb.runs[2]
+    tuning, test = trials[0], trials[2]
     assert tuning.settings["job_type"] == "supervised_tuning"
     assert tuning.settings["config"]["evaluation_split"] == "validation"
     assert "learning_rate" in tuning.settings["config"]
@@ -260,6 +266,65 @@ def test_wandb_logs_each_trial_and_test_budget(fake_supervised, fake_wandb):
     assert test.settings["config"]["evaluation_split"] == "test"
     assert test.settings["config"]["sentence_percent"] == 50
     assert not (root / "plan.json").read_text().count("wandb")
+
+    assert len(fake_wandb.sweeps) == 1
+    definition, target = fake_wandb.sweeps[0]
+    assert target == {"entity": "test", "project": "supervised"}
+    assert definition["metric"] == {"name": "validation_entity_f1", "goal": "maximize"}
+    assert set(definition["parameters"]) == set(supervised.TUNED_FIELDS)
+    assert definition["parameters"]["learning_rate"]["distribution"] == "log_uniform_values"
+    plan = supervised.sample_plan(config)
+    for run, entry in zip(summaries, plan["configurations"], strict=True):
+        assert run.settings["settings"]["sweep_id"] == "sweep-1"
+        assert run.settings["config"]["run_role"] == "configuration_summary"
+        assert run.settings["config"]["learning_rate"] == entry["parameters"]["learning_rate"]
+        completed = json.loads(
+            (root / "tuning" / entry["config_id"] / "completed.json").read_text()
+        )
+        assert run.logs == [
+            {
+                "validation_entity_f1": completed["score"],
+                "std_validation_entity_f1": completed["std_entity_f1"],
+            }
+        ]
+        assert run.exit_codes == [0]
+
+
+def test_wandb_sweep_backfills_completed_trials_once(fake_supervised, fake_wandb):
+    config, root, calls = fake_supervised
+    invoke(config, "--stage", "tune")
+    online = config.model_copy(update={"wandb_enabled": True, "wandb_project": "supervised"})
+    invoke(online, "--stage", "tune")
+    assert len(calls) == 4  # Nothing retrained; both completed trials were published.
+    assert [run.settings["job_type"] for run in fake_wandb.runs] == [
+        "supervised_tuning_summary"
+    ] * 2
+    state = json.loads((root / "wandb_sweeps.json").read_text())["test/supervised"]
+    assert sorted(state["published"]) == ["config_0000", "config_0001"]
+    invoke(online, "--stage", "tune")
+    assert len(fake_wandb.runs) == 2 and len(fake_wandb.sweeps) == 1
+
+
+def test_offline_wandb_creates_no_sweep(fake_supervised, fake_wandb, monkeypatch):
+    config, root, _ = fake_supervised
+    monkeypatch.setenv("WANDB_MODE", "offline")
+    invoke(config.model_copy(update={"wandb_enabled": True}), "--stage", "tune")
+    assert not fake_wandb.sweeps
+    assert not (root / "wandb_sweeps.json").exists()
+    assert len(fake_wandb.runs) == 2
+
+
+def test_supervised_workspace_plots_parameters_against_validation_f1():
+    from uq_pet.utils.wandb_tuning import supervised_chart_workspace
+
+    workspace = supervised_chart_workspace("test", "project", "example")
+    columns = workspace.sections[0].panels[0].columns
+    assert [column.metric.name for column in columns] == [
+        "learning_rate",
+        "batch_size",
+        "weight_decay",
+        "validation_entity_f1",
+    ]
 
 
 def test_wandb_missing_credentials_fails_before_loading_data(fake_supervised, monkeypatch):
