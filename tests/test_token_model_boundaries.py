@@ -13,6 +13,7 @@ from tokenizers.pre_tokenizers import Whitespace
 from tokenizers.processors import TemplateProcessing
 from transformers import PreTrainedTokenizerFast
 
+from uq_pet.pet_data import NER_TAGS
 from uq_pet.token_model import (
     encode_targets,
     predict_tags,
@@ -110,9 +111,13 @@ def test_complete_words_agree_across_scoring_training_and_evaluation(tokenizer, 
 
     if max_length < 6:
         with pytest.raises(ValueError, match="evaluation sentence was truncated"):
-            predict_tags(model, tokenizer, pool, device=torch.device("cpu"), **kwargs)
+            predict_tags(
+                model, tokenizer, pool, labels=NER_TAGS, device=torch.device("cpu"), **kwargs
+            )
     else:
-        predictions = predict_tags(model, tokenizer, pool, device=torch.device("cpu"), **kwargs)
+        predictions = predict_tags(
+            model, tokenizer, pool, labels=NER_TAGS, device=torch.device("cpu"), **kwargs
+        )
         assert [len(tags) for tags in predictions] == [3, 1]
 
 
@@ -127,6 +132,7 @@ def test_evaluation_rejects_partial_word_even_when_every_word_id_survives(tokeni
             TinyClassifier(),
             tokenizer,
             [{"tokens": words}],
+            labels=NER_TAGS,
             max_length=4,
             batch_size=1,
             device=torch.device("cpu"),
@@ -229,7 +235,7 @@ def test_cached_scoring_matches_scalar_reference_without_retokenizing(
 def test_cached_evaluation_reuses_inputs_and_rejects_truncated_pool_cache(tokenizer):
     model = TinyClassifier().eval()
     examples = [{"tokens": ["a", "splitting", "a"]}, {"tokens": ["a"]}]
-    kwargs = {"max_length": 6, "batch_size": 1, "device": torch.device("cpu")}
+    kwargs = {"max_length": 6, "batch_size": 1, "device": torch.device("cpu"), "labels": NER_TAGS}
     expected = predict_tags(model, tokenizer, examples, **kwargs)
     batches = prepare_inference_batches(
         tokenizer, examples, max_length=6, batch_size=1, evaluation=True
@@ -451,7 +457,7 @@ def test_bf16_forward_training_and_scoring_keep_fp32_states_and_probabilities(
         **kwargs,
     )
     assert all(math.isfinite(value) and 0 <= value <= 1 for value in scores.values())
-    prediction = predict_tags(model, tokenizer, pool, **kwargs)
+    prediction = predict_tags(model, tokenizer, pool, labels=NER_TAGS, **kwargs)
     assert len(prediction[0]) == 2
     handle.remove()
     assert logits_dtypes and set(logits_dtypes) == {torch.bfloat16}

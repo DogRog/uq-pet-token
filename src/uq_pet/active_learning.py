@@ -240,6 +240,7 @@ def run_metric_comparisons(
         raise ValueError("seed_workers must be positive")
     if len(model_seeds) != len(set(model_seeds)):
         raise ValueError("model seeds must be unique")
+    labels = NER_TAGS
     CONSOLE.print(
         f"[bold cyan]Compute precision:[/] [bold]{precision.upper()}[/]"
         f" · device: {device} · parameters/AdamW: FP32"
@@ -274,7 +275,7 @@ def run_metric_comparisons(
     for model_seed in model_seeds:
         CONSOLE.rule(f"[bold cyan]Seed {model_seed} · bootstrap[/]")
         set_seed(model_seed)
-        base_model, tokenizer = load_token_classifier(checkpoint, device)
+        base_model, tokenizer = load_token_classifier(checkpoint, device, labels=labels)
         tokenization_cache = {}
         pool_batches = prepare_inference_batches(
             tokenizer,
@@ -327,6 +328,7 @@ def run_metric_comparisons(
             base_model,
             tokenizer,
             test_examples,
+            labels=labels,
             max_length=max_length,
             batch_size=score_batch_size,
             device=device,
@@ -438,6 +440,7 @@ def run_metric_comparisons(
                         models[arm],
                         tokenizer,
                         test_examples,
+                        labels=labels,
                         max_length=max_length,
                         batch_size=score_batch_size,
                         device=device,
@@ -474,7 +477,7 @@ def run_metric_comparisons(
                                 "document_name": example["document_name"],
                                 "sentence_id": example["sentence_id"],
                                 "token": example["tokens"][word_idx],
-                                "label": NER_TAGS[pool_gold[(pool_idx, word_idx)]],
+                                "label": labels[pool_gold[(pool_idx, word_idx)]],
                                 "uq_metric": uq_metric if arm == "uncertainty" else None,
                                 "uq_score": uq_scores[(pool_idx, word_idx)]
                                 if arm == "uncertainty"
