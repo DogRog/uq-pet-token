@@ -52,6 +52,7 @@ def grid_plan(config: SupervisedConfig) -> dict:
                 include={
                     "checkpoint",
                     "dataset",
+                    "dataset_percent",
                     "model_seeds",
                     "epochs",
                     "max_length",
@@ -419,9 +420,9 @@ def run_test(
 
 
 def load_test_results(
-    sweeps_dir: Path, checkpoint: str, dataset: str = "pet"
+    sweeps_dir: Path, checkpoint: str, dataset: str = "pet", dataset_percent: float = 100.0
 ) -> tuple[str, pl.DataFrame] | None:
-    """Return the first saved supervised sweep for a checkpoint and dataset, with test rows."""
+    """Return the first saved supervised sweep for a checkpoint and data pool, with test rows."""
     for sweep in sorted(path for path in Path(sweeps_dir).glob("*") if path.is_dir()):
         frames = []
         for marker in sorted(sweep.glob("test/*/completed.json")):
@@ -429,7 +430,11 @@ def load_test_results(
             if not (run_dir / "results.csv").is_file() or not (run_dir / "config.json").is_file():
                 continue
             saved = json.loads((run_dir / "config.json").read_text())
-            if saved.get("checkpoint") == checkpoint and saved.get("dataset", "pet") == dataset:
+            if (
+                saved.get("checkpoint") == checkpoint
+                and saved.get("dataset", "pet") == dataset
+                and saved.get("dataset_percent", 100.0) == dataset_percent
+            ):
                 frames.append(pl.read_csv(run_dir / "results.csv"))
         if frames:
             return sweep.name, pl.concat(frames, how="vertical_relaxed")
@@ -481,7 +486,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         f"configurations × {len(config.model_seeds)} seeds · {config.epochs} epochs · "
         f"{precision.upper()} on {device}"
     )
-    splits, _ = load_splits(config.dataset)
+    splits, _ = load_splits(config.dataset, config.dataset_percent)
     model_bars = transformers_logging.is_progress_bar_enabled()
     data_bars = datasets_logging.is_progress_bar_enabled()
     transformers_logging.disable_progress_bar()

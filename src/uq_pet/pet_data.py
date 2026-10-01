@@ -83,6 +83,7 @@ def load_pet_splits(
     n_seed_sentences: int = N_SEED_SENTENCES,
     split_seed: int = SEED,
     seed_split_seed: int = SEED_SPLIT_SEED,
+    pool_percent: float = 100.0,
 ) -> tuple[list[dict], list[dict], dict[TokenKey, int], list[dict]]:
     """Return labelled seed, label-free pool, private pool labels, and test data."""
     dataset = load_dataset("json", data_files={"full": str(path)}, features=FEATURES)["full"]
@@ -96,10 +97,19 @@ def load_pet_splits(
     seed_examples = _materialize(inner["train"])
     raw_pool = _materialize(inner["test"])
     test_examples = _materialize(outer["test"])
-    return seed_examples, *_label_free_pool(raw_pool), test_examples
+    return seed_examples, *_label_free_pool(raw_pool, pool_percent), test_examples
 
 
-def _label_free_pool(raw_pool: list[dict]) -> tuple[list[dict], dict[TokenKey, int]]:
+def _label_free_pool(
+    raw_pool: list[dict], pool_percent: float
+) -> tuple[list[dict], dict[TokenKey, int]]:
+    # The pool is already shuffled, so smaller percentages are nested prefixes.
+    if not 0 < pool_percent <= 100:
+        raise ValueError(f"pool_percent must be in (0, 100], got {pool_percent}")
+    count = round(len(raw_pool) * pool_percent / 100)
+    if count < 1:
+        raise ValueError(f"{pool_percent:g}% of {len(raw_pool)} pool sentences is empty")
+    raw_pool = raw_pool[:count]
     pool_inputs = [
         {
             "pool_idx": pool_idx,
@@ -133,6 +143,7 @@ def load_conll_splits(
     *,
     n_seed_sentences: int = N_SEED_SENTENCES,
     split_seed: int = SEED,
+    pool_percent: float = 100.0,
 ) -> tuple[list[dict], list[dict], dict[TokenKey, int], list[dict]]:
     """Draw seed and pool from CoNLL train; evaluate on the full CoNLL test split."""
     dataset = load_dataset(CONLL_REPO, revision=CONLL_REVISION)
@@ -142,20 +153,22 @@ def load_conll_splits(
     seed_examples = _materialize_conll(train.select(range(n_seed_sentences)), "train")
     raw_pool = _materialize_conll(train.select(range(n_seed_sentences, len(train))), "train")
     test_examples = _materialize_conll(dataset["test"], "test")
-    return seed_examples, *_label_free_pool(raw_pool), test_examples
+    return seed_examples, *_label_free_pool(raw_pool, pool_percent), test_examples
 
 
-def load_splits(dataset: str) -> tuple[tuple, dict]:
+def load_splits(dataset: str, pool_percent: float = 100.0) -> tuple[tuple, dict]:
     """Return a dataset's experiment splits and the identity recorded for resumes."""
     if dataset == "pet":
         path = download_pet_ner()
-        splits = load_pet_splits(path)
+        splits = load_pet_splits(path, pool_percent=pool_percent)
         identity = {"dataset_sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest()}
     elif dataset == "conll2003":
-        splits = load_conll_splits()
+        splits = load_conll_splits(pool_percent=pool_percent)
         identity = {"dataset": CONLL_REPO, "dataset_revision": CONLL_REVISION}
     else:
         raise ValueError(f"unknown dataset: {dataset!r}")
+    if pool_percent != 100:
+        identity["dataset_percent"] = pool_percent
     return splits, identity
 
 

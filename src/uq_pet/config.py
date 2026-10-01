@@ -21,11 +21,16 @@ DEFAULT_MODEL_SEEDS = (0, 1, 2, 3, 4)
 Dataset = Literal["pet", "conll2003"]
 
 
+DATASET_DEFAULTS = {"dataset": "pet", "dataset_percent": 100.0}
+
+
 def omit_default_dataset(settings: dict) -> dict:
-    """Leave PET implicit so plans saved before the dataset field still resume."""
-    if settings.get("dataset") == "pet":
-        return {key: value for key, value in settings.items() if key != "dataset"}
-    return settings
+    """Leave the full PET pool implicit so plans saved before these fields still resume."""
+    return {
+        key: value
+        for key, value in settings.items()
+        if key not in DATASET_DEFAULTS or value != DATASET_DEFAULTS[key]
+    }
 
 
 class ExperimentConfig(BaseModel):
@@ -41,6 +46,12 @@ class ExperimentConfig(BaseModel):
     dataset: Dataset = Field(
         default="pet",
         description="PET, or CoNLL-2003 with seed and pool from train and the full test split.",
+    )
+    dataset_percent: float = Field(
+        default=100.0,
+        gt=0,
+        le=100,
+        description="Percentage of the dataset's training pool kept for acquisition.",
     )
     model_seeds: list[int] = Field(
         default_factory=lambda: list(DEFAULT_MODEL_SEEDS),
@@ -157,6 +168,8 @@ class ExperimentConfig(BaseModel):
         checkpoint_name = self.checkpoint.rsplit("/", maxsplit=1)[-1]
         if self.dataset != "pet":
             checkpoint_name = f"{checkpoint_name}-{self.dataset}"
+        if self.dataset_percent != 100:
+            checkpoint_name = f"{checkpoint_name}-{self.dataset_percent:g}pct"
         payload = omit_default_dataset(self.model_dump(exclude={"wandb_run_name"}))
         digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:8]
         seeds = "-".join(str(seed) for seed in self.model_seeds)
@@ -168,7 +181,9 @@ class ExperimentConfig(BaseModel):
         return config
 
     def active_learning_kwargs(self) -> dict:
-        return self.model_dump(exclude={"wandb_enabled", "wandb_project", "wandb_run_name"})
+        return self.model_dump(
+            exclude={"dataset_percent", "wandb_enabled", "wandb_project", "wandb_run_name"}
+        )
 
 
 class RandomSearchConfig(ExperimentConfig):
@@ -232,6 +247,12 @@ class SupervisedConfig(BaseModel):
 
     checkpoint: str = Field(default=DEFAULT_CHECKPOINTS[0], min_length=1)
     dataset: Dataset = "pet"
+    dataset_percent: float = Field(
+        default=100.0,
+        gt=0,
+        le=100,
+        description="Percentage of the dataset's training pool kept for tuning and test runs.",
+    )
     model_seeds: list[int] = Field(
         default_factory=lambda: list(DEFAULT_MODEL_SEEDS),
         min_length=1,
@@ -292,5 +313,7 @@ class SupervisedConfig(BaseModel):
             raise ValueError("sentence_percents must be sorted, unique, and within [0, 100]")
         if not self.sweep_name:
             dataset = "" if self.dataset == "pet" else f"-{self.dataset}"
+            if self.dataset_percent != 100:
+                dataset += f"-{self.dataset_percent:g}pct".replace(".", "p")
             self.sweep_name = self.checkpoint.rsplit("/", maxsplit=1)[-1] + dataset + "-supervised"
         return self

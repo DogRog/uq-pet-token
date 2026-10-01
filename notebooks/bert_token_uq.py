@@ -184,7 +184,7 @@ def _(DEFAULT_CHECKPOINTS, UQ_METRICS, default_config, mo):
 
         {checkpoint}
 
-        {dataset}
+        {dataset} {dataset_percent}
 
         {model_seeds} {seed_workers}
 
@@ -211,6 +211,9 @@ def _(DEFAULT_CHECKPOINTS, UQ_METRICS, default_config, mo):
                 options={"PET": "pet", "CoNLL-2003": "conll2003"},
                 value="PET",
                 label="Dataset",
+            ),
+            dataset_percent=numeric_control(
+                "dataset_percent", "Training pool kept (%)", start=0.1, stop=100, step=0.1
             ),
             model_seeds=mo.ui.text(
                 value=",".join(str(seed) for seed in default_config["model_seeds"]),

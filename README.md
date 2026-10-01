@@ -40,8 +40,10 @@ The stable PET split remains 5 labelled seed sentences, 328 pool sentences, and 
 held-out test sentences. Setting `"dataset": "conll2003"` (or choosing it in the
 notebook) runs the same protocol on CoNLL-2003 instead, loaded from `eriktks/conll2003`
 at a pinned revision: 5 seed sentences and the pool come from CoNLL train (14,036 pool
-sentences) and evaluation uses the full CoNLL test split (3,453 sentences). For every
-model seed:
+sentences) and evaluation uses the full CoNLL test split (3,453 sentences).
+`dataset_percent` keeps that percentage of either dataset's pool; smaller pools are
+nested prefixes of one seeded shuffle, and seed and test sentences do not change. For
+every model seed:
 
 1. Fine-tune a fresh token classifier (15 PET tags, 9 CoNLL tags) on the five seed
    sentences.

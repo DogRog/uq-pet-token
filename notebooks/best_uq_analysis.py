@@ -194,6 +194,7 @@ def _(Path, settings):
         Path(__file__).resolve().parents[1] / "results" / "supervised",
         settings["checkpoint"],
         settings.get("dataset", "pet"),
+        settings.get("dataset_percent", 100.0),
     )
     supervised_sweep, supervised_results = supervised_saved or (None, None)
     return supervised_results, supervised_sweep
