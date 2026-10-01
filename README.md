@@ -22,6 +22,23 @@ The project includes:
 - resumable random hyperparameter sweeps; and
 - read-only analysis notebooks for saved results.
 
+## Contents
+
+- [Quick start](#quick-start)
+- [Protocol](#protocol): [data splits](#data-splits), [one run](#one-run),
+  [UQ metrics](#uq-metrics), [invariants](#invariants)
+- [Interactive experiment](#interactive-experiment)
+- [Workflow](#workflow)
+  1. [Tune the random baseline](#1-tune-the-random-baseline)
+  2. [Compare UQ metrics with the winners](#2-compare-uq-metrics-with-the-winners)
+  3. [Supervised upper bound](#3-supervised-upper-bound)
+  4. [Analyze saved results](#4-analyze-saved-results)
+- [Random hyperparameter sweep](#random-hyperparameter-sweep)
+- [Reference](#reference): [search space](#search-space), [resuming](#resuming),
+  [concurrency and performance](#concurrency-and-performance),
+  [Weights & Biases](#weights--biases), [legacy outputs](#legacy-outputs)
+- [Development](#development): [checks](#checks), [layout](#layout)
+
 ## Quick start
 
 Use Python 3.12 or newer and `uv`. From the project root:
