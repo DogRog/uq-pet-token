@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoConfig, AutoModelForTokenClassification, AutoTokenizer
 from transformers.utils import logging as transformers_logging
 
-from uq_pet.pet_data import NER_TAGS, TokenKey
+from uq_pet.pet_data import TokenKey
 from uq_pet.utils.truncation import (
     complete_word_positions,
     evaluation_word_positions,
@@ -190,7 +190,7 @@ def train_items(
     return sum(losses) / len(losses)
 
 
-def load_token_classifier(checkpoint: str, device: torch.device):
+def load_token_classifier(checkpoint: str, device: torch.device, *, labels: list[str]):
     config = AutoConfig.from_pretrained(checkpoint)
     tokenizer_kwargs = {"use_fast": True}
     if config.model_type in {"roberta", "xlm-roberta"}:
@@ -207,9 +207,9 @@ def load_token_classifier(checkpoint: str, device: torch.device):
         model = AutoModelForTokenClassification.from_pretrained(
             checkpoint,
             dtype=torch.float32,
-            num_labels=len(NER_TAGS),
-            id2label=dict(enumerate(NER_TAGS)),
-            label2id={label: idx for idx, label in enumerate(NER_TAGS)},
+            num_labels=len(labels),
+            id2label=dict(enumerate(labels)),
+            label2id={label: idx for idx, label in enumerate(labels)},
         ).to(device)
     finally:
         transformers_logging.set_verbosity(previous_verbosity)
@@ -353,6 +353,7 @@ def predict_tags(
     tokenizer,
     examples: list[dict],
     *,
+    labels: list[str],
     max_length: int,
     batch_size: int,
     device: torch.device,
@@ -381,10 +382,7 @@ def predict_tags(
 
         for batch_idx, positions in enumerate(batch.word_positions):
             predictions.append(
-                [
-                    NER_TAGS[predicted_ids[batch_idx][positions[idx]]]
-                    for idx in range(len(positions))
-                ]
+                [labels[predicted_ids[batch_idx][positions[idx]]] for idx in range(len(positions))]
             )
     return predictions
 
@@ -394,6 +392,7 @@ def evaluate_model(
     tokenizer,
     examples: list[dict],
     *,
+    labels: list[str],
     max_length: int,
     batch_size: int,
     device: torch.device,
@@ -404,18 +403,19 @@ def evaluate_model(
         model,
         tokenizer,
         examples,
+        labels=labels,
         max_length=max_length,
         batch_size=batch_size,
         device=device,
         prepared_batches=prepared_batches,
         precision=precision,
     )
-    return evaluate_predictions(examples, predictions)
+    return evaluate_predictions(examples, predictions, labels)
 
 
-def evaluate_predictions(examples, predictions):
+def evaluate_predictions(examples, predictions, labels: list[str]):
     """Compute word and entity metrics from model predictions."""
-    gold = [[NER_TAGS[tag] for tag in example["ner_tags"]] for example in examples]
+    gold = [[labels[tag] for tag in example["ner_tags"]] for example in examples]
     total = sum(len(tags) for tags in gold)
     correct = sum(
         predicted == expected

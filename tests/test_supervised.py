@@ -68,7 +68,7 @@ def test_train_and_evaluate_uses_seed_and_selected_sentences(monkeypatch):
             return []
 
     monkeypatch.setattr(
-        supervised, "load_token_classifier", lambda checkpoint, device: (FakeModel(), "tok")
+        supervised, "load_token_classifier", lambda checkpoint, device, labels: (FakeModel(), "tok")
     )
 
     def fake_train(model, optimizer, tokenizer, items, **kwargs):
@@ -90,6 +90,7 @@ def test_train_and_evaluate_uses_seed_and_selected_sentences(monkeypatch):
         [1],
         [],
         checkpoint="x",
+        labels=["O", "B-X", "I-X", "B-Y", "I-Y"],
         seed=7,
         epochs=20,
         learning_rate=3e-5,

@@ -17,6 +17,7 @@ from uq_pet.active_learning import (
     select_top_k,
     write_run,
 )
+from uq_pet.pet_data import NER_TAGS
 from uq_pet.token_model import (
     encode_targets,
     evaluate_model,
@@ -178,6 +179,7 @@ def test_evaluate_model_reports_macro_entity_f1(monkeypatch):
         object(),
         object(),
         examples,
+        labels=NER_TAGS,
         max_length=8,
         batch_size=2,
         device=torch.device("cpu"),
@@ -210,7 +212,7 @@ def test_roberta_loader_requests_fast_pretokenized_compatible_tokenizer(monkeypa
         lambda *args, **kwargs: TinyModel(),
     )
 
-    load_token_classifier("roberta-base", torch.device("cpu"))
+    load_token_classifier("roberta-base", torch.device("cpu"), labels=NER_TAGS)
 
     assert tokenizer_calls == [("roberta-base", {"use_fast": True, "add_prefix_space": True})]
 
@@ -312,7 +314,7 @@ def test_run_reports_progress_after_baseline_and_each_complete_round(
     monkeypatch.setattr(
         active_learning,
         "load_token_classifier",
-        lambda checkpoint, device: (TinyModel(), FakeTokenizer()),
+        lambda checkpoint, device, labels: (TinyModel(), FakeTokenizer()),
     )
     monkeypatch.setattr(
         active_learning,

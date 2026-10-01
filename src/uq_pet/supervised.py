@@ -22,7 +22,7 @@ from transformers.utils import logging as transformers_logging
 
 from uq_pet.active_learning import full_sentence_items, write_run
 from uq_pet.config import SupervisedConfig
-from uq_pet.pet_data import TokenKey, download_pet_ner, load_pet_splits, split_tuning_pool
+from uq_pet.pet_data import NER_TAGS, TokenKey, download_pet_ner, load_pet_splits, split_tuning_pool
 from uq_pet.search import preserve_json, run_status, write_json
 from uq_pet.token_model import (
     evaluate_model,
@@ -105,6 +105,7 @@ def train_and_evaluate(
     eval_examples: list[dict],
     *,
     checkpoint: str,
+    labels: list[str],
     seed: int,
     epochs: int,
     learning_rate: float,
@@ -117,7 +118,7 @@ def train_and_evaluate(
 ) -> dict:
     """Train a fresh model on seed plus selected pool sentences, then evaluate once."""
     set_seed(seed)
-    model, tokenizer = load_token_classifier(checkpoint, device)
+    model, tokenizer = load_token_classifier(checkpoint, device, labels=labels)
     scoreable = scoreable_token_keys(
         tokenizer, pool_inputs, max_length=max_length, batch_size=score_batch_size
     )
@@ -143,6 +144,7 @@ def train_and_evaluate(
         model,
         tokenizer,
         eval_examples,
+        labels=labels,
         max_length=max_length,
         batch_size=score_batch_size,
         device=device,
@@ -252,6 +254,7 @@ def tune(
                     list(range(len(tune_pool))),
                     validation_examples,
                     checkpoint=config.checkpoint,
+                    labels=NER_TAGS,
                     seed=seed,
                     epochs=config.epochs,
                     **entry["parameters"],
@@ -348,6 +351,7 @@ def run_test(
                     indices,
                     test_examples,
                     checkpoint=config.checkpoint,
+                    labels=NER_TAGS,
                     seed=seed,
                     epochs=config.epochs,
                     **parameters,
