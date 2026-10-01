@@ -344,10 +344,12 @@ def fake_wandb(monkeypatch):
         def finish(self, *, exit_code):
             self.exit_codes.append(exit_code)
 
-        def get_project_url(self):
+        @property
+        def project_url(self):
             return "https://wandb.ai/test/pet"
 
-        def get_url(self):
+        @property
+        def url(self):
             return f"https://wandb.ai/test/pet/runs/{self.settings['name']}"
 
     class SDK:

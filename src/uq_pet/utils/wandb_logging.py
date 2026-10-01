@@ -145,8 +145,8 @@ def wandb_comparison_logging(
                 configure_wandb_metrics(run, metric, random_only=random_only)
                 if not offline:
                     if len(runs) == 1:
-                        console.print(f"W&B project: {run.get_project_url()}", markup=False)
-                    console.print(f"W&B run ({metric}, seed {seed}): {run.get_url()}", markup=False)
+                        console.print(f"W&B project: {run.project_url}", markup=False)
+                    console.print(f"W&B run ({metric}, seed {seed}): {run.url}", markup=False)
             runs[key].log(payload)
 
         yield log_evaluation
@@ -173,7 +173,7 @@ def wandb_supervised_logging(config, name, slot, settings, *, job_type, console:
         config={**settings, "sweep_name": config.sweep_name},
     )
     if os.environ.get("WANDB_MODE", "").strip().lower() != "offline":
-        console.print(f"W&B run ({name}): {run.get_url()}", markup=False)
+        console.print(f"W&B run ({name}): {run.url}", markup=False)
     success = False
     try:
         yield run.log

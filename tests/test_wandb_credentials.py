@@ -13,3 +13,11 @@ def test_online_wandb_launch_requires_api_key():
 def test_wandb_preflight_accepts_key_or_offline_mode():
     require_wandb_credentials({"WANDB_API_KEY": "configured"})
     require_wandb_credentials({"WANDB_MODE": "offline"})
+
+
+def test_installed_wandb_run_exposes_url_properties():
+    """The test fake mirrors these attributes; wandb 0.30 removed get_url()."""
+    from wandb.sdk.wandb_run import Run
+
+    assert isinstance(Run.url, property)
+    assert isinstance(Run.project_url, property)
