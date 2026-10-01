@@ -64,3 +64,25 @@ search planning, resume handling, and search summaries together in `search.py`.
 Keep the fully supervised baseline's grid, tuning, test runs, and resume logic in
 `supervised.py`. It tunes only on the validation holdout, and its test runs read the
 test split once per trained model.
+
+## Agent skills
+
+The marimo skills from [marimo-team/skills](https://github.com/marimo-team/skills) are
+installed for Codex with the [Vercel skills CLI](https://github.com/vercel-labs/skills):
+
+```bash
+npx skills add marimo-team/skills --agent codex
+```
+
+Installed files live under `.agents/skills/`, and `skills-lock.json` records their
+sources and hashes. Both are gitignored, so each checkout installs its own. Useful
+maintenance commands:
+
+```bash
+npx skills list --agent codex
+npx skills update --project --yes
+npx skills add owner/repository --agent codex
+```
+
+Use `--list` on an `add` command to inspect a repository before installing it, or
+`--skill <name>` to select particular skills.
