@@ -24,8 +24,7 @@ def test_fixed_plan_preserves_every_winner(monkeypatch, capsys):
 def test_shared_execution_saves_grouped_results_and_resumes(monkeypatch, tmp_path):
     search = runner.search
     monkeypatch.setattr(search, "get_device", lambda: "cpu")
-    monkeypatch.setattr(search, "download_pet_ner", lambda: None)
-    monkeypatch.setattr(search, "load_pet_splits", lambda _: ([{}], [{}], {}, [{}]))
+    monkeypatch.setattr(search, "load_splits", lambda *_: (([{}], [{}], {}, [{}]), {}))
     calls = []
 
     def run(*args, **kwargs):
@@ -73,7 +72,7 @@ def test_shared_execution_saves_grouped_results_and_resumes(monkeypatch, tmp_pat
         completed = json.loads((slot / "completed.json").read_text())
         for name in ("config.json", "results.csv", "selections.json"):
             assert (root / completed["run_dir"] / name).is_file()
-    monkeypatch.setattr(search, "download_pet_ner", lambda: pytest.fail("Resume loaded data"))
+    monkeypatch.setattr(search, "load_splits", lambda *_: pytest.fail("Resume loaded data"))
     assert runner.main([*args, "--seed-workers", "3"]) == 0
     assert len(calls) == 1
     with pytest.raises(SystemExit):
@@ -90,7 +89,7 @@ def test_shared_execution_saves_grouped_results_and_resumes(monkeypatch, tmp_pat
     ],
 )
 def test_invalid_settings_never_launch(monkeypatch, args):
-    monkeypatch.setattr(runner.search, "download_pet_ner", lambda: pytest.fail("Must not train"))
+    monkeypatch.setattr(runner.search, "load_splits", lambda *_: pytest.fail("Must not train"))
     with pytest.raises(SystemExit) as error:
         runner.main(args)
     assert error.value.code == 2

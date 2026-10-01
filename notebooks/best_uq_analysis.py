@@ -191,7 +191,9 @@ def _(Path, settings):
     from uq_pet.supervised import load_test_results
 
     supervised_saved = load_test_results(
-        Path(__file__).resolve().parents[1] / "results" / "supervised", settings["checkpoint"]
+        Path(__file__).resolve().parents[1] / "results" / "supervised",
+        settings["checkpoint"],
+        settings.get("dataset", "pet"),
     )
     supervised_sweep, supervised_results = supervised_saved or (None, None)
     return supervised_results, supervised_sweep

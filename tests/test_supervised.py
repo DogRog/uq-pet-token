@@ -133,8 +133,7 @@ def fake_supervised(tmp_path, monkeypatch):
     ]
     gold = {(idx, 0): 0 for idx in range(6)}
     test = [{"tokens": ["test"], "ner_tags": [0]}]
-    monkeypatch.setattr(supervised, "download_pet_ner", lambda: tmp_path / "data.jsonl")
-    monkeypatch.setattr(supervised, "load_pet_splits", lambda _: (seed, pool, gold, test))
+    monkeypatch.setattr(supervised, "load_splits", lambda *_: ((seed, pool, gold, test), {}))
     monkeypatch.setattr(supervised, "get_device", lambda: "cpu")
     calls = []
 
@@ -224,7 +223,7 @@ def test_failed_trial_is_recorded_and_retried(fake_supervised, monkeypatch):
 
 def test_dry_run_loads_nothing(fake_supervised, monkeypatch, capsys):
     config, root, _ = fake_supervised
-    monkeypatch.setattr(supervised, "load_pet_splits", lambda _: pytest.fail("loaded data"))
+    monkeypatch.setattr(supervised, "load_splits", lambda *_: pytest.fail("loaded data"))
     invoke(config, "--dry-run")
     assert json.loads(capsys.readouterr().out)["sentence_percents"] == [50, 100]
     assert not root.exists()

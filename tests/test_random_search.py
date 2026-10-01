@@ -118,7 +118,7 @@ def test_file_config_and_explicit_overrides(tmp_path):
     ],
 )
 def test_invalid_config_has_no_side_effects(tmp_path, monkeypatch, payload):
-    monkeypatch.setattr(search, "download_pet_ner", lambda: pytest.fail("unexpected download"))
+    monkeypatch.setattr(search, "load_splits", lambda *_: pytest.fail("unexpected download"))
     parser = argparse.ArgumentParser()
     search.configure_parser(parser)
     with pytest.raises(SystemExit, match="2"):
@@ -157,8 +157,7 @@ def fake_experiment(monkeypatch, tmp_path):
         {(0, 0): 0},
         [{"tokens": ["test"]}],
     )
-    monkeypatch.setattr(search, "download_pet_ner", lambda: "unused")
-    monkeypatch.setattr(search, "load_pet_splits", lambda _: (seed, pool, gold, test))
+    monkeypatch.setattr(search, "load_splits", lambda *_: ((seed, pool, gold, test), {}))
     monkeypatch.setattr(search, "get_device", lambda: "cpu")
     calls = []
 
@@ -227,7 +226,7 @@ def test_complete_resume_does_not_load_data_and_rejects_plan_changes(
 ):
     run_search(tmp_path)
     monkeypatch.setattr(
-        search, "download_pet_ner", lambda: pytest.fail("complete resume must not load data")
+        search, "load_splits", lambda *_: pytest.fail("complete resume must not load data")
     )
     run_search(tmp_path, seed_workers=2)
     assert len(fake_experiment) == 2
@@ -473,7 +472,7 @@ def test_wandb_missing_credentials_fail_before_data_loading(tmp_path, monkeypatc
     monkeypatch.delenv("WANDB_API_KEY", raising=False)
     monkeypatch.delenv("WANDB_MODE", raising=False)
     monkeypatch.setattr(search, "get_device", lambda: "cpu")
-    monkeypatch.setattr(search, "download_pet_ner", lambda: pytest.fail("unexpected download"))
+    monkeypatch.setattr(search, "load_splits", lambda *_: pytest.fail("unexpected download"))
     with pytest.raises(ValueError, match="WANDB_API_KEY is missing"):
         run_search(tmp_path, wandb_enabled=True)
 
@@ -524,9 +523,7 @@ def test_logging_can_be_enabled_when_resuming_legacy_plan(
 
 def test_unsupported_bf16_fails_before_loading_data_or_creating_a_plan(tmp_path, monkeypatch):
     monkeypatch.setattr(search, "get_device", lambda: "cpu")
-    monkeypatch.setattr(
-        search, "download_pet_ner", lambda: pytest.fail("must fail before download")
-    )
+    monkeypatch.setattr(search, "load_splits", lambda *_: pytest.fail("must fail before download"))
     with pytest.raises(ValueError, match="native BF16"):
         run_search(tmp_path, precision="bf16")
     assert list(tmp_path.iterdir()) == []

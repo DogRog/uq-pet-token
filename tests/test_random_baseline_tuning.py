@@ -125,14 +125,13 @@ def fake_search(tmp_path, monkeypatch):
         model_seeds=[0, 1],
     )
     root = tmp_path / "example"
-    dataset = tmp_path / "data.json"
-    dataset.write_text("fixed dataset")
     seed = [{"tokens": ["seed"], "ner_tags": [0]}]
     pool = [{"pool_idx": idx, "tokens": [str(idx)]} for idx in range(6)]
     gold = {(idx, 0): 0 for idx in range(6)}
     test = [{"tokens": ["test"], "ner_tags": [0]}]
-    monkeypatch.setattr(tune, "download_pet_ner", lambda: dataset)
-    monkeypatch.setattr(tune, "load_pet_splits", lambda _: (seed, pool, gold, test))
+    monkeypatch.setattr(
+        tune, "load_splits", lambda *_: ((seed, pool, gold, test), {"dataset_sha256": "fixed"})
+    )
     monkeypatch.setattr(tune, "get_device", lambda: "cpu")
     calls = []
 
@@ -181,9 +180,7 @@ def test_tune_freezes_winner_and_stops_without_uq(fake_search, monkeypatch):
         assert (path / "results.csv").exists()
         metadata = json.loads((path / "config.json").read_text())
         assert metadata["random_only"] and "uq_metric" not in metadata
-    monkeypatch.setattr(
-        tune, "download_pet_ner", lambda: pytest.fail("complete resume loaded data")
-    )
+    monkeypatch.setattr(tune, "load_splits", lambda *_: pytest.fail("complete resume loaded data"))
     run_tuning(config.model_copy(update={"seed_workers": 2, "uq_metric": "margin"}))
     assert len(calls) == 2
     with pytest.raises(SystemExit, match="2"):
@@ -218,7 +215,7 @@ def test_failed_tuning_never_selects_winner_and_resumes(fake_search, monkeypatch
 
 def test_dry_run_has_no_data_or_files(fake_search, monkeypatch):
     config, root, calls = fake_search
-    monkeypatch.setattr(tune, "download_pet_ner", lambda: pytest.fail("dry run loaded data"))
+    monkeypatch.setattr(tune, "load_splits", lambda *_: pytest.fail("dry run loaded data"))
     run_tuning(config, dry_run=True)
     assert not root.exists() and calls == []
 
@@ -266,7 +263,7 @@ def test_tuning_wandb_missing_credentials_fails_before_loading_data(fake_search,
     config, _, _ = fake_search
     monkeypatch.delenv("WANDB_API_KEY", raising=False)
     monkeypatch.delenv("WANDB_MODE", raising=False)
-    monkeypatch.setattr(tune, "download_pet_ner", lambda: pytest.fail("unexpected download"))
+    monkeypatch.setattr(tune, "load_splits", lambda *_: pytest.fail("unexpected download"))
     with pytest.raises(ValueError, match="WANDB_API_KEY is missing"):
         run_tuning(config.model_copy(update={"wandb_enabled": True}))
 
@@ -289,9 +286,7 @@ def test_legacy_sweep_resumes_without_touching_historical_final(fake_search, mon
     historical = root / "final" / "completed.json"
     historical.write_text('{"historical": true}')
     frozen = (root / "best_config.json").read_bytes()
-    monkeypatch.setattr(
-        tune, "download_pet_ner", lambda: pytest.fail("completed resume loaded data")
-    )
+    monkeypatch.setattr(tune, "load_splits", lambda *_: pytest.fail("completed resume loaded data"))
     run_tuning(config)
     assert len(calls) == 2
     assert (root / "best_config.json").read_bytes() == frozen
@@ -315,7 +310,7 @@ def test_publish_completed_search_creates_sweep_without_training(
 ):
     config, root, calls = fake_search
     run_tuning(config)
-    monkeypatch.setattr(tune, "download_pet_ner", lambda: pytest.fail("publication loaded data"))
+    monkeypatch.setattr(tune, "load_splits", lambda *_: pytest.fail("publication loaded data"))
     online = config.model_copy(update={"wandb_enabled": True, "wandb_project": "random-tuning"})
     parser = argparse.ArgumentParser()
     tune.configure_parser(parser)

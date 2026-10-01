@@ -18,6 +18,14 @@ DEFAULT_CHECKPOINTS = (
     "answerdotai/ModernBERT-base",
 )
 DEFAULT_MODEL_SEEDS = (0, 1, 2, 3, 4)
+Dataset = Literal["pet", "conll2003"]
+
+
+def omit_default_dataset(settings: dict) -> dict:
+    """Leave PET implicit so plans saved before the dataset field still resume."""
+    if settings.get("dataset") == "pet":
+        return {key: value for key, value in settings.items() if key != "dataset"}
+    return settings
 
 
 class ExperimentConfig(BaseModel):
@@ -29,6 +37,10 @@ class ExperimentConfig(BaseModel):
         default=DEFAULT_CHECKPOINTS[0],
         min_length=1,
         description="Hugging Face token-classification base checkpoint.",
+    )
+    dataset: Dataset = Field(
+        default="pet",
+        description="PET, or CoNLL-2003 with seed and pool from train and the full test split.",
     )
     model_seeds: list[int] = Field(
         default_factory=lambda: list(DEFAULT_MODEL_SEEDS),
@@ -143,7 +155,9 @@ class ExperimentConfig(BaseModel):
         if self.wandb_run_name:
             return self.wandb_run_name
         checkpoint_name = self.checkpoint.rsplit("/", maxsplit=1)[-1]
-        payload = self.model_dump(exclude={"wandb_run_name"})
+        if self.dataset != "pet":
+            checkpoint_name = f"{checkpoint_name}-{self.dataset}"
+        payload = omit_default_dataset(self.model_dump(exclude={"wandb_run_name"}))
         digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:8]
         seeds = "-".join(str(seed) for seed in self.model_seeds)
         return f"{checkpoint_name}-seeds{seeds}-{digest}"
@@ -217,6 +231,7 @@ class SupervisedConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     checkpoint: str = Field(default=DEFAULT_CHECKPOINTS[0], min_length=1)
+    dataset: Dataset = "pet"
     model_seeds: list[int] = Field(
         default_factory=lambda: list(DEFAULT_MODEL_SEEDS),
         min_length=1,
@@ -276,5 +291,6 @@ class SupervisedConfig(BaseModel):
         if percents != sorted(set(percents)) or not all(0 <= p <= 100 for p in percents):
             raise ValueError("sentence_percents must be sorted, unique, and within [0, 100]")
         if not self.sweep_name:
-            self.sweep_name = self.checkpoint.rsplit("/", maxsplit=1)[-1] + "-supervised"
+            dataset = "" if self.dataset == "pet" else f"-{self.dataset}"
+            self.sweep_name = self.checkpoint.rsplit("/", maxsplit=1)[-1] + dataset + "-supervised"
         return self
