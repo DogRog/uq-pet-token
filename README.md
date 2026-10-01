@@ -541,7 +541,9 @@ the sweep (job type `supervised_tuning_summary`) whose objective,
 `validation_entity_f1`, is the seed mean that selects the winner. Sweep IDs, the chart
 link, and published configuration IDs are saved in `wandb_sweeps.json`; every launch
 publishes completed trials not yet uploaded, including trials finished before the sweep
-existed. Per-seed trial runs are not uploaded retroactively on resume.
+existed. If the sweep or its project is deleted in W&B, the next launch creates a new
+sweep and chart and republishes every completed trial into it. Per-seed trial runs are
+not uploaded retroactively on resume.
 
 ### Legacy outputs
 

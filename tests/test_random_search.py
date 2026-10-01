@@ -380,8 +380,23 @@ def fake_wandb(monkeypatch):
         def setup(self, settings=None):
             self.setups.append(settings)
 
+        deleted_sweeps = set()
+        warnings = []
+
         def Api(self):
-            return type("API", (), {"default_entity": "test"})()
+            sdk = self
+
+            class API:
+                default_entity = "test"
+
+                def sweep(self, path):
+                    if path.rsplit("/", 1)[-1] in sdk.deleted_sweeps:
+                        raise ValueError(f"Could not find sweep <Sweep {path}>")
+
+            return API()
+
+        def termwarn(self, message):
+            self.warnings.append(message)
 
         def login(self, **kwargs):
             self.logins.append(kwargs)

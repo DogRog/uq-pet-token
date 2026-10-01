@@ -157,6 +157,14 @@ def _ensure_sweep(config, root, definition, make_workspace):
     key = f"{entity}/{config.wandb_project}"
     state_path = root / "wandb_sweeps.json"
     state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    if key in state and not _sweep_exists(api, state[key]):
+        # Deleting the sweep or its project in W&B leaves a stale local record.
+        wandb.termwarn(
+            f"W&B sweep {key}/{state[key]['sweep_id']} no longer exists; "
+            "creating a new sweep and chart and republishing completed trials."
+        )
+        del state[key]
+        save_state(state_path, state)
     if key not in state:
         sweep_id = _create_sweep(definition, entity, config.wandb_project)
         state[key] = {
@@ -173,6 +181,17 @@ def _ensure_sweep(config, root, definition, make_workspace):
         record["workspace_url"] = workspace.url
         save_state(state_path, state)
     return state_path, state, key
+
+
+def _sweep_exists(api, record) -> bool:
+    try:
+        api.sweep(f"{record['entity']}/{record['project']}/{record['sweep_id']}")
+    except Exception as error:
+        # Only a definite "not found" discards the record; network errors still raise.
+        if "Could not find sweep" not in str(error):
+            raise
+        return False
+    return True
 
 
 def _create_sweep(definition, entity, project):

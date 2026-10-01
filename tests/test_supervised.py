@@ -322,6 +322,44 @@ def test_wandb_sweep_backfills_completed_trials_once(fake_supervised, fake_wandb
     assert len(fake_wandb.runs) == 2 and len(fake_wandb.sweeps) == 1
 
 
+def test_deleted_wandb_sweep_is_recreated_and_republished(fake_supervised, fake_wandb):
+    config, root, calls = fake_supervised
+    online = config.model_copy(update={"wandb_enabled": True, "wandb_project": "supervised"})
+    invoke(online, "--stage", "tune")
+    assert len(fake_wandb.sweeps) == 1
+    fake_wandb.deleted_sweeps.add("sweep-1")  # e.g. the W&B project was deleted
+    fake_wandb.runs.clear()
+    invoke(online, "--stage", "tune")
+    assert len(calls) == 4  # Nothing retrained.
+    assert len(fake_wandb.sweeps) == 2
+    assert "sweep-1 no longer exists" in fake_wandb.warnings[0]
+    assert [run.settings["settings"]["sweep_id"] for run in fake_wandb.runs] == ["sweep-2"] * 2
+    state = json.loads((root / "wandb_sweeps.json").read_text())["test/supervised"]
+    assert state["sweep_id"] == "sweep-2"
+    assert sorted(state["published"]) == ["config_0000", "config_0001"]
+
+
+def test_wandb_lookup_errors_are_not_mistaken_for_deleted_sweeps(
+    fake_supervised, fake_wandb, monkeypatch
+):
+    config, root, _ = fake_supervised
+    online = config.model_copy(update={"wandb_enabled": True, "wandb_project": "supervised"})
+    invoke(online, "--stage", "tune")
+
+    class Unreachable:
+        default_entity = "test"
+
+        def sweep(self, path):
+            raise ConnectionError("network down")
+
+    monkeypatch.setattr(fake_wandb, "Api", Unreachable)
+    with pytest.raises(ConnectionError):
+        invoke(online, "--stage", "tune")
+    assert json.loads((root / "wandb_sweeps.json").read_text())["test/supervised"]["sweep_id"] == (
+        "sweep-1"
+    )
+
+
 def test_offline_wandb_creates_no_sweep(fake_supervised, fake_wandb, monkeypatch):
     config, root, _ = fake_supervised
     monkeypatch.setenv("WANDB_MODE", "offline")
