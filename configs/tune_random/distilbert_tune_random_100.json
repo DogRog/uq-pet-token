@@ -1,17 +1,20 @@
 {
-  "mode": "tune-random",
-  "num_configs": 100,
+  "checkpoint": "distilbert-base-cased",
   "sweep_name": "distilbert-random-baseline-100",
   "sweeps_dir": "results/random_baseline_search",
-  "sampler_seed": 0,
-  "checkpoint": "distilbert-base-cased",
+  "wandb_enabled": true,
+  "wandb_project": "distilbert-random-baseline",
+
   "model_seeds": [0, 1, 2, 3, 4],
-  "seed_workers": 2,
   "precision": "auto",
-  "max_pool_percent": 100.0,
+  "seed_workers": 2,
+
+  "mode": "tune-random",
+  "num_configs": 100,
+  "sampler_seed": 0,
+  "objective": "random_validation_entity_f1_auc",
   "validation_sentences": 66,
   "validation_seed": 1729,
-  "objective": "random_validation_entity_f1_auc",
-  "wandb_enabled": true,
-  "wandb_project": "distilbert-random-baseline"
+
+  "max_pool_percent": 100.0
 }

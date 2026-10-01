@@ -1,13 +1,12 @@
 {
   "checkpoint": "answerdotai/ModernBERT-base",
-  "model_seeds": [
-    0,
-    1,
-    2,
-    3,
-    4
-  ],
+  "wandb_enabled": true,
+  "wandb_project": "modernbert-base-best-uq",
+
+  "model_seeds": [0, 1, 2, 3, 4],
   "precision": "auto",
+  "seed_workers": 5,
+
   "k": 64,
   "max_pool_percent": 100.0,
   "bootstrap_epochs": 10,
@@ -17,8 +16,5 @@
   "weight_decay": 0.0,
   "batch_size": 32,
   "score_batch_size": 256,
-  "max_length": 256,
-  "seed_workers": 5,
-  "wandb_enabled": true,
-  "wandb_project": "modernbert-base-best-uq"
+  "max_length": 256
 }
