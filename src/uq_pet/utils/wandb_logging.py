@@ -36,6 +36,14 @@ def require_wandb_credentials(environment: Mapping[str, str]) -> None:
     raise ValueError("WANDB_API_KEY is missing; set it unless WANDB_MODE=offline")
 
 
+def login_quietly(api_key: str) -> None:
+    """Log in with W&B's per-run banners off for this process; warnings and errors still print."""
+    import wandb
+
+    wandb.setup(wandb.Settings(show_info=False))
+    wandb.login(key=api_key, verify=True)
+
+
 def configure_wandb_metrics(wandb_run, uq_metric: str, *, random_only: bool = False) -> None:
     """Keep bookkeeping out of auto-panels and use acquisition as the x-axis."""
     arms = ("random",) if random_only else (uq_metric, "random")
@@ -154,7 +162,7 @@ def wandb_comparison_logging(
 
 
 @contextmanager
-def wandb_supervised_logging(config, name, slot, settings, *, job_type, console: Console):
+def wandb_supervised_logging(config, name, slot, settings, *, job_type):
     """Own one W&B run per supervised tuning trial or test budget; yield a row logger."""
     if not config.wandb_enabled:
         yield lambda payload: None
@@ -168,12 +176,10 @@ def wandb_supervised_logging(config, name, slot, settings, *, job_type, console:
         group=config.sweep_name,
         job_type=job_type,
         reinit="create_new",
-        settings={"quiet": True, "console": "off"},
+        settings={"silent": True, "console": "off"},
         dir=str(slot),
         config={**settings, "sweep_name": config.sweep_name},
     )
-    if os.environ.get("WANDB_MODE", "").strip().lower() != "offline":
-        console.print(f"W&B run ({name}): {run.url}", markup=False)
     success = False
     try:
         yield run.log

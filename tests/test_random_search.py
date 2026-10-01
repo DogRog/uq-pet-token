@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import random
 import sys
 from io import StringIO
@@ -364,8 +365,20 @@ def fake_wandb(monkeypatch):
         sweeps = []
 
         def sweep(self, definition, **kwargs):
+            # Like wandb.sweep(): print a banner and export the target for later inits.
+            print("Create sweep with ID: sweep")
+            os.environ["WANDB_ENTITY"] = kwargs["entity"]
+            os.environ["WANDB_PROJECT"] = kwargs["project"]
             self.sweeps.append((definition, kwargs))
             return f"sweep-{len(self.sweeps)}"
+
+        setups = []
+
+        def Settings(self, **settings):
+            return settings
+
+        def setup(self, settings=None):
+            self.setups.append(settings)
 
         def Api(self):
             return type("API", (), {"default_entity": "test"})()
@@ -386,7 +399,8 @@ def fake_wandb(monkeypatch):
     sdk = SDK()
     monkeypatch.setitem(sys.modules, "wandb", sdk)
     monkeypatch.setenv("WANDB_API_KEY", "test-key")
-    monkeypatch.delenv("WANDB_MODE", raising=False)
+    for name in ("WANDB_MODE", "WANDB_ENTITY", "WANDB_PROJECT"):
+        monkeypatch.delenv(name, raising=False)
     return sdk
 
 

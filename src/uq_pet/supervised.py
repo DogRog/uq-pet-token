@@ -43,7 +43,11 @@ from uq_pet.token_model import (
     set_seed,
     train_items,
 )
-from uq_pet.utils.wandb_logging import require_wandb_credentials, wandb_supervised_logging
+from uq_pet.utils.wandb_logging import (
+    login_quietly,
+    require_wandb_credentials,
+    wandb_supervised_logging,
+)
 from uq_pet.utils.wandb_tuning import ensure_supervised_sweep, publish_supervised_trial
 
 CONSOLE = Console()
@@ -238,6 +242,34 @@ def train_seeds(
             future.cancel()
 
 
+def train_logged_seeds(
+    jobs: dict[int, tuple[tuple, dict]], executor: Executor | None, log, label: str
+) -> dict[int, dict]:
+    """Train every seed, logging each as it finishes behind one transient status line."""
+    finished = {}
+    with CONSOLE.status(f"{label} · 0/{len(jobs)} seeds") as status:
+        for seed, metrics in train_seeds(jobs, executor):
+            finished[seed] = metrics
+            log({"seed": seed, **metrics})
+            status.update(f"{label} · {len(finished)}/{len(jobs)} seeds")
+    return finished
+
+
+def format_parameters(parameters: dict) -> str:
+    return (
+        f"lr {parameters['learning_rate']:.2e} · batch {parameters['batch_size']} · "
+        f"wd {parameters['weight_decay']:g}"
+    )
+
+
+def seed_line(rows: list[dict], stats: dict) -> str:
+    """Seed mean ± SD, then each seed's entity F1 in seed order."""
+    seeds = " ".join(f"{row['entity_f1']:.3f}" for row in rows)
+    return (
+        f"[bold]{stats['mean_entity_f1']:.4f}[/] ± {stats['std_entity_f1']:.4f} [dim]({seeds})[/]"
+    )
+
+
 def training_settings(config: SupervisedConfig, device: torch.device, precision: str) -> dict:
     return {
         "checkpoint": config.checkpoint,
@@ -348,7 +380,6 @@ def tune(
                 slot,
                 metadata,
                 job_type="supervised_tuning",
-                console=CONSOLE,
             ) as log:
                 arguments = (
                     seed_examples,
@@ -361,15 +392,7 @@ def tune(
                     seed: (arguments, {**training, **entry["parameters"], "seed": seed})
                     for seed in config.model_seeds
                 }
-                finished = {}
-                for seed, metrics in train_seeds(jobs, executor):
-                    finished[seed] = metrics
-                    log({"seed": seed, **metrics})
-                    CONSOLE.print(
-                        f"[bold cyan]tune {label}[/] seed {seed} · "
-                        f"{entry['parameters']} · validation entity F1 "
-                        f"[bold]{metrics['entity_f1']:.4f}[/]"
-                    )
+                finished = train_logged_seeds(jobs, executor, log, f"tune {label}")
                 rows = [
                     {"seed": seed, "arm": SUPERVISED_ARM, **finished[seed]}
                     for seed in config.model_seeds
@@ -386,6 +409,10 @@ def tune(
                 },
             )
             (slot / "failure.json").unlink(missing_ok=True)
+            CONSOLE.print(
+                f"[bold cyan]tune {label}[/] · {format_parameters(entry['parameters'])} · "
+                f"validation entity F1 {seed_line(rows, stats)}"
+            )
         except BaseException as error:
             _record_failure(slot, error)
             raise
@@ -408,8 +435,8 @@ def tune(
         },
     )
     CONSOLE.print(
-        f"[bold green]Frozen winner[/] {best['config_id']} · {best['parameters']} · "
-        f"validation entity F1 {best['score']:.4f}"
+        f"[bold green]Frozen winner[/] {best['config_id']} · "
+        f"{format_parameters(best['parameters'])} · validation entity F1 {best['score']:.4f}"
     )
     write_summary(root, plan)
     return frozen
@@ -458,7 +485,6 @@ def run_test(
                 slot,
                 metadata,
                 job_type="supervised_test",
-                console=CONSOLE,
             ) as log:
                 selected = {
                     seed: sorted(sentence_order(len(pool_inputs), seed)[:n_sentences])
@@ -471,14 +497,9 @@ def run_test(
                     )
                     for seed, indices in selected.items()
                 }
-                finished = {}
-                for seed, metrics in train_seeds(jobs, executor):
-                    finished[seed] = metrics
-                    log({"seed": seed, **metrics})
-                    CONSOLE.print(
-                        f"[bold magenta]test {percent:g}% pool sentences[/] seed {seed} · "
-                        f"test entity F1 [bold]{metrics['entity_f1']:.4f}[/]"
-                    )
+                finished = train_logged_seeds(
+                    jobs, executor, log, f"test {percent:g}% pool sentences"
+                )
                 rows = [
                     {
                         "seed": seed,
@@ -508,8 +529,8 @@ def run_test(
             )
             (slot / "failure.json").unlink(missing_ok=True)
             CONSOLE.print(
-                f"[bold green]{percent:g}% pool sentences[/] test entity F1 "
-                f"{stats['mean_entity_f1']:.4f} ± {stats['std_entity_f1']:.4f}"
+                f"[bold magenta]test {percent:g}% pool sentences[/] · "
+                f"test entity F1 {seed_line(rows, stats)}"
             )
         except BaseException as error:
             _record_failure(slot, error)
@@ -587,15 +608,17 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         if os.environ.get("WANDB_MODE", "").strip().lower() == "offline":
             CONSOLE.print("W&B offline: logging locally; no online sweep or chart is created.")
         else:
-            import wandb
-
-            wandb.login(key=os.environ["WANDB_API_KEY"], verify=True)
-            CONSOLE.print(f"W&B enabled: {config.wandb_project}")
+            login_quietly(os.environ["WANDB_API_KEY"])
             # Trials completed before the sweep existed are published on the next launch.
             publication = ensure_supervised_sweep(config, plan, root)
             for entry in plan["configurations"]:
                 publish_supervised_trial(config, root, entry, publication)
-            CONSOLE.print(f"Tuning chart: {publication[1][publication[2]]['workspace_url']}")
+            record = publication[1][publication[2]]
+            CONSOLE.print(
+                f"W&B {record['entity']}/{record['project']} · sweep {record['sweep_id']} · "
+                f"chart {record['workspace_url']}",
+                markup=False,
+            )
 
     precision = plan["effective_precision"]
     seed_workers = min(config.seed_workers, len(config.model_seeds))

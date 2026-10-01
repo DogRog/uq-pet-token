@@ -1,7 +1,10 @@
 """Publish fixed validation trials as a W&B sweep with one summary run per configuration."""
 
+import contextlib
 import hashlib
+import io
 import json
+import os
 
 import polars as pl
 
@@ -155,7 +158,7 @@ def _ensure_sweep(config, root, definition, make_workspace):
     state_path = root / "wandb_sweeps.json"
     state = json.loads(state_path.read_text()) if state_path.exists() else {}
     if key not in state:
-        sweep_id = wandb.sweep(definition, entity=entity, project=config.wandb_project)
+        sweep_id = _create_sweep(definition, entity, config.wandb_project)
         state[key] = {
             "sweep_id": sweep_id,
             "entity": entity,
@@ -170,6 +173,23 @@ def _ensure_sweep(config, root, definition, make_workspace):
         record["workspace_url"] = workspace.url
         save_state(state_path, state)
     return state_path, state, key
+
+
+def _create_sweep(definition, entity, project):
+    """Create a sweep without its stdout banner or its exported entity and project."""
+    import wandb
+
+    # wandb.sweep() exports WANDB_ENTITY/PROJECT, so every later init would warn.
+    exported = {name: os.environ.get(name) for name in ("WANDB_ENTITY", "WANDB_PROJECT")}
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            return wandb.sweep(definition, entity=entity, project=project)
+    finally:
+        for name, value in exported.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def publish_trial(config, root, entry, publication, score_function):
@@ -249,7 +269,7 @@ def _publish_summary(config, root, entry, publication, scores, *, job_type, sett
         job_type=job_type,
         reinit="create_new",
         dir=str(root),
-        settings={"sweep_id": record["sweep_id"], "quiet": True, "console": "off"},
+        settings={"sweep_id": record["sweep_id"], "silent": True, "console": "off"},
         config={
             **entry["parameters"],
             "config_id": config_id,

@@ -2,12 +2,14 @@
 
 import argparse
 import json
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import polars as pl
 import pytest
 import torch
+from rich.console import Console
 
 from test_concurrent_seeds import tiny_experiment as tiny_experiment
 from test_random_search import fake_wandb as fake_wandb
@@ -235,10 +237,25 @@ def test_resume_rejects_changed_plan_and_test_requires_winner(fake_supervised):
         invoke(config.model_copy(update={"sampler_seed": 1}))
 
 
-def test_wandb_logs_each_trial_and_test_budget(fake_supervised, fake_wandb):
+def test_wandb_logs_each_trial_and_test_budget(fake_supervised, fake_wandb, monkeypatch, capsys):
     config, root, _ = fake_supervised
+    monkeypatch.setattr(supervised, "CONSOLE", Console(width=400, color_system=None))
     invoke(config.model_copy(update={"wandb_enabled": True, "wandb_project": "supervised"}))
+    assert fake_wandb.setups == [{"show_info": False}]
     assert fake_wandb.logins == [{"key": "test-key", "verify": True}]
+    assert all(run.settings["settings"]["silent"] for run in fake_wandb.runs)
+    # The sweep's banner and exported target would otherwise repeat a warning per run.
+    assert "WANDB_ENTITY" not in os.environ and "WANDB_PROJECT" not in os.environ
+    lines = capsys.readouterr().out.splitlines()
+    assert "Create sweep with ID: sweep" not in lines
+    assert lines[0] == (
+        "W&B test/supervised · sweep sweep-1 · chart https://wandb.ai/test/pet/workspace?view=tuning"
+    )
+    tuned = [line for line in lines if line.startswith("tune ")]
+    assert len(tuned) == 2  # One line per trial, not one per seed.
+    assert tuned[0].startswith("tune config_0000 (1/2) · lr ")
+    assert " · batch 8 · wd 0 · validation entity F1 " in tuned[0]
+    assert sum(line.startswith("test ") for line in lines) == 2
     names = [run.settings["name"] for run in fake_wandb.runs]
     assert names == [
         "example-config_0000",
