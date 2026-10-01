@@ -2,13 +2,18 @@
 
 import argparse
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import polars as pl
 import pytest
+import torch
 
+from test_concurrent_seeds import tiny_experiment as tiny_experiment
 from test_random_search import fake_wandb as fake_wandb
 from uq_pet import supervised
 from uq_pet.config import SupervisedConfig
+from uq_pet.pet_data import NER_TAGS
 from uq_pet.search import LEARNING_RATE_BOUNDS
 from utils.charts import make_variance_chart
 
@@ -282,6 +287,77 @@ def test_failed_trial_is_recorded_and_retried(fake_supervised, monkeypatch):
     monkeypatch.setattr(supervised, "train_and_evaluate", working)
     invoke(config)
     assert not (root / "tuning" / "config_0000" / "failure.json").exists()
+
+
+def test_spawned_seeds_match_sequential_training(tiny_experiment):
+    (examples, pool, gold, _), kwargs = tiny_experiment
+    settings = {
+        "checkpoint": kwargs["checkpoint"],
+        "labels": NER_TAGS,
+        "epochs": 2,
+        "learning_rate": 1e-3,
+        "batch_size": 2,
+        "weight_decay": 0.0,
+        "score_batch_size": 2,
+        "max_length": 8,
+        "device": torch.device("cpu"),
+        "precision": "fp32",
+    }
+    jobs = {
+        seed: ((examples, pool, gold, [0, 2], examples), {**settings, "seed": seed})
+        for seed in (11, 3, 8)
+    }
+    old_threads = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        sequential = dict(supervised.train_seeds(jobs, None))
+        executor = supervised.seed_executor(2)
+        try:
+            concurrent = dict(supervised.train_seeds(jobs, executor))
+        finally:
+            executor.shutdown()
+    finally:
+        torch.set_num_threads(old_threads)
+    assert supervised.seed_executor(1) is None
+    assert concurrent == sequential
+    assert sequential[11] != sequential[3]
+
+
+def test_concurrent_seeds_save_in_seed_order_and_keep_the_plan(fake_supervised, monkeypatch):
+    config, root, _ = fake_supervised
+    workers = []
+
+    def thread_executor(count):
+        workers.append(count)
+        return ThreadPoolExecutor(count)
+
+    # Seed 0 finishes last, so completion order differs from seed order.
+    seed_one_done = threading.Event()
+    fake_train = supervised.train_and_evaluate
+
+    def ordered_train(*args, **kwargs):
+        if kwargs["seed"] == 0:
+            assert seed_one_done.wait(timeout=10)
+        metrics = fake_train(*args, **kwargs)
+        if kwargs["seed"] == 1:
+            seed_one_done.set()
+        return metrics
+
+    monkeypatch.setattr(supervised, "seed_executor", thread_executor)
+    monkeypatch.setattr(supervised, "train_and_evaluate", ordered_train)
+    invoke(config, "--stage", "tune", "--seed-workers", "4")
+    seed_one_done.clear()
+    invoke(config.model_copy(update={"seed_workers": 2}))
+    assert workers == [2, 2]  # Capped by the two seeds; changing workers resumes the plan.
+    for marker in [*root.glob("tuning/*/completed.json"), *root.glob("test/*/completed.json")]:
+        rows = pl.read_csv(root / json.loads(marker.read_text())["run_dir"] / "results.csv")
+        assert rows["seed"].to_list() == [0, 1]
+    selections = json.loads(
+        next((root / "test" / "pool_50pct").glob("*/selections.json")).read_text()
+    )
+    assert [row["seed"] for row in selections] == [0, 0, 0, 1, 1, 1]
+    with pytest.raises(SystemExit):
+        invoke(config, "--seed-workers", "0")
 
 
 def test_dry_run_loads_nothing(fake_supervised, monkeypatch, capsys):

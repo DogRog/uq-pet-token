@@ -303,11 +303,18 @@ uv run scripts/run_supervised.py --config configs/supervised/distilbert.json
 bash scripts/run_supervised_all_models.sh
 ```
 
+The supervised configs train all five seeds of each trial or test budget concurrently in
+spawned processes that share the device (`"seed_workers": 5`); use `--seed-workers N`
+to override this, or `1` to train seeds one after another in-process. Each seed is
+trained independently, so saved rows are identical and written in seed order whatever
+the concurrency.
+
 `--stage tune` stops after freezing the winner, and `--stage test` requires it. Rerunning
 resumes. Completed trials and budgets are skipped, and failed ones are retried. Adding
 percentages later reuses the saved tuning. Changing the sampled search, epochs, seeds,
 checkpoint, validation split, or effective precision requires a new `sweep_name`, which
-defaults to `<checkpoint>-supervised`. W&B settings do not change the plan.
+defaults to `<checkpoint>-supervised`. W&B settings and `seed_workers` do not change the
+plan.
 
 Outputs under `results/supervised/<sweep-name>/`:
 

@@ -10,8 +10,11 @@ sentences this is the upper bound for active learning.
 import argparse
 import json
 import math
+import multiprocessing
 import os
 import random
+from collections.abc import Iterator
+from concurrent.futures import Executor, ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import polars as pl
@@ -197,6 +200,55 @@ def train_and_evaluate(
     }
 
 
+def _init_seed_worker(cpu_threads: int) -> None:
+    torch.set_num_threads(cpu_threads)
+    transformers_logging.disable_progress_bar()
+
+
+def seed_executor(seed_workers: int) -> ProcessPoolExecutor | None:
+    """Spawn persistent seed workers that share the device; one worker trains in-process."""
+    if seed_workers <= 1:
+        return None
+    return ProcessPoolExecutor(
+        seed_workers,
+        mp_context=multiprocessing.get_context("spawn"),
+        initializer=_init_seed_worker,
+        initargs=(max(1, torch.get_num_threads() // seed_workers),),
+    )
+
+
+def train_seeds(
+    jobs: dict[int, tuple[tuple, dict]], executor: Executor | None
+) -> Iterator[tuple[int, dict]]:
+    """Yield each seed's metrics as it finishes; without an executor, train in seed order."""
+    if executor is None:
+        for seed, (args, kwargs) in jobs.items():
+            yield seed, train_and_evaluate(*args, **kwargs)
+        return
+    futures = {
+        executor.submit(train_and_evaluate, *args, **kwargs): seed
+        for seed, (args, kwargs) in jobs.items()
+    }
+    try:
+        for future in as_completed(futures):
+            yield futures[future], future.result()
+    finally:
+        for future in futures:
+            future.cancel()
+
+
+def training_settings(config: SupervisedConfig, device: torch.device, precision: str) -> dict:
+    return {
+        "checkpoint": config.checkpoint,
+        "labels": DATASET_TAGS[config.dataset],
+        "epochs": config.epochs,
+        "score_batch_size": config.score_batch_size,
+        "max_length": config.max_length,
+        "device": device,
+        "precision": precision,
+    }
+
+
 def seed_statistics(rows: list[dict], field: str = "entity_f1") -> dict:
     values = [float(row[field]) for row in rows]
     mean = sum(values) / len(values)
@@ -248,6 +300,7 @@ def tune(
     *,
     device: torch.device,
     precision: str,
+    executor: Executor | None = None,
 ) -> dict:
     """Random-search on the validation holdout and freeze the best configuration."""
     seed_examples, pool_inputs, pool_gold, test_examples = splits
@@ -268,6 +321,7 @@ def tune(
             "test_sentences": len(test_examples),
         },
     )
+    training = training_settings(config, device, precision)
     for position, entry in enumerate(plan["configurations"], start=1):
         slot = root / "tuning" / entry["config_id"]
         if run_status(root, slot)["status"] == "complete":
@@ -294,31 +348,30 @@ def tune(
                 job_type="supervised_tuning",
                 console=CONSOLE,
             ) as log:
-                rows = []
-                for seed in config.model_seeds:
-                    metrics = train_and_evaluate(
-                        seed_examples,
-                        tune_pool,
-                        tune_gold,
-                        list(range(len(tune_pool))),
-                        validation_examples,
-                        checkpoint=config.checkpoint,
-                        labels=DATASET_TAGS[config.dataset],
-                        seed=seed,
-                        epochs=config.epochs,
-                        **entry["parameters"],
-                        score_batch_size=config.score_batch_size,
-                        max_length=config.max_length,
-                        device=device,
-                        precision=precision,
-                    )
-                    rows.append({"seed": seed, "arm": SUPERVISED_ARM, **metrics})
+                arguments = (
+                    seed_examples,
+                    tune_pool,
+                    tune_gold,
+                    list(range(len(tune_pool))),
+                    validation_examples,
+                )
+                jobs = {
+                    seed: (arguments, {**training, **entry["parameters"], "seed": seed})
+                    for seed in config.model_seeds
+                }
+                finished = {}
+                for seed, metrics in train_seeds(jobs, executor):
+                    finished[seed] = metrics
                     log({"seed": seed, **metrics})
                     CONSOLE.print(
                         f"[bold cyan]tune {label}[/] seed {seed} · "
                         f"{entry['parameters']} · validation entity F1 "
                         f"[bold]{metrics['entity_f1']:.4f}[/]"
                     )
+                rows = [
+                    {"seed": seed, "arm": SUPERVISED_ARM, **finished[seed]}
+                    for seed in config.model_seeds
+                ]
                 stats = seed_statistics(rows)
                 log(stats)
             run_dir = write_run(metadata, rows, [], results_dir=slot)
@@ -366,6 +419,7 @@ def run_test(
     *,
     device: torch.device,
     precision: str,
+    executor: Executor | None = None,
 ) -> None:
     """Train the frozen winner on each pool-sentence budget and evaluate on test."""
     winner_path = root / "best_config.json"
@@ -374,6 +428,7 @@ def run_test(
     winner = json.loads(winner_path.read_text())
     parameters = {field: winner[field] for field in TUNED_FIELDS}
     seed_examples, pool_inputs, pool_gold, test_examples = splits
+    training = training_settings(config, device, precision)
     for percent in config.sentence_percents:
         slot = percent_slot(root, percent)
         if run_status(root, slot)["status"] == "complete":
@@ -401,49 +456,46 @@ def run_test(
                 job_type="supervised_test",
                 console=CONSOLE,
             ) as log:
-                rows, selections = [], []
-                for seed in config.model_seeds:
-                    indices = sorted(sentence_order(len(pool_inputs), seed)[:n_sentences])
-                    metrics = train_and_evaluate(
-                        seed_examples,
-                        pool_inputs,
-                        pool_gold,
-                        indices,
-                        test_examples,
-                        checkpoint=config.checkpoint,
-                        labels=DATASET_TAGS[config.dataset],
-                        seed=seed,
-                        epochs=config.epochs,
-                        **parameters,
-                        score_batch_size=config.score_batch_size,
-                        max_length=config.max_length,
-                        device=device,
-                        precision=precision,
+                selected = {
+                    seed: sorted(sentence_order(len(pool_inputs), seed)[:n_sentences])
+                    for seed in config.model_seeds
+                }
+                jobs = {
+                    seed: (
+                        (seed_examples, pool_inputs, pool_gold, indices, test_examples),
+                        {**training, **parameters, "seed": seed},
                     )
-                    rows.append(
-                        {
-                            "seed": seed,
-                            "arm": SUPERVISED_ARM,
-                            "sentence_percent": percent,
-                            **metrics,
-                        }
-                    )
-                    selections.extend(
-                        {
-                            "seed": seed,
-                            "arm": SUPERVISED_ARM,
-                            "sentence_percent": percent,
-                            "pool_idx": pool_idx,
-                            "document_name": pool_inputs[pool_idx]["document_name"],
-                            "sentence_id": pool_inputs[pool_idx]["sentence_id"],
-                        }
-                        for pool_idx in indices
-                    )
+                    for seed, indices in selected.items()
+                }
+                finished = {}
+                for seed, metrics in train_seeds(jobs, executor):
+                    finished[seed] = metrics
                     log({"seed": seed, **metrics})
                     CONSOLE.print(
                         f"[bold magenta]test {percent:g}% pool sentences[/] seed {seed} · "
                         f"test entity F1 [bold]{metrics['entity_f1']:.4f}[/]"
                     )
+                rows = [
+                    {
+                        "seed": seed,
+                        "arm": SUPERVISED_ARM,
+                        "sentence_percent": percent,
+                        **finished[seed],
+                    }
+                    for seed in config.model_seeds
+                ]
+                selections = [
+                    {
+                        "seed": seed,
+                        "arm": SUPERVISED_ARM,
+                        "sentence_percent": percent,
+                        "pool_idx": pool_idx,
+                        "document_name": pool_inputs[pool_idx]["document_name"],
+                        "sentence_id": pool_inputs[pool_idx]["sentence_id"],
+                    }
+                    for seed in config.model_seeds
+                    for pool_idx in selected[seed]
+                ]
                 stats = seed_statistics(rows)
                 log(stats)
             run_dir = write_run(metadata, rows, selections, results_dir=slot)
@@ -490,6 +542,8 @@ def load_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Su
         settings = json.loads(payload)
         if not isinstance(settings, dict):
             raise ValueError("configuration must be a JSON object")
+        if "seed_workers" in args:
+            settings["seed_workers"] = args.seed_workers
         return SupervisedConfig.model_validate(settings)
     except (OSError, ValueError) as error:
         parser.error(str(error))
@@ -534,22 +588,28 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             CONSOLE.print(f"W&B enabled: {config.wandb_project}")
 
     precision = plan["effective_precision"]
+    seed_workers = min(config.seed_workers, len(config.model_seeds))
     CONSOLE.print(
         f"[bold cyan]Supervised {config.checkpoint}[/] · {len(plan['configurations'])} sampled "
-        f"configurations × {len(config.model_seeds)} seeds · {config.epochs} epochs · "
-        f"{precision.upper()} on {device}"
+        f"configurations × {len(config.model_seeds)} seeds ({seed_workers} concurrent) · "
+        f"{config.epochs} epochs · {precision.upper()} on {device}"
     )
     splits, _ = load_splits(config.dataset, config.dataset_percent)
     model_bars = transformers_logging.is_progress_bar_enabled()
     data_bars = datasets_logging.is_progress_bar_enabled()
     transformers_logging.disable_progress_bar()
     datasets_logging.disable_progress_bar()
+    executor = seed_executor(seed_workers)
     try:
+        stage_settings = {"device": device, "precision": precision, "executor": executor}
         if args.stage in {"tune", "all"}:
-            tune(config, root, plan, splits, device=device, precision=precision)
+            tune(config, root, plan, splits, **stage_settings)
         if args.stage in {"test", "all"}:
-            run_test(config, root, plan, splits, device=device, precision=precision)
+            run_test(config, root, plan, splits, **stage_settings)
     finally:
+        if executor is not None:
+            # Cancels queued seeds; running siblings finish their current seed.
+            executor.shutdown(cancel_futures=True)
         if model_bars:
             transformers_logging.enable_progress_bar()
         if data_bars:
@@ -566,6 +626,12 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         choices=("tune", "test", "all"),
         default="all",
         help="Random-search on validation (tune), evaluate the frozen winner on test (test), or both.",
+    )
+    parser.add_argument(
+        "--seed-workers",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="Concurrent seed processes on the device (default: config or 1).",
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Print the plan without loading data or models."

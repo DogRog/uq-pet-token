@@ -5,6 +5,7 @@
 
   "model_seeds": [0, 1, 2, 3, 4],
   "precision": "auto",
+  "seed_workers": 5,
 
   "num_configs": 30,
   "sampler_seed": 0,

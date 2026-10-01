@@ -258,6 +258,11 @@ class SupervisedConfig(BaseModel):
         min_length=1,
         description="Model initialization seeds; each also orders the pool sentences.",
     )
+    seed_workers: int = Field(
+        default=1,
+        ge=1,
+        description="Concurrent seed processes on the selected device; capped by the seed count.",
+    )
     precision: Literal["auto", "fp32", "bf16"] = "auto"
     epochs: int = Field(default=20, ge=1, description="Fixed passes; no early stopping.")
     num_configs: int = Field(default=30, ge=1, description="Sampled tuning configurations.")
