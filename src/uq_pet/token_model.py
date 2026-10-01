@@ -3,6 +3,7 @@
 import logging
 import math
 import random
+import warnings
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 
@@ -204,13 +205,18 @@ def load_token_classifier(checkpoint: str, device: torch.device, *, labels: list
     previous_verbosity = transformers_logging.get_verbosity()
     transformers_logging.set_verbosity_error()
     try:
-        model = AutoModelForTokenClassification.from_pretrained(
-            checkpoint,
-            dtype=torch.float32,
-            num_labels=len(labels),
-            id2label=dict(enumerate(labels)),
-            label2id={label: idx for idx, label in enumerate(labels)},
-        ).to(device)
+        with warnings.catch_warnings():
+            # DeBERTa-v2's modeling module uses @torch.jit.script, deprecated in recent torch.
+            warnings.filterwarnings(
+                "ignore", message=r"`torch\.jit\.script` is deprecated", category=FutureWarning
+            )
+            model = AutoModelForTokenClassification.from_pretrained(
+                checkpoint,
+                dtype=torch.float32,
+                num_labels=len(labels),
+                id2label=dict(enumerate(labels)),
+                label2id={label: idx for idx, label in enumerate(labels)},
+            ).to(device)
     finally:
         transformers_logging.set_verbosity(previous_verbosity)
     return model, tokenizer
