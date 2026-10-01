@@ -3,6 +3,10 @@
 Does a PET token classifier learn faster when each online update uses its most
 uncertain unlabelled words instead of the same number of random words?
 
+This is the token-level counterpart of
+[DogRog/uq-pet](https://github.com/DogRog/uq-pet), which selects whole sentences by
+LLM uncertainty and fine-tunes on them.
+
 The project provides an interactive marimo experiment, random-baseline hyperparameter
 tuning, fixed comparisons of all three uncertainty metrics, and resumable random
 searches. The supplied configurations cover DistilBERT, BERT, RoBERTa, DeBERTa-v3,
