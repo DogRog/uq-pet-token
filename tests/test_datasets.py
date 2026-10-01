@@ -1,4 +1,4 @@
-"""Check CoNLL-2003 loading and that the dataset choice reaches labels and saved plans."""
+"""Check dataset loading, pool percentages, and that both reach labels and saved plans."""
 
 import json
 
@@ -34,7 +34,7 @@ def fake_conll(n_train, n_test, names=CONLL_TAGS):
     return DatasetDict({"train": split("train", n_train), "test": split("test", n_test)})
 
 
-def test_conll_uses_full_train_pool_and_test_split(monkeypatch):
+def test_conll_uses_full_test_and_nested_pool_percentages(monkeypatch):
     monkeypatch.setattr(pet_data, "load_dataset", lambda *args, **kwargs: fake_conll(405, 100))
 
     seed, pool, gold, test = load_conll_splits()
@@ -48,6 +48,35 @@ def test_conll_uses_full_train_pool_and_test_split(monkeypatch):
     assert not seed_tokens & pool_tokens
     assert all(example["document_name"] == "test" for example in test)
     assert load_conll_splits() == (seed, pool, gold, test)
+
+    half_seed, half_pool, half_gold, half_test = load_conll_splits(pool_percent=50)
+    assert (half_seed, half_test) == (seed, test)
+    assert half_pool == pool[:200]
+    assert half_gold == {key: tag for key, tag in gold.items() if key[0] < 200}
+
+
+def test_pet_pool_percent_keeps_seed_and_test(tmp_path):
+    path = tmp_path / "pet.jsonl"
+    path.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "document name": f"doc-{idx}",
+                    "sentence-ID": 0,
+                    "tokens": [f"w{idx}"],
+                    "ner-tags": ["O"],
+                }
+            )
+            for idx in range(50)
+        )
+    )
+    seed, pool, gold, test = pet_data.load_pet_splits(path)
+    quarter = pet_data.load_pet_splits(path, pool_percent=25)
+
+    assert (len(seed), len(pool), len(test)) == (5, 35, 10)
+    assert (quarter[0], quarter[1], quarter[3]) == (seed, pool[:9], test)
+    with pytest.raises(ValueError, match="is empty"):
+        pet_data.load_pet_splits(path, pool_percent=1)
 
 
 def test_conll_rejects_changed_label_order(monkeypatch):
@@ -64,24 +93,35 @@ def test_load_splits_rejects_unknown_dataset():
         load_splits("ontonotes")
 
 
-def test_pet_plans_stay_unchanged_and_conll_plans_record_the_dataset():
+def test_full_pet_plans_stay_unchanged_and_other_pools_are_recorded():
     pet = search.sample_plan(RandomSearchConfig(num_configs=1))
-    conll = search.sample_plan(RandomSearchConfig(num_configs=1, dataset="conll2003"))
-    assert "dataset" not in pet["fixed_config"]
+    conll = search.sample_plan(
+        RandomSearchConfig(num_configs=1, dataset="conll2003", dataset_percent=50)
+    )
+    assert not {"dataset", "dataset_percent"} & set(pet["fixed_config"])
     assert conll["fixed_config"]["dataset"] == "conll2003"
+    assert conll["fixed_config"]["dataset_percent"] == 50
 
     assert "dataset" not in supervised.grid_plan(SupervisedConfig())["fixed_config"]
-    conll_supervised = SupervisedConfig(dataset="conll2003")
-    assert supervised.grid_plan(conll_supervised)["fixed_config"]["dataset"] == "conll2003"
-    assert conll_supervised.sweep_name == "distilbert-base-cased-conll2003-supervised"
+    conll_supervised = SupervisedConfig(dataset="conll2003", dataset_percent=12.5)
+    assert supervised.grid_plan(conll_supervised)["fixed_config"]["dataset_percent"] == 12.5
+    assert conll_supervised.sweep_name == "distilbert-base-cased-conll2003-12p5pct-supervised"
     assert SupervisedConfig().sweep_name == "distilbert-base-cased-supervised"
 
-    assert "conll2003" in ExperimentConfig(dataset="conll2003").resolved_wandb_run_name()
+    assert "conll2003-50pct" in (
+        ExperimentConfig(dataset="conll2003", dataset_percent=50).resolved_wandb_run_name()
+    )
     assert "conll2003" not in ExperimentConfig().resolved_wandb_run_name()
+    assert "dataset_percent" not in ExperimentConfig().active_learning_kwargs()
 
 
-def test_supervised_results_are_matched_by_dataset(tmp_path):
-    for sweep, pool in (("a_conll", {"dataset": "conll2003"}), ("b_pet", {})):
+def test_supervised_results_are_matched_by_dataset_and_percent(tmp_path):
+    pools = (
+        ("a_conll_half", {"dataset": "conll2003", "dataset_percent": 50.0}),
+        ("b_conll", {"dataset": "conll2003"}),
+        ("c_pet", {}),
+    )
+    for sweep, pool in pools:
         run_dir = tmp_path / sweep / "test" / "pool_100pct" / "run"
         run_dir.mkdir(parents=True)
         (run_dir / "config.json").write_text(json.dumps({"checkpoint": "bert", **pool}))
@@ -90,8 +130,9 @@ def test_supervised_results_are_matched_by_dataset(tmp_path):
             json.dumps({"run_dir": "test/pool_100pct/run"})
         )
 
-    assert supervised.load_test_results(tmp_path, "bert")[0] == "b_pet"
-    assert supervised.load_test_results(tmp_path, "bert", "conll2003")[0] == "a_conll"
+    assert supervised.load_test_results(tmp_path, "bert")[0] == "c_pet"
+    assert supervised.load_test_results(tmp_path, "bert", "conll2003")[0] == "b_conll"
+    assert supervised.load_test_results(tmp_path, "bert", "conll2003", 50.0)[0] == "a_conll_half"
 
 
 def test_engine_uses_the_chosen_dataset_labels(monkeypatch):

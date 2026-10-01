@@ -20,7 +20,9 @@ def execute_experiment(
     """Load the dataset, run both arms, persist the run, and return display-ready records."""
     device = get_device()
     effective_precision = resolve_precision(config.precision, device)
-    (seed_examples, pool_inputs, pool_gold, test_examples), _ = load_splits(config.dataset)
+    (seed_examples, pool_inputs, pool_gold, test_examples), _ = load_splits(
+        config.dataset, config.dataset_percent
+    )
     results, selections = run_active_learning(
         seed_examples,
         pool_inputs,
@@ -45,6 +47,7 @@ def execute_experiment(
     dataset_summary = {
         "mode": "experiment",
         "dataset": config.dataset,
+        "dataset_percent": config.dataset_percent,
         "seed_sentences": len(seed_examples),
         "pool_sentences": len(pool_inputs),
         "pool_tokens": len(pool_gold),

@@ -116,7 +116,7 @@ def test_execute_experiment_uses_shared_config_and_persists_derived_settings(mon
     monkeypatch.setattr(
         experiment,
         "load_splits",
-        lambda dataset: (
+        lambda dataset, percent: (
             ([{"tokens": ["seed"]}], [{"tokens": ["pool"]}], {(0, 0): 0}, []),
             {"dataset_sha256": "unused"},
         ),

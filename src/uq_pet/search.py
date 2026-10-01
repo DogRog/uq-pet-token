@@ -501,7 +501,9 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         f"[bold cyan]Compute precision:[/] [bold]{effective_precision.upper()}[/]"
         f" · device: {device} · parameters/AdamW: FP32"
     )
-    (seed_examples, pool_inputs, pool_gold, test_examples), identity = load_splits(config.dataset)
+    (seed_examples, pool_inputs, pool_gold, test_examples), identity = load_splits(
+        config.dataset, config.dataset_percent
+    )
     if tuning:
         tune_pool, tune_gold, validation_examples, manifest = split_tuning_pool(
             pool_inputs,
