@@ -241,7 +241,7 @@ class RandomBaselineSearchConfig(RandomSearchConfig):
 
 
 class SupervisedConfig(BaseModel):
-    """Fully labelled sentence training: validation grid search, then fixed-epoch test runs."""
+    """Fully labelled sentence training: validation random search, then fixed-epoch test runs."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -260,9 +260,8 @@ class SupervisedConfig(BaseModel):
     )
     precision: Literal["auto", "fp32", "bf16"] = "auto"
     epochs: int = Field(default=20, ge=1, description="Fixed passes; no early stopping.")
-    learning_rates: list[float] = Field(
-        default_factory=lambda: [1e-5, 2e-5, 3e-5, 5e-5, 1e-4], min_length=1
-    )
+    num_configs: int = Field(default=30, ge=1, description="Sampled tuning configurations.")
+    sampler_seed: int = Field(default=0, ge=0)
     batch_sizes: list[int] = Field(default_factory=lambda: [8, 16, 32], min_length=1)
     weight_decays: list[float] = Field(default_factory=lambda: [0.0, 0.01], min_length=1)
     score_batch_size: int = Field(default=256, ge=1)
@@ -276,6 +275,14 @@ class SupervisedConfig(BaseModel):
     )
     sweep_name: str = ""
     sweeps_dir: Path = RESULTS_DIR / "supervised"
+    wandb_enabled: bool = Field(
+        default=False,
+        description="Log each tuning trial and test budget to Weights & Biases.",
+    )
+    wandb_project: str = Field(
+        default="uq-pet-token-supervised",
+        description="Weights & Biases project name.",
+    )
 
     @field_validator("model_seeds", mode="before")
     @classmethod
@@ -287,6 +294,11 @@ class SupervisedConfig(BaseModel):
     def validate_checkpoint(cls, value):
         return ExperimentConfig.validate_checkpoint(value)
 
+    @field_validator("wandb_project")
+    @classmethod
+    def strip_wandb_project(cls, value):
+        return value.strip()
+
     @field_validator("sweep_name")
     @classmethod
     def validate_sweep_name(cls, value):
@@ -297,20 +309,22 @@ class SupervisedConfig(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def validate_grid(self) -> Self:
+    def validate_search(self) -> Self:
         if any(seed < 0 for seed in self.model_seeds):
             raise ValueError("model seeds must be non-negative")
-        for name in ("model_seeds", "learning_rates", "batch_sizes", "weight_decays"):
+        for name in ("model_seeds", "batch_sizes", "weight_decays"):
             values = getattr(self, name)
             if len(values) != len(set(values)):
                 raise ValueError(f"{name} must be unique")
-        if any(value <= 0 for value in (*self.learning_rates, *self.batch_sizes)):
-            raise ValueError("learning rates and batch sizes must be positive")
+        if any(value <= 0 for value in self.batch_sizes):
+            raise ValueError("batch sizes must be positive")
         if any(value < 0 for value in self.weight_decays):
             raise ValueError("weight decays must be non-negative")
         percents = self.sentence_percents
         if percents != sorted(set(percents)) or not all(0 <= p <= 100 for p in percents):
             raise ValueError("sentence_percents must be sorted, unique, and within [0, 100]")
+        if self.wandb_enabled and not self.wandb_project:
+            raise ValueError("wandb_project is required when W&B logging is enabled")
         if not self.sweep_name:
             dataset = "" if self.dataset == "pet" else f"-{self.dataset}"
             if self.dataset_percent != 100:

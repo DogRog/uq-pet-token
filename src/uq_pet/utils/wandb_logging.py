@@ -151,3 +151,32 @@ def wandb_comparison_logging(
 
         yield log_evaluation
         success = True
+
+
+@contextmanager
+def wandb_supervised_logging(config, name, slot, settings, *, job_type, console: Console):
+    """Own one W&B run per supervised tuning trial or test budget; yield a row logger."""
+    if not config.wandb_enabled:
+        yield lambda payload: None
+        return
+
+    import wandb
+
+    run = wandb.init(
+        project=config.wandb_project,
+        name=name,
+        group=config.sweep_name,
+        job_type=job_type,
+        reinit="create_new",
+        settings={"quiet": True, "console": "off"},
+        dir=str(slot),
+        config={**settings, "sweep_name": config.sweep_name},
+    )
+    if os.environ.get("WANDB_MODE", "").strip().lower() != "offline":
+        console.print(f"W&B run ({name}): {run.get_url()}", markup=False)
+    success = False
+    try:
+        yield run.log
+        success = True
+    finally:
+        run.finish(exit_code=0 if success else 1)

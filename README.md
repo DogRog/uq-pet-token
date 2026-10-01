@@ -283,12 +283,14 @@ upper bound for active learning. A fresh pretrained model is trained on fully la
 sentences for a fixed number of epochs (default 20, no early stopping). Only first
 subwords are supervised, and truncated pool words are excluded as in acquisition.
 
-1. **Grid search on validation.** Every combination of learning rate
-   (1e-5, 2e-5, 3e-5, 5e-5, 1e-4), batch size (8, 16, 32), and weight decay (0, 0.01)
-   is trained for each model seed on the seed sentences plus the tuning pool, then
-   scored on the same 66-sentence validation holdout used by random-baseline tuning.
-   The highest seed-mean validation entity F1 wins; ties go to the lowest config ID.
-   The test split is not read.
+1. **Random search on validation.** `num_configs` (default 30) configurations are
+   sampled from `sampler_seed` like the other sweeps: a log-uniform learning rate in
+   [1e-6, 1e-4], and a batch size and weight decay drawn from `batch_sizes`
+   (8, 16, 32) and `weight_decays` (0, 0.01). Each is trained for every model seed on
+   the seed sentences plus the tuning pool, then scored on the same 66-sentence
+   validation holdout used by random-baseline tuning. The highest seed-mean
+   validation entity F1 wins; ties go to the lowest config ID. The test split is not
+   read.
 2. **Test runs.** The frozen winner is retrained from scratch for each seed on the seed
    sentences plus `sentence_percents` of the full pool, then evaluated once on the test
    split. The default `[100]` uses the complete training set. Other percentages, such
@@ -303,13 +305,13 @@ bash scripts/run_supervised_all_models.sh
 
 `--stage tune` stops after freezing the winner, and `--stage test` requires it. Rerunning
 resumes. Completed trials and budgets are skipped, and failed ones are retried. Adding
-percentages later reuses the saved tuning. Changing the grid, epochs, seeds, checkpoint,
-validation split, or effective precision requires a new `sweep_name`, which defaults to
-`<checkpoint>-supervised`.
+percentages later reuses the saved tuning. Changing the sampled search, epochs, seeds,
+checkpoint, validation split, or effective precision requires a new `sweep_name`, which
+defaults to `<checkpoint>-supervised`. W&B settings do not change the plan.
 
 Outputs under `results/supervised/<sweep-name>/`:
 
-- `plan.json`, `split.json`, and `run_config.json`: the frozen grid and settings.
+- `plan.json`, `split.json`, and `run_config.json`: the sampled trials and settings.
 - `tuning/<config-id>/`: validation rows per seed and `completed.json` with the score.
 - `best_config.json` and `selection.json`: the winning settings and validation score.
 - `test/pool_<percent>pct/`: test rows per seed, the chosen sentences, and the mean
@@ -517,6 +519,15 @@ uv run scripts/bert_token_uq_search.py --config configs/tune_random/distilbert_t
 This requires an existing local plan and online W&B credentials. Offline mode keeps
 per-seed local logs; create the online sweep later with the publication command.
 
+**Supervised baseline.** The five supervised configs enable W&B with one project per
+model (`distilbert-supervised`, `bert-base-supervised`, and so on). Each tuning trial
+(`<sweep>-<config-id>`, job type `supervised_tuning`) and each test budget
+(`<sweep>-test-<percent>pct`, job type `supervised_test`) gets one run, grouped under
+the sweep name. It logs every seed's metrics as it finishes, then the seed mean and
+standard deviation of entity F1, so a run's summary holds `mean_entity_f1`. Run configs
+include the sampled hyperparameters and the evaluation split. Completed trials are
+not uploaded retroactively on resume.
+
 ### Legacy outputs
 
 - Comparison sweeps use plan version 4, tuning plan version 3, and fixed comparisons
@@ -560,9 +571,9 @@ Contributor and agent conventions are in [AGENTS.md](AGENTS.md).
 | `src/uq_pet/config.py` | shared validated experiment and search configuration |
 | `src/uq_pet/experiment.py` | run execution and label coverage summaries |
 | `src/uq_pet/search.py` | random sweep or baseline tuning, shared execution, resume, and summaries |
-| `src/uq_pet/supervised.py` | supervised grid search, fixed-epoch test runs, resume, and summaries |
+| `src/uq_pet/supervised.py` | supervised random search, fixed-epoch test runs, resume, and summaries |
 | `src/uq_pet/utils/truncation.py` | word alignment and truncation checks |
-| `src/uq_pet/utils/wandb_logging.py` | W&B credentials, evaluation records, and comparison run lifecycles |
+| `src/uq_pet/utils/wandb_logging.py` | W&B credentials, evaluation records, and comparison and supervised run lifecycles |
 | `src/uq_pet/utils/wandb_tuning.py` | tuning sweep publication and workspace charts |
 | `scripts/bert_token_uq_search.py` | CLI entry point for search and tuning |
 | `scripts/run_uq_metrics.py` | fixed multi-metric comparisons from one experiment configuration |

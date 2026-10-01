@@ -102,9 +102,9 @@ def test_full_pet_plans_stay_unchanged_and_other_pools_are_recorded():
     assert conll["fixed_config"]["dataset"] == "conll2003"
     assert conll["fixed_config"]["dataset_percent"] == 50
 
-    assert "dataset" not in supervised.grid_plan(SupervisedConfig())["fixed_config"]
+    assert "dataset" not in supervised.sample_plan(SupervisedConfig())["fixed_config"]
     conll_supervised = SupervisedConfig(dataset="conll2003", dataset_percent=12.5)
-    assert supervised.grid_plan(conll_supervised)["fixed_config"]["dataset_percent"] == 12.5
+    assert supervised.sample_plan(conll_supervised)["fixed_config"]["dataset_percent"] == 12.5
     assert conll_supervised.sweep_name == "distilbert-base-cased-conll2003-12p5pct-supervised"
     assert SupervisedConfig().sweep_name == "distilbert-base-cased-supervised"
 

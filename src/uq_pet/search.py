@@ -43,6 +43,11 @@ SEARCH_SPACE = {
 LEARNING_RATE_BOUNDS = (1e-6, 1e-4)
 
 
+def sample_learning_rate(rng: random.Random) -> float:
+    """Draw a log-uniform learning rate within the shared bounds."""
+    return math.exp(rng.uniform(*(math.log(bound) for bound in LEARNING_RATE_BOUNDS)))
+
+
 @contextmanager
 def _quiet_search_output():
     """Suppress routine model output while retaining concise sweep progress."""
@@ -145,9 +150,7 @@ def sample_plan(config: RandomSearchConfig) -> dict:
     sampled = []
     for _ in range(config.num_configs):
         parameters = {key: rng.choice(values) for key, values in SEARCH_SPACE.items()}
-        parameters["learning_rate"] = math.exp(
-            rng.uniform(*(math.log(bound) for bound in LEARNING_RATE_BOUNDS))
-        )
+        parameters["learning_rate"] = sample_learning_rate(rng)
         sampled.append(parameters)
     # Worker scheduling can change on resume; scientific settings cannot.
     fixed = omit_default_dataset(

@@ -1,4 +1,4 @@
-"""Verify the supervised grid, validation-only tuning, test isolation, and resume."""
+"""Verify supervised sampling, validation-only tuning, test isolation, W&B, and resume."""
 
 import argparse
 import json
@@ -6,8 +6,10 @@ import json
 import polars as pl
 import pytest
 
+from test_random_search import fake_wandb as fake_wandb
 from uq_pet import supervised
 from uq_pet.config import SupervisedConfig
+from uq_pet.search import LEARNING_RATE_BOUNDS
 from utils.charts import make_variance_chart
 
 
@@ -17,20 +19,39 @@ def invoke(config, *extra):
     supervised.run(parser.parse_args(["--config-json", config.model_dump_json(), *extra]), parser)
 
 
-def test_grid_is_full_factorial_ordered_and_named_by_checkpoint():
+def test_plan_samples_log_uniform_learning_rates_and_is_named_by_checkpoint():
     config = SupervisedConfig(checkpoint="microsoft/deberta-v3-base")
-    plan = supervised.grid_plan(config)
+    plan = supervised.sample_plan(config)
     assert config.sweep_name == "deberta-v3-base-supervised"
-    assert len(plan["configurations"]) == 5 * 3 * 2
-    assert plan["configurations"][0] == {
-        "config_id": "config_0000",
-        "parameters": {"learning_rate": 1e-5, "batch_size": 8, "weight_decay": 0.0},
+    assert len(plan["configurations"]) == plan["num_configs"] == 30
+    assert [entry["config_id"] for entry in plan["configurations"][:2]] == [
+        "config_0000",
+        "config_0001",
+    ]
+    for entry in plan["configurations"]:
+        parameters = entry["parameters"]
+        assert set(parameters) == set(supervised.TUNED_FIELDS)
+        assert LEARNING_RATE_BOUNDS[0] <= parameters["learning_rate"] <= LEARNING_RATE_BOUNDS[1]
+        assert parameters["batch_size"] in config.batch_sizes
+        assert parameters["weight_decay"] in config.weight_decays
+    assert len({entry["parameters"]["learning_rate"] for entry in plan["configurations"]}) == 30
+    assert plan["search_space"]["learning_rate"] == {
+        "distribution": "log_uniform",
+        "low": LEARNING_RATE_BOUNDS[0],
+        "high": LEARNING_RATE_BOUNDS[1],
     }
-    parameters = [json.dumps(entry["parameters"]) for entry in plan["configurations"]]
-    assert len(set(parameters)) == len(parameters)
-    assert plan == supervised.grid_plan(config)
+    assert plan == supervised.sample_plan(config)
+    assert plan != supervised.sample_plan(config.model_copy(update={"sampler_seed": 1}))
     assert "sentence_percents" not in json.dumps(plan)
-    for bad in ({"sentence_percents": [100, 50]}, {"batch_sizes": [8, 8]}, {"epochs": 0}):
+    assert "wandb" not in json.dumps(plan)
+    for bad in (
+        {"sentence_percents": [100, 50]},
+        {"batch_sizes": [8, 8]},
+        {"epochs": 0},
+        {"num_configs": 0},
+        {"learning_rates": [1e-5]},
+        {"wandb_enabled": True, "wandb_project": " "},
+    ):
         with pytest.raises(ValueError):
             SupervisedConfig(**bad)
 
@@ -118,7 +139,7 @@ def test_train_and_evaluate_uses_seed_and_selected_sentences(monkeypatch):
 def fake_supervised(tmp_path, monkeypatch):
     config = SupervisedConfig(
         model_seeds=[0, 1],
-        learning_rates=[1e-5, 5e-5],
+        num_configs=2,
         batch_sizes=[8],
         weight_decays=[0.0],
         validation_sentences=2,
@@ -143,8 +164,8 @@ def fake_supervised(tmp_path, monkeypatch):
             assert len(pool_inputs) == 4 and len(evaluation) == 2
             assert indices == list(range(4))
         calls.append((stage, kwargs["learning_rate"], kwargs["seed"], list(indices)))
-        # The larger learning rate wins validation; tests must not pick the first trial.
-        score = 0.8 if kwargs["learning_rate"] == 5e-5 else 0.3
+        # The larger learning rate wins validation, whichever trial sampled it.
+        score = 0.3 + 1000 * kwargs["learning_rate"]
         return {
             "n_sentences": len(indices),
             "n_acquired": len(indices),
@@ -162,17 +183,22 @@ def fake_supervised(tmp_path, monkeypatch):
 def test_tune_selects_on_validation_then_tests_frozen_winner(fake_supervised, tmp_path):
     config, root, calls = fake_supervised
     invoke(config)
+    best = max(
+        supervised.sample_plan(config)["configurations"],
+        key=lambda entry: entry["parameters"]["learning_rate"],
+    )
+    best_rate = best["parameters"]["learning_rate"]
     tuning = [call for call in calls if call[0] == "validation"]
     testing = [call for call in calls if call[0] == "test"]
     assert len(tuning) == 4 and len(testing) == 4
-    assert all(call[1] == 5e-5 for call in testing)
+    assert all(call[1] == best_rate for call in testing)
     half = [call[3] for call in testing if len(call[3]) == 3]
     full = [call[3] for call in testing if len(call[3]) == 6]
     assert len(half) == 2 and all(indices == list(range(6)) for indices in full)
     selection = json.loads((root / "selection.json").read_text())
-    assert selection["config_id"] == "config_0001"
-    assert selection["validation_score"] == pytest.approx(0.805)
-    assert json.loads((root / "best_config.json").read_text())["learning_rate"] == 5e-5
+    assert selection["config_id"] == best["config_id"]
+    assert selection["validation_score"] == pytest.approx(0.305 + 1000 * best_rate)
+    assert json.loads((root / "best_config.json").read_text())["learning_rate"] == best_rate
     summary = json.loads((root / "summary.json").read_text())
     assert summary["tuning_complete"]
     assert [row["slot"] for row in summary["test_runs"]] == ["test/pool_100pct", "test/pool_50pct"]
@@ -201,7 +227,44 @@ def test_resume_rejects_changed_plan_and_test_requires_winner(fake_supervised):
     invoke(config, "--stage", "tune")
     assert not (root / "test").exists()
     with pytest.raises(SystemExit):
-        invoke(config.model_copy(update={"learning_rates": [2e-5]}))
+        invoke(config.model_copy(update={"sampler_seed": 1}))
+
+
+def test_wandb_logs_each_trial_and_test_budget(fake_supervised, fake_wandb):
+    config, root, _ = fake_supervised
+    invoke(config.model_copy(update={"wandb_enabled": True, "wandb_project": "supervised"}))
+    assert fake_wandb.logins == [{"key": "test-key", "verify": True}]
+    names = [run.settings["name"] for run in fake_wandb.runs]
+    assert names == [
+        "example-config_0000",
+        "example-config_0001",
+        "example-test-50pct",
+        "example-test-100pct",
+    ]
+    for run in fake_wandb.runs:
+        assert run.settings["project"] == "supervised"
+        assert run.settings["group"] == "example"
+        assert run.exit_codes == [0]
+        assert [log["seed"] for log in run.logs[:2]] == [0, 1]
+        assert set(run.logs[2]) == {"mean_entity_f1", "std_entity_f1"}
+    tuning, test = fake_wandb.runs[0], fake_wandb.runs[2]
+    assert tuning.settings["job_type"] == "supervised_tuning"
+    assert tuning.settings["config"]["evaluation_split"] == "validation"
+    assert "learning_rate" in tuning.settings["config"]
+    assert test.settings["job_type"] == "supervised_test"
+    assert test.settings["config"]["evaluation_split"] == "test"
+    assert test.settings["config"]["sentence_percent"] == 50
+    assert not (root / "plan.json").read_text().count("wandb")
+
+
+def test_wandb_missing_credentials_fails_before_loading_data(fake_supervised, monkeypatch):
+    config, _, _ = fake_supervised
+    monkeypatch.delenv("WANDB_API_KEY", raising=False)
+    monkeypatch.delenv("WANDB_MODE", raising=False)
+    monkeypatch.setattr(supervised, "load_dotenv", lambda *a, **kw: None)
+    monkeypatch.setattr(supervised, "load_splits", lambda *_: pytest.fail("loaded data"))
+    with pytest.raises(ValueError, match="WANDB_API_KEY is missing"):
+        invoke(config.model_copy(update={"wandb_enabled": True}))
 
 
 def test_failed_trial_is_recorded_and_retried(fake_supervised, monkeypatch):

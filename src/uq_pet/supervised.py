@@ -1,29 +1,36 @@
-"""Fully supervised sentence training: validation grid search, then fixed-epoch test runs.
+"""Fully supervised sentence training: validation random search, then fixed-epoch test runs.
 
 Following Vacareanu et al. (2024), every selected sentence is fully labelled and a
 fresh pretrained model is trained for a fixed number of epochs, supervising first
-subwords only. Hyperparameters are chosen on the tuning holdout; the test split is
-used only by the final runs. At 100% of pool sentences this is the upper bound for
-active learning.
+subwords only. Hyperparameters are sampled like the other sweeps and chosen on the
+tuning holdout; the test split is used only by the final runs. At 100% of pool
+sentences this is the upper bound for active learning.
 """
 
 import argparse
-import itertools
 import json
 import math
+import os
 import random
 from pathlib import Path
 
 import polars as pl
 import torch
 from datasets.utils import logging as datasets_logging
+from dotenv import load_dotenv
 from rich.console import Console
 from transformers.utils import logging as transformers_logging
 
 from uq_pet.active_learning import full_sentence_items, write_run
 from uq_pet.config import SupervisedConfig, omit_default_dataset
-from uq_pet.pet_data import DATASET_TAGS, TokenKey, load_splits, split_tuning_pool
-from uq_pet.search import preserve_json, run_status, write_json
+from uq_pet.pet_data import DATASET_TAGS, PROJECT_ROOT, TokenKey, load_splits, split_tuning_pool
+from uq_pet.search import (
+    LEARNING_RATE_BOUNDS,
+    preserve_json,
+    run_status,
+    sample_learning_rate,
+    write_json,
+)
 from uq_pet.token_model import (
     evaluate_model,
     get_device,
@@ -33,19 +40,31 @@ from uq_pet.token_model import (
     set_seed,
     train_items,
 )
+from uq_pet.utils.wandb_logging import require_wandb_credentials, wandb_supervised_logging
 
 CONSOLE = Console()
-GRID_FIELDS = ("learning_rate", "batch_size", "weight_decay")
+TUNED_FIELDS = ("learning_rate", "batch_size", "weight_decay")
 SUPERVISED_ARM = "supervised"
 OBJECTIVE = "validation_entity_f1"
 
 
-def grid_plan(config: SupervisedConfig) -> dict:
-    """Freeze the full-factorial grid, validation split, and objective before training."""
-    grid = itertools.product(config.learning_rates, config.batch_sizes, config.weight_decays)
+def sample_plan(config: SupervisedConfig) -> dict:
+    """Freeze sampled trials, validation split, and objective before training."""
+    rng = random.Random(config.sampler_seed)
+    sampled = []
+    for _ in range(config.num_configs):
+        parameters = {
+            "batch_size": rng.choice(config.batch_sizes),
+            "weight_decay": rng.choice(config.weight_decays),
+        }
+        parameters["learning_rate"] = sample_learning_rate(rng)
+        sampled.append(parameters)
     return {
-        "version": 1,
-        "mode": "supervised_grid",
+        "version": 2,
+        "mode": "supervised_random",
+        "sampling": "independent_categorical_and_log_uniform",
+        "sampler_seed": config.sampler_seed,
+        "num_configs": config.num_configs,
         "fixed_config": omit_default_dataset(
             config.model_dump(
                 mode="json",
@@ -61,16 +80,17 @@ def grid_plan(config: SupervisedConfig) -> dict:
             )
         ),
         "search_space": {
-            "learning_rate": config.learning_rates,
             "batch_size": config.batch_sizes,
             "weight_decay": config.weight_decays,
+            "learning_rate": {
+                "distribution": "log_uniform",
+                "low": LEARNING_RATE_BOUNDS[0],
+                "high": LEARNING_RATE_BOUNDS[1],
+            },
         },
         "configurations": [
-            {
-                "config_id": f"config_{index:04d}",
-                "parameters": dict(zip(GRID_FIELDS, values, strict=True)),
-            }
-            for index, values in enumerate(grid)
+            {"config_id": f"config_{index:04d}", "parameters": parameters}
+            for index, parameters in enumerate(sampled)
         ],
         "validation_sentences": config.validation_sentences,
         "validation_seed": config.validation_seed,
@@ -229,7 +249,7 @@ def tune(
     device: torch.device,
     precision: str,
 ) -> dict:
-    """Grid-search on the validation holdout and freeze the best configuration."""
+    """Random-search on the validation holdout and freeze the best configuration."""
     seed_examples, pool_inputs, pool_gold, test_examples = splits
     tune_pool, tune_gold, validation_examples, manifest = split_tuning_pool(
         pool_inputs,
@@ -254,43 +274,53 @@ def tune(
             continue
         slot.mkdir(parents=True, exist_ok=True)
         label = f"{entry['config_id']} ({position}/{len(plan['configurations'])})"
+        metadata = {
+            **plan["fixed_config"],
+            **entry["parameters"],
+            "effective_precision": precision,
+            "mode": plan["mode"],
+            "config_id": entry["config_id"],
+            "evaluation_split": "validation",
+            "seed_sentences": len(seed_examples),
+            "pool_sentences": len(tune_pool),
+            "validation_sentences": len(validation_examples),
+        }
         try:
-            rows = []
-            for seed in config.model_seeds:
-                metrics = train_and_evaluate(
-                    seed_examples,
-                    tune_pool,
-                    tune_gold,
-                    list(range(len(tune_pool))),
-                    validation_examples,
-                    checkpoint=config.checkpoint,
-                    labels=DATASET_TAGS[config.dataset],
-                    seed=seed,
-                    epochs=config.epochs,
-                    **entry["parameters"],
-                    score_batch_size=config.score_batch_size,
-                    max_length=config.max_length,
-                    device=device,
-                    precision=precision,
-                )
-                rows.append({"seed": seed, "arm": SUPERVISED_ARM, **metrics})
-                CONSOLE.print(
-                    f"[bold cyan]tune {label}[/] seed {seed} · "
-                    f"{entry['parameters']} · validation entity F1 "
-                    f"[bold]{metrics['entity_f1']:.4f}[/]"
-                )
-            stats = seed_statistics(rows)
-            metadata = {
-                **plan["fixed_config"],
-                **entry["parameters"],
-                "effective_precision": precision,
-                "mode": plan["mode"],
-                "config_id": entry["config_id"],
-                "evaluation_split": "validation",
-                "seed_sentences": len(seed_examples),
-                "pool_sentences": len(tune_pool),
-                "validation_sentences": len(validation_examples),
-            }
+            with wandb_supervised_logging(
+                config,
+                f"{config.sweep_name}-{entry['config_id']}",
+                slot,
+                metadata,
+                job_type="supervised_tuning",
+                console=CONSOLE,
+            ) as log:
+                rows = []
+                for seed in config.model_seeds:
+                    metrics = train_and_evaluate(
+                        seed_examples,
+                        tune_pool,
+                        tune_gold,
+                        list(range(len(tune_pool))),
+                        validation_examples,
+                        checkpoint=config.checkpoint,
+                        labels=DATASET_TAGS[config.dataset],
+                        seed=seed,
+                        epochs=config.epochs,
+                        **entry["parameters"],
+                        score_batch_size=config.score_batch_size,
+                        max_length=config.max_length,
+                        device=device,
+                        precision=precision,
+                    )
+                    rows.append({"seed": seed, "arm": SUPERVISED_ARM, **metrics})
+                    log({"seed": seed, **metrics})
+                    CONSOLE.print(
+                        f"[bold cyan]tune {label}[/] seed {seed} · "
+                        f"{entry['parameters']} · validation entity F1 "
+                        f"[bold]{metrics['entity_f1']:.4f}[/]"
+                    )
+                stats = seed_statistics(rows)
+                log(stats)
             run_dir = write_run(metadata, rows, [], results_dir=slot)
             write_json(
                 slot / "completed.json",
@@ -342,7 +372,7 @@ def run_test(
     if not winner_path.is_file():
         raise ValueError("The test stage requires best_config.json; run the tune stage first")
     winner = json.loads(winner_path.read_text())
-    parameters = {field: winner[field] for field in GRID_FIELDS}
+    parameters = {field: winner[field] for field in TUNED_FIELDS}
     seed_examples, pool_inputs, pool_gold, test_examples = splits
     for percent in config.sentence_percents:
         slot = percent_slot(root, percent)
@@ -350,59 +380,72 @@ def run_test(
             continue
         slot.mkdir(parents=True, exist_ok=True)
         n_sentences = round(percent / 100 * len(pool_inputs))
+        metadata = {
+            **winner,
+            "effective_precision": precision,
+            "mode": "supervised_test",
+            "evaluation_split": "test",
+            "sentence_percent": percent,
+            "selected_pool_sentences": n_sentences,
+            "seed_sentences": len(seed_examples),
+            "pool_sentences": len(pool_inputs),
+            "test_sentences": len(test_examples),
+            "selected_config_id": json.loads((root / "selection.json").read_text())["config_id"],
+        }
         try:
-            rows, selections = [], []
-            for seed in config.model_seeds:
-                indices = sorted(sentence_order(len(pool_inputs), seed)[:n_sentences])
-                metrics = train_and_evaluate(
-                    seed_examples,
-                    pool_inputs,
-                    pool_gold,
-                    indices,
-                    test_examples,
-                    checkpoint=config.checkpoint,
-                    labels=DATASET_TAGS[config.dataset],
-                    seed=seed,
-                    epochs=config.epochs,
-                    **parameters,
-                    score_batch_size=config.score_batch_size,
-                    max_length=config.max_length,
-                    device=device,
-                    precision=precision,
-                )
-                rows.append(
-                    {"seed": seed, "arm": SUPERVISED_ARM, "sentence_percent": percent, **metrics}
-                )
-                selections.extend(
-                    {
-                        "seed": seed,
-                        "arm": SUPERVISED_ARM,
-                        "sentence_percent": percent,
-                        "pool_idx": pool_idx,
-                        "document_name": pool_inputs[pool_idx]["document_name"],
-                        "sentence_id": pool_inputs[pool_idx]["sentence_id"],
-                    }
-                    for pool_idx in indices
-                )
-                CONSOLE.print(
-                    f"[bold magenta]test {percent:g}% pool sentences[/] seed {seed} · "
-                    f"test entity F1 [bold]{metrics['entity_f1']:.4f}[/]"
-                )
-            stats = seed_statistics(rows)
-            metadata = {
-                **winner,
-                "effective_precision": precision,
-                "mode": "supervised_test",
-                "evaluation_split": "test",
-                "sentence_percent": percent,
-                "selected_pool_sentences": n_sentences,
-                "seed_sentences": len(seed_examples),
-                "pool_sentences": len(pool_inputs),
-                "test_sentences": len(test_examples),
-                "selected_config_id": json.loads((root / "selection.json").read_text())[
-                    "config_id"
-                ],
-            }
+            with wandb_supervised_logging(
+                config,
+                f"{config.sweep_name}-test-{percent:g}pct",
+                slot,
+                metadata,
+                job_type="supervised_test",
+                console=CONSOLE,
+            ) as log:
+                rows, selections = [], []
+                for seed in config.model_seeds:
+                    indices = sorted(sentence_order(len(pool_inputs), seed)[:n_sentences])
+                    metrics = train_and_evaluate(
+                        seed_examples,
+                        pool_inputs,
+                        pool_gold,
+                        indices,
+                        test_examples,
+                        checkpoint=config.checkpoint,
+                        labels=DATASET_TAGS[config.dataset],
+                        seed=seed,
+                        epochs=config.epochs,
+                        **parameters,
+                        score_batch_size=config.score_batch_size,
+                        max_length=config.max_length,
+                        device=device,
+                        precision=precision,
+                    )
+                    rows.append(
+                        {
+                            "seed": seed,
+                            "arm": SUPERVISED_ARM,
+                            "sentence_percent": percent,
+                            **metrics,
+                        }
+                    )
+                    selections.extend(
+                        {
+                            "seed": seed,
+                            "arm": SUPERVISED_ARM,
+                            "sentence_percent": percent,
+                            "pool_idx": pool_idx,
+                            "document_name": pool_inputs[pool_idx]["document_name"],
+                            "sentence_id": pool_inputs[pool_idx]["sentence_id"],
+                        }
+                        for pool_idx in indices
+                    )
+                    log({"seed": seed, **metrics})
+                    CONSOLE.print(
+                        f"[bold magenta]test {percent:g}% pool sentences[/] seed {seed} · "
+                        f"test entity F1 [bold]{metrics['entity_f1']:.4f}[/]"
+                    )
+                stats = seed_statistics(rows)
+                log(stats)
             run_dir = write_run(metadata, rows, selections, results_dir=slot)
             write_json(
                 slot / "completed.json", {"run_dir": str(run_dir.relative_to(root)), **stats}
@@ -455,7 +498,7 @@ def load_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Su
 def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     config = load_config(args, parser)
     device = get_device()
-    plan = grid_plan(config)
+    plan = sample_plan(config)
     plan["effective_precision"] = resolve_precision(config.precision, device)
     if args.dry_run:
         print(
@@ -479,10 +522,20 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     write_summary(root, plan)
     if args.stage == "test" and not (root / "best_config.json").is_file():
         parser.error("The test stage requires best_config.json; run the tune stage first")
+    if config.wandb_enabled:
+        load_dotenv(PROJECT_ROOT / ".env", override=False)
+        require_wandb_credentials(os.environ)
+        if os.environ.get("WANDB_MODE", "").strip().lower() == "offline":
+            CONSOLE.print("W&B offline: logging locally.")
+        else:
+            import wandb
+
+            wandb.login(key=os.environ["WANDB_API_KEY"], verify=True)
+            CONSOLE.print(f"W&B enabled: {config.wandb_project}")
 
     precision = plan["effective_precision"]
     CONSOLE.print(
-        f"[bold cyan]Supervised {config.checkpoint}[/] · {len(plan['configurations'])} grid "
+        f"[bold cyan]Supervised {config.checkpoint}[/] · {len(plan['configurations'])} sampled "
         f"configurations × {len(config.model_seeds)} seeds · {config.epochs} epochs · "
         f"{precision.upper()} on {device}"
     )
@@ -512,7 +565,7 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         "--stage",
         choices=("tune", "test", "all"),
         default="all",
-        help="Grid-search on validation (tune), evaluate the frozen winner on test (test), or both.",
+        help="Random-search on validation (tune), evaluate the frozen winner on test (test), or both.",
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Print the plan without loading data or models."

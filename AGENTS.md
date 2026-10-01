@@ -61,9 +61,9 @@ need. Keep validated experiment and search configuration in `config.py`, UI cont
 in the marimo notebook, and shared W&B logging in `utils/wandb_logging.py`. Keep data,
 model operations, and active-learning orchestration in their focused modules, and
 search planning, resume handling, and search summaries together in `search.py`.
-Keep the fully supervised baseline's grid, tuning, test runs, and resume logic in
-`supervised.py`. It tunes only on the validation holdout, and its test runs read the
-test split once per trained model.
+Keep the fully supervised baseline's sampled search, tuning, test runs, and resume
+logic in `supervised.py`. It tunes only on the validation holdout, and its test runs
+read the test split once per trained model.
 
 ## Agent skills
 
