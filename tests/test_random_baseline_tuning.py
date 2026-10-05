@@ -49,6 +49,12 @@ def test_validation_score_normalizes_irregular_intervals_and_averages_seeds():
             tune.random_tuning_score(bad, "random_validation_entity_f1_auc")
 
 
+def test_best_trial_text_uses_the_winner_tie_break():
+    assert tune.best_trial_text({}) == ""
+    scores = {"config_0003": 0.7, "config_0001": 0.7, "config_0000": 0.6}
+    assert tune.best_trial_text(scores) == " · best config_0001 0.7000"
+
+
 def test_split_is_label_free_disjoint_reindexed_and_reproducible():
     pool = [{"pool_idx": idx, "tokens": [str(idx), "word"]} for idx in range(10)]
     gold = {(idx, word): idx + word for idx in range(10) for word in range(2)}

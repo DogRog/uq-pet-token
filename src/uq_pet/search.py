@@ -17,7 +17,15 @@ import polars as pl
 from datasets.utils import logging as datasets_logging
 from dotenv import load_dotenv
 from rich.console import Console
-from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeRemainingColumn
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 from transformers.utils import logging as transformers_logging
 
 from uq_pet import active_learning
@@ -31,7 +39,11 @@ from uq_pet.config import (
 )
 from uq_pet.pet_data import PROJECT_ROOT, load_splits, split_tuning_pool
 from uq_pet.token_model import UQ_METRICS, get_device, resolve_precision
-from uq_pet.utils.wandb_logging import require_wandb_credentials, wandb_comparison_logging
+from uq_pet.utils.wandb_logging import (
+    login_quietly,
+    require_wandb_credentials,
+    wandb_comparison_logging,
+)
 from uq_pet.utils.wandb_tuning import ensure_sweep, mark_winner, publish_trial
 
 CONSOLE = Console()
@@ -187,6 +199,14 @@ def sample_plan(config: RandomSearchConfig) -> dict:
             for index, parameters in enumerate(sampled)
         ],
     }
+
+
+def best_trial_text(scores: Mapping[str, float]) -> str:
+    """Describe the best completed tuning trial so far, with the winner's tie-break."""
+    if not scores:
+        return ""
+    best = min(scores, key=lambda config_id: (-scores[config_id], config_id))
+    return f" · best {best} {scores[best]:.4f}"
 
 
 def write_json(path: Path, value: dict) -> None:
@@ -500,10 +520,8 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 parser.error("--publish-wandb-only requires online W&B mode")
             CONSOLE.print("W&B offline: logging locally; no online sweep or chart is created.")
         else:
-            import wandb
-
-            wandb.login(key=os.environ["WANDB_API_KEY"], verify=True)
-            CONSOLE.print(f"W&B enabled: {config.wandb_project} (links appear at round 0).")
+            login_quietly(os.environ["WANDB_API_KEY"])
+            CONSOLE.print(f"W&B enabled: {config.wandb_project} (project link at round 0).")
             if tuning:
                 publication = ensure_sweep(config, plan, root)
                 for entry in plan["configurations"]:
@@ -559,21 +577,32 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     completed_runs = sum(
         row["status"] == "complete" for row in summary["trials" if tuning else "comparisons"]
     )
+    trial_scores = (
+        {row["config_id"]: row["score"] for row in summary["trials"] if row["status"] == "complete"}
+        if tuning
+        else {}
+    )
+    label = f"{config.tuning_split.capitalize()} tuning" if tuning else "Comparisons"
+    project_announced = False
     with Progress(
         TextColumn("{task.description}"),
         BarColumn(),
+        MofNCompleteColumn(),
         TaskProgressColumn(),
+        TimeElapsedColumn(),
         TimeRemainingColumn(),
         console=CONSOLE,
     ) as progress:
-        overall_task = progress.add_task("Configurations", total=total, completed=completed_runs)
+        overall_task = progress.add_task(
+            f"{label}{best_trial_text(trial_scores)}", total=total, completed=completed_runs
+        )
         seed_tasks = {
             seed: progress.add_task(f"Seed {seed} · waiting / bootstrap", total=1)
             for seed in config.model_seeds
         }
 
         def execute(entry, pending_metrics, *, stage):
-            nonlocal completed_runs
+            nonlocal completed_runs, project_announced
             random_only = tuning
             inputs, gold, evaluation = (
                 (tune_pool, tune_gold, tune_evaluation)
@@ -597,7 +626,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                     **entry["parameters"],
                 }
             )
-            description = f"{stage.capitalize()} {entry['config_id']}"
+            description = f"{label} · {entry['config_id']}{best_trial_text(trial_scores)}"
             progress.update(overall_task, description=description)
             for seed, task in seed_tasks.items():
                 progress.reset(task, total=1, description=f"Seed {seed} · waiting / bootstrap")
@@ -619,7 +648,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                     seed_tasks[seed],
                     total=latest["total_rounds"],
                     completed=latest["round"],
-                    description=f"Seed {seed} · {'random' if random_only else metric} · round {latest['round']}/{latest['total_rounds']}",
+                    description=f"Seed {seed} · {'random' if random_only else metric} rounds",
                 )
                 seed_fractions[metric, seed] = (latest["round"] + 1) / (latest["total_rounds"] + 1)
                 progress.update(
@@ -637,6 +666,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                     console=CONSOLE,
                     evaluation_split=stage,
                     random_only=random_only,
+                    announce_project=not project_announced,
                 ) as log_evaluation:
                     settings = experiment.active_learning_kwargs()
                     settings.pop("uq_metric")
@@ -687,9 +717,15 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                         )
                         (slot / "failure.json").unlink(missing_ok=True)
                         completed_runs += 1
+                        if random_only:
+                            trial_scores[entry["config_id"]] = stats["score"]
                         progress.update(
-                            overall_task, completed=completed_runs, description=description
+                            overall_task,
+                            completed=completed_runs,
+                            description=f"{label} · {entry['config_id']} done"
+                            f"{best_trial_text(trial_scores)}",
                         )
+                project_announced = project_announced or config.wandb_enabled
                 if random_only and publication is not None:
                     publish_trial(config, root, entry, publication, random_tuning_score)
             except BaseException as error:

@@ -15,8 +15,11 @@ configs=(
   configs/oracle_random/modernbert_base_oracle_random_100.json
 )
 
-for config in "${configs[@]}"; do
-  printf '\nStage 1, test-split random tuning: %s\n' "$config"
+for index in "${!configs[@]}"; do
+  config=${configs[$index]}
+  model=$(basename "$config" _oracle_random_100.json)
+  header="[$((index + 1))/${#configs[@]}] $model"
+  printf '\n=== %s · stage 1: test-split random tuning ===\n' "$header"
   uv run scripts/bert_token_uq_search.py --config "$config" "$@"
 
   # Stage 2 reuses the frozen oracle with stage 1's W&B and concurrency settings.
@@ -32,7 +35,7 @@ oracle = json.load(open(sys.argv[2]))
 keep = ("wandb_enabled", "wandb_project", "seed_workers")
 print(json.dumps({**oracle, **{key: stage_1[key] for key in keep if key in stage_1}}))
 ' "$config" "$sweep/oracle_config.json")
-  printf '\nStage 2, UQ metrics at the oracle: %s\n' "$sweep/oracle_config.json"
+  printf '\n=== %s · stage 2: UQ metrics at the oracle ===\n' "$header"
   uv run scripts/run_uq_metrics.py --config-json "$settings" \
     --sweeps-dir results/oracle_random/uq --sweep-name "$(basename "$sweep")-uq" "$@"
 done

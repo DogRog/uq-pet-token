@@ -438,10 +438,13 @@ def test_sweep_wandb_logs_each_seed_metric_and_prints_project_link(
     monkeypatch.setattr(search, "CONSOLE", Console(file=output, width=240, color_system=None))
     run_search(tmp_path, wandb_enabled=True, wandb_project="pet", wandb_run_name="trial")
     assert fake_wandb.logins == [{"key": "test-key", "verify": True}]
+    assert fake_wandb.setups == [{"show_info": False}]  # No login or per-run banners.
     assert len(fake_wandb.runs) == 2 * 3 * 2  # configurations x metrics x seeds
-    assert "W&B project: https://wandb.ai/test/pet" in output.getvalue()
-    assert "W&B run (entropy, seed 0):" in output.getvalue()
+    # One project link per sweep; per-seed run links stay in W&B.
+    assert output.getvalue().count("W&B project: https://wandb.ai/test/pet") == 1
+    assert "W&B run (" not in output.getvalue()
     for run in fake_wandb.runs:
+        assert run.settings["settings"]["silent"]
         config = run.settings["config"]
         metric = config["uq_metric"]
         assert config["wandb_enabled"]
@@ -606,11 +609,11 @@ def test_progress_tracks_each_seed_and_resets_between_configurations(
     run_search(tmp_path)
     assert starts == [[index, 0, 0] for index in (0, 3)]
     # Seed 0 is finished while seed 1 is still waiting, then seed 1 catches up.
-    assert snapshots[1][1] == (1, 1, "Seed 0 · entropy · round 1/1")
+    assert snapshots[1][1] == (1, 1, "Seed 0 · entropy rounds")
     assert snapshots[1][2] == (0, 1, "Seed 1 · waiting / bootstrap")
     assert snapshots[1][0][0] == pytest.approx(0.5)
     assert snapshots[2][1] == snapshots[1][1]
-    assert snapshots[2][2] == (0, 1, "Seed 1 · entropy · round 0/1")
+    assert snapshots[2][2] == (0, 1, "Seed 1 · entropy rounds")
     assert snapshots[2][0][0] == pytest.approx(0.75)
     assert displays[0].tasks[0].completed == displays[0].tasks[0].total == 6
-    assert displays[0].tasks[0].description == "Test config_0001"
+    assert displays[0].tasks[0].description == "Comparisons · config_0001 done"

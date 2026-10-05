@@ -99,8 +99,13 @@ def wandb_comparison_logging(
     console: Console,
     evaluation_split="test",
     random_only=False,
+    announce_project=True,
 ):
-    """Own one W&B run per metric/seed in the parent, with separate acquisition axes."""
+    """Own one W&B run per metric/seed in the parent, with separate acquisition axes.
+
+    Runs stay silent; the project link prints once, at the first round 0, when
+    announce_project is true. Per-seed run links are in the W&B project.
+    """
     if not config.wandb_enabled:
         yield None
         return
@@ -134,7 +139,7 @@ def wandb_comparison_logging(
                     group=config.sweep_name,
                     job_type="random_search",
                     reinit="create_new",
-                    settings={"quiet": True, "console": "off"},
+                    settings={"silent": True, "console": "off"},
                     dir=str(slots[metric]),
                     config={
                         **logged_settings,
@@ -151,10 +156,8 @@ def wandb_comparison_logging(
                 cleanup.callback(lambda run=run: run.finish(exit_code=0 if success else 1))
                 runs[key] = run
                 configure_wandb_metrics(run, metric, random_only=random_only)
-                if not offline:
-                    if len(runs) == 1:
-                        console.print(f"W&B project: {run.project_url}", markup=False)
-                    console.print(f"W&B run ({metric}, seed {seed}): {run.url}", markup=False)
+                if announce_project and not offline and len(runs) == 1:
+                    console.print(f"W&B project: {run.project_url}", markup=False)
             runs[key].log(payload)
 
         yield log_evaluation

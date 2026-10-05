@@ -556,7 +556,9 @@ file and validates it before loading data or training. Exported environment vari
 take precedence over `.env` values. `WANDB_MODE=offline` writes local W&B records without
 credentials and has no online project link.
 
-**Comparison runs.** The CLI prints the project and run URLs when round 0 arrives. Each
+**Comparison runs.** The CLI prints the project URL once, when the first round 0 arrives;
+W&B's own login and per-run messages are turned off, so warnings and errors still show
+but routine sync lines do not. Each
 configuration, UQ metric, and seed has its own W&B run, grouped under the sweep name,
 with both UQ and random curves against acquired-pool percentage. Logging stays in the
 parent process and publishes only completed comparison pairs. Runs close on completion
