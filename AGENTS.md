@@ -68,20 +68,20 @@ read the test split once per trained model.
 ## Agent skills
 
 The marimo skills from [marimo-team/skills](https://github.com/marimo-team/skills) are
-installed for Codex with the [Vercel skills CLI](https://github.com/vercel-labs/skills):
+installed for Claude Code with the [Vercel skills CLI](https://github.com/vercel-labs/skills):
 
 ```bash
-npx skills add marimo-team/skills --agent codex
+npx skills add marimo-team/skills --agent claude-code --skill '*' -y
 ```
 
-Installed files live under `.agents/skills/`, and `skills-lock.json` records their
+Installed files live under `.claude/skills/`, and `skills-lock.json` records their
 sources and hashes. Both are gitignored, so each checkout installs its own. Useful
 maintenance commands:
 
 ```bash
-npx skills list --agent codex
+npx skills list
 npx skills update --project --yes
-npx skills add owner/repository --agent codex
+npx skills add owner/repository --agent claude-code
 ```
 
 Use `--list` on an `add` command to inspect a repository before installing it, or

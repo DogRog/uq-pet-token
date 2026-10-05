@@ -25,5 +25,5 @@ __marimo__
 layouts/
 
 # Agents
-/.agents
+/.claude
 skills-lock.json
