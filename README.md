@@ -33,6 +33,7 @@ The project includes:
   2. [Compare UQ metrics with the winners](#2-compare-uq-metrics-with-the-winners)
   3. [Supervised upper bound](#3-supervised-upper-bound)
   4. [Analyze saved results](#4-analyze-saved-results)
+  5. [Appendix: test-tuned random oracle](#5-appendix-test-tuned-random-oracle)
 - [Random hyperparameter sweep](#random-hyperparameter-sweep)
 - [Reference](#reference): [search space](#search-space), [resuming](#resuming),
   [concurrency and performance](#concurrency-and-performance),
@@ -65,10 +66,12 @@ at the project root (see [Weights & Biases](#weights--biases)).
 | Run one UQ metric against random | `notebooks/bert_token_uq.py` |
 | Tune random acquisition on a validation holdout | `scripts/tune_random_all_models.sh` |
 | Compare all UQ metrics with saved validation winners | `scripts/run_best_uq_all_models.sh` |
+| Run the appendix's test-tuned random oracle sweeps | `scripts/run_oracle_random_all_models.sh` |
 | Tune and train the fully supervised upper bound | `scripts/run_supervised.py` |
 | Sample hyperparameters and compare UQ against random | `scripts/bert_token_uq_search.py` |
 | Inspect tuning completeness and winners | `notebooks/random_baseline_analysis.py` |
 | Compare best-config UQ results and learning curves | `notebooks/best_uq_analysis.py` |
+| Compare UQ against the test-tuned random oracle (appendix) | `notebooks/oracle_random_analysis.py` |
 | Inspect random-search test curves and selections | `notebooks/random_search_analysis.py` |
 
 ## Protocol
@@ -190,7 +193,8 @@ uv run notebooks/bert_token_uq.py --config-json \
 
 The main study has three stages: tune the random baseline on the validation holdout,
 freeze each model's winner, and compare all UQ metrics against random on the test split. The supervised
-baseline adds an upper bound.
+baseline adds an upper bound, and an appendix checks the result against a random arm
+tuned on the test split.
 
 ### 1. Tune the random baseline
 
@@ -334,6 +338,7 @@ Outputs under `results/supervised/<sweep-name>/`:
 uv run marimo edit notebooks/random_baseline_analysis.py
 uv run marimo edit notebooks/best_uq_analysis.py
 uv run marimo edit notebooks/random_search_analysis.py
+uv run marimo edit notebooks/oracle_random_analysis.py
 ```
 
 These notebooks read saved files and do not train models.
@@ -352,6 +357,51 @@ These notebooks read saved files and do not train models.
   entity F1 (when available), and token accuracy, plus acquired NER-tag coverage and
   selected words with sentence context. Sentence context is read from the local
   `data/raw/PETv1.1-entities.jsonl`, so it covers PET sweeps only.
+- `oracle_random_analysis.py` reads `results/oracle_random/` for the appendix below.
+
+### 5. Appendix: test-tuned random oracle
+
+Validation tuning stays the headline protocol. As a sensitivity check, the appendix asks
+whether UQ still wins when the random arm gets the best of the sampled hyperparameters
+as judged on the test split, the test-tuned random oracle
+([ADR 0007](docs/adr/0007-random-is-tuned-on-validation-and-test-tuned-oracle-is-appendix-only.md)).
+PET only.
+
+```bash
+bash scripts/run_oracle_random_all_models.sh --dry-run
+bash scripts/run_oracle_random_all_models.sh
+```
+
+Each `configs/oracle_random/*_oracle_random_100.json` runs `--mode compare` with the same
+sampler seed and 100 configurations as random-baseline tuning, so it repeats exactly the
+tuned configurations, but trains on the full pool and evaluates both arms and all three
+UQ metrics on the test split. Results go to `results/oracle_random/<model>-oracle-random-100/`.
+The five sweeps take roughly 65–90 hours. See
+[configs/oracle_random/README.md](configs/oracle_random/README.md).
+
+`notebooks/oracle_random_analysis.py` picks the configuration with the highest seed-mean
+random test AUC (ties to the lowest config ID) and reports, per checkpoint and UQ metric:
+
+- the oracle gain: how far the oracle random arm's test AUC exceeds the validation
+  winner's, which measures the inflation from tuning on the test split;
+- the gap between UQ and the oracle random arm at that configuration, and a z-score
+  dividing it by the seed band (the standard deviation of the random arm's AUC across
+  model seeds there), with Holm-adjusted paired t-test p-values across the three metrics;
+- each metric's own best configuration against the same oracle random arm;
+- the UQ-minus-random gap across all 100 configurations, which needs no tuning at all;
+- a check that the validation winner's random arm reproduces `results/best_uq/`.
+
+The oracle is biased against UQ twice: the random arm's test score carries the winner's
+curse, and UQ runs at random's best settings rather than its own. Oracle numbers are
+labelled `oracle_`, stay under `results/oracle_random/`, and are never copied into
+`configs/best_uq/`. Once every sweep is complete, **Record oracle selection** writes
+`results/oracle_random/oracle_selection.json` with `"selection_split": "test"`.
+
+The validation holdout behind the headline has 66 labelled sentences, about 13 times
+the 5 bootstrap sentences, which a real low-resource annotation project would rarely
+have to spare. This limits the realism of absolute scores rather than the fairness of
+the comparison, because only the random arm is tuned on it; the supervised baseline
+shares the caveat.
 
 ## Random hyperparameter sweep
 
@@ -577,6 +627,7 @@ uv run scripts/run_uq_metrics.py --help
 bash scripts/run_best_uq_all_models.sh --dry-run
 bash scripts/tune_random_all_models.sh --dry-run
 bash scripts/run_supervised_all_models.sh --dry-run
+bash scripts/run_oracle_random_all_models.sh --dry-run
 ```
 
 Contributor and agent conventions are in [AGENTS.md](AGENTS.md). Project terms are
@@ -603,15 +654,18 @@ recorded in [docs/adr/](docs/adr/).
 | `scripts/run_best_uq_all_models.sh` | fixed comparisons for all five saved winners |
 | `scripts/tune_random_all_models.sh` | random-only tuning for all five checkpoints |
 | `scripts/run_supervised_all_models.sh` | supervised baseline for all five checkpoints |
+| `scripts/run_oracle_random_all_models.sh` | appendix test-tuned random oracle sweeps for all five checkpoints |
 | `notebooks/bert_token_uq.py` | controls, experiment run, tables, and plots |
 | `notebooks/random_baseline_analysis.py` | trial completeness and best saved validation configurations |
 | `notebooks/best_uq_analysis.py` | best-config UQ comparisons against random and the supervised bound |
 | `notebooks/random_search_analysis.py` | random-sweep summaries and per-configuration drill-downs |
+| `notebooks/oracle_random_analysis.py` | appendix: UQ against the test-tuned random oracle |
 | `notebooks/fixed_all_metrics_analysis.py` | read-only analysis of one historical sweep |
-| `notebooks/utils/` | chart builders, acquisition diagnostics, and W&B comparison media |
+| `notebooks/utils/` | chart builders, acquisition diagnostics, oracle selection, and W&B comparison media |
 | `configs/best_uq/` | saved tuning winners for fixed UQ comparisons |
 | `configs/tune_random/` | random-baseline tuning settings |
 | `configs/random_search/` | sampled UQ-versus-random comparison settings |
+| `configs/oracle_random/` | appendix test sweeps over the tuned configurations |
 | `configs/supervised/` | supervised baseline settings |
 | `tests/` | offline protocol, model-boundary, CLI, concurrency, resume, and logging checks |
 | `GLOSSARY.md` | canonical project terms |

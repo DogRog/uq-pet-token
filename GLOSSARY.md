@@ -77,3 +77,11 @@ _Avoid_: Pool percent (bare), max pool percent
 **Model seed**:
 The number that fixes one repetition of an experiment, from model initialisation onward.
 _Avoid_: Seed (bare), run seed
+
+**Validation winner**:
+The sampled hyperparameters that give the random arm its best validation holdout score; headline comparisons freeze them.
+_Avoid_: Best config (bare), tuned config
+
+**Test-tuned random oracle**:
+The random arm at the sampled hyperparameters that give it its best test split score; an appendix comparison point, never a headline result.
+_Avoid_: Oracle (bare), best random, test-tuned baseline
