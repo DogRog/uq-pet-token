@@ -11,7 +11,7 @@ scores each configuration by seed-mean test entity-F1 AUC (`random_test_entity_f
 Five model seeds run concurrently, and W&B logs to one `<model>-oracle-random` project
 per checkpoint.
 
-The launcher runs two stages per checkpoint:
+The launcher runs stage 1 for every checkpoint, then stage 2 for every checkpoint:
 
 1. **Test-split random tuning** writes `oracle_config.json` (never `best_config.json`)
    and a `selection.json` with `"selection_split": "test"` under

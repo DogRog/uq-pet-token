@@ -375,7 +375,7 @@ bash scripts/run_oracle_random_all_models.sh --dry-run
 bash scripts/run_oracle_random_all_models.sh
 ```
 
-The launcher runs two stages per checkpoint:
+The launcher runs stage 1 for every checkpoint, then stage 2 for every checkpoint:
 
 1. **Test-split random tuning.** Each `configs/oracle_random/*_oracle_random_100.json` is
    a `tune-random` sweep with `"tuning_split": "test"` and the same sampler seed and 100

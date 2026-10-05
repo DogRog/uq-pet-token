@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Appendix only (ADR 0007): the test-tuned random oracle for each checkpoint, sequentially.
-# Stage 1 tunes random only on the test split over the 100 tuning configurations and
-# freezes oracle_config.json. Stage 2 compares all UQ metrics against random at that
-# configuration. Completed work resumes. Pass --dry-run to print plans without training.
+# Appendix only (ADR 0007): the test-tuned random oracle for all checkpoints.
+# Stage 1 tunes random only on the test split over the 100 tuning configurations for
+# every checkpoint and freezes each oracle_config.json. Stage 2 then compares all UQ
+# metrics against random at each oracle. Completed work resumes, and the script stops on
+# the first failure. Pass --dry-run to print plans without training.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -15,17 +16,23 @@ configs=(
   configs/oracle_random/modernbert_base_oracle_random_100.json
 )
 
+header() {
+  printf '\n=== [%d/%d] %s · %s ===\n' "$(($1 + 1))" "${#configs[@]}" \
+    "$(basename "${configs[$1]}" _oracle_random_100.json)" "$2"
+}
+
+for index in "${!configs[@]}"; do
+  header "$index" "stage 1: test-split random tuning"
+  uv run scripts/bert_token_uq_search.py --config "${configs[$index]}" "$@"
+done
+
 for index in "${!configs[@]}"; do
   config=${configs[$index]}
-  model=$(basename "$config" _oracle_random_100.json)
-  header="[$((index + 1))/${#configs[@]}] $model"
-  printf '\n=== %s · stage 1: test-split random tuning ===\n' "$header"
-  uv run scripts/bert_token_uq_search.py --config "$config" "$@"
-
+  header "$index" "stage 2: UQ metrics at the oracle"
   # Stage 2 reuses the frozen oracle with stage 1's W&B and concurrency settings.
   sweep=$(uv run python -c 'import json, sys; c = json.load(open(sys.argv[1])); print(c["sweeps_dir"] + "/" + c["sweep_name"])' "$config")
   if [[ ! -f "$sweep/oracle_config.json" ]]; then
-    printf 'Stage 2 waits for %s/oracle_config.json from a completed stage 1.\n' "$sweep"
+    printf 'Waiting for %s/oracle_config.json from a completed stage 1.\n' "$sweep"
     continue
   fi
   settings=$(uv run python -c '
@@ -35,7 +42,6 @@ oracle = json.load(open(sys.argv[2]))
 keep = ("wandb_enabled", "wandb_project", "seed_workers")
 print(json.dumps({**oracle, **{key: stage_1[key] for key in keep if key in stage_1}}))
 ' "$config" "$sweep/oracle_config.json")
-  printf '\n=== %s · stage 2: UQ metrics at the oracle ===\n' "$header"
   uv run scripts/run_uq_metrics.py --config-json "$settings" \
     --sweeps-dir results/oracle_random/uq --sweep-name "$(basename "$sweep")-uq" "$@"
 done
