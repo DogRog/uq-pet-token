@@ -228,6 +228,9 @@ output folder. A dry run prints the plan without loading data or models.
    starting. Ties use ascending config ID.
 3. Save the winning hyperparameters and validation score, then exit.
 
+The appendix's test-tuned random oracle reuses this mode with `"tuning_split": "test"`
+(see [step 5](#5-appendix-test-tuned-random-oracle)).
+
 The inherited `uq_metric` field is unused in this mode and is omitted from new trial
 metadata and winning settings.
 
@@ -372,30 +375,38 @@ bash scripts/run_oracle_random_all_models.sh --dry-run
 bash scripts/run_oracle_random_all_models.sh
 ```
 
-Each `configs/oracle_random/*_oracle_random_100.json` runs `--mode compare` with the same
-sampler seed and 100 configurations as random-baseline tuning, so it repeats exactly the
-tuned configurations, but trains on the full pool and evaluates both arms and all three
-UQ metrics on the test split. Results go to `results/oracle_random/<model>-oracle-random-100/`.
-The five sweeps take roughly 65–90 hours. See
+The launcher runs two stages per checkpoint:
+
+1. **Test-split random tuning.** Each `configs/oracle_random/*_oracle_random_100.json` is
+   a `tune-random` sweep with `"tuning_split": "test"` and the same sampler seed and 100
+   configurations as random-baseline tuning. It trains random only on the full pool,
+   scores each configuration by seed-mean test entity-F1 AUC
+   (`random_test_entity_f1_auc`; ties to the lowest config ID), and freezes the winner
+   as `results/oracle_random/<model>-oracle-random-100/oracle_config.json`, with
+   `"selection_split": "test"` in `selection.json`.
+2. **UQ at the oracle.** `scripts/run_uq_metrics.py` compares all three UQ metrics
+   against random with those settings, under
+   `results/oracle_random/uq/<model>-oracle-random-100-uq/`.
+
+All five checkpoints take roughly 28 hours. W&B logs each checkpoint to its own
+`<model>-oracle-random` project, with a tuning sweep chart that ranks the configurations
+(see [Weights & Biases](#weights--biases)). See
 [configs/oracle_random/README.md](configs/oracle_random/README.md).
 
-`notebooks/oracle_random_analysis.py` picks the configuration with the highest seed-mean
-random test AUC (ties to the lowest config ID) and reports, per checkpoint and UQ metric:
+`notebooks/oracle_random_analysis.py` reports, per checkpoint and UQ metric:
 
 - the oracle gain: how far the oracle random arm's test AUC exceeds the validation
-  winner's, which measures the inflation from tuning on the test split;
-- the gap between UQ and the oracle random arm at that configuration, and a z-score
+  winner's in stage 1, which measures the inflation from tuning on the test split;
+- the gap between UQ and random at the oracle configuration in stage 2, and a z-score
   dividing it by the seed band (the standard deviation of the random arm's AUC across
-  model seeds there), with Holm-adjusted paired t-test p-values across the three metrics;
-- each metric's own best configuration against the same oracle random arm;
-- the UQ-minus-random gap across all 100 configurations, which needs no tuning at all;
-- a check that the validation winner's random arm reproduces `results/best_uq/`.
+  model seeds), with Holm-adjusted paired t-test p-values across the three metrics;
+- checks that stage 2 reruns stage 1's random arm and that stage 1's validation winner
+  reproduces the random arm in `results/best_uq/`.
 
 The oracle is biased against UQ twice: the random arm's test score carries the winner's
 curse, and UQ runs at random's best settings rather than its own. Oracle numbers are
 labelled `oracle_`, stay under `results/oracle_random/`, and are never copied into
-`configs/best_uq/`. Once every sweep is complete, **Record oracle selection** writes
-`results/oracle_random/oracle_selection.json` with `"selection_split": "test"`.
+`configs/best_uq/`.
 
 The validation holdout behind the headline has 66 labelled sentences, about 13 times
 the 5 bootstrap sentences, which a real low-resource annotation project would rarely
@@ -554,19 +565,24 @@ redraws are not uploaded as `output.log`. On resume, completed comparisons are n
 uploaded retroactively, and an unfinished configuration gets fresh W&B runs so its new
 trajectory is not appended to an interrupted one.
 
-**Tuning sweeps.** The five tuning configs enable W&B and use separate projects:
+**Tuning sweeps.** Random tuning publishes a W&B sweep whether it scores the validation
+holdout or, for the appendix oracle, the test split; names and metrics follow that split.
+The five validation tuning configs enable W&B and use separate projects:
 `distilbert-random-baseline`, `bert-base-random-baseline`, `roberta-base-random-baseline`,
 `deberta-v3-base-random-baseline`, and `modernbert-base-random-baseline`. Online runs
 create a real W&B sweep and a saved workspace chart automatically. The local seeded plan
-still schedules the search; no W&B agents or UQ runs are launched. W&B logs validation
-random metrics only.
+still schedules the search; no W&B agents or UQ runs are launched. W&B logs random
+metrics on the tuning split only.
 
 The sweep contains **one summary run per completed configuration**, averaged over all
 model seeds. Its objective is `random_validation_entity_f1_auc` (or the configured
 endpoint objective). The saved parallel-coordinates chart includes learning rate (log
 scale), batch size, `k`, update passes, replay ratio, weight decay, final validation F1,
-and validation F1 AUC, with the objective as its last/color axis. Constant
-checkpoint/bootstrap settings and per-seed live logs are excluded from it.
+and validation F1 AUC, with the objective as its last/color axis. Above it, a bar chart
+shows the objective for every configuration, and the run list is sorted by the objective,
+so the best configuration comes first. Once the winner is frozen, its summary run is
+tagged `winner`. Constant checkpoint/bootstrap settings and per-seed live logs are
+excluded from the chart. Views saved before these panels existed keep their old layout.
 
 Sweep IDs, chart links, and published configuration IDs are saved in `wandb_sweeps.json`.
 Resuming reuses the sweep and publishes any completed configurations not yet uploaded.
@@ -665,7 +681,7 @@ recorded in [docs/adr/](docs/adr/).
 | `configs/best_uq/` | saved tuning winners for fixed UQ comparisons |
 | `configs/tune_random/` | random-baseline tuning settings |
 | `configs/random_search/` | sampled UQ-versus-random comparison settings |
-| `configs/oracle_random/` | appendix test sweeps over the tuned configurations |
+| `configs/oracle_random/` | appendix test-split random tuning for the test-tuned oracle |
 | `configs/supervised/` | supervised baseline settings |
 | `tests/` | offline protocol, model-boundary, CLI, concurrency, resume, and logging checks |
 | `GLOSSARY.md` | canonical project terms |

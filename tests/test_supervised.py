@@ -373,7 +373,7 @@ def test_supervised_workspace_plots_parameters_against_validation_f1():
     from uq_pet.utils.wandb_tuning import supervised_chart_workspace
 
     workspace = supervised_chart_workspace("test", "project", "example")
-    columns = workspace.sections[0].panels[0].columns
+    columns = workspace.sections[0].panels[1].columns
     assert [column.metric.name for column in columns] == [
         "learning_rate",
         "batch_size",

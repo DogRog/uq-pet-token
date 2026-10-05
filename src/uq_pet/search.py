@@ -1,4 +1,8 @@
-"""Run sampled or fixed UQ comparisons, or tune random selection on validation."""
+"""Run sampled or fixed UQ comparisons, or tune random selection on one split.
+
+Random tuning scores the validation holdout for the headline protocol, or the test split
+for the appendix's test-tuned random oracle (ADR 0007).
+"""
 
 import argparse
 import json
@@ -28,7 +32,7 @@ from uq_pet.config import (
 from uq_pet.pet_data import PROJECT_ROOT, load_splits, split_tuning_pool
 from uq_pet.token_model import UQ_METRICS, get_device, resolve_precision
 from uq_pet.utils.wandb_logging import require_wandb_credentials, wandb_comparison_logging
-from uq_pet.utils.wandb_tuning import ensure_sweep, publish_trial
+from uq_pet.utils.wandb_tuning import ensure_sweep, mark_winner, publish_trial
 
 CONSOLE = Console()
 WANDB_FIELDS = {"wandb_enabled", "wandb_project", "wandb_run_name"}
@@ -193,9 +197,9 @@ def write_json(path: Path, value: dict) -> None:
 
 
 def tuning_plan(config: RandomBaselineSearchConfig) -> dict:
-    """Lock random-only sampling, validation holdout, and objective before training."""
+    """Lock random-only sampling, the scoring split, and objective before training."""
     sampled = sample_plan(config)
-    return {
+    plan = {
         "version": 3,
         "mode": "random_baseline_tuning",
         "sampling": sampled["sampling"],
@@ -204,18 +208,29 @@ def tuning_plan(config: RandomBaselineSearchConfig) -> dict:
         "search_space": sampled["search_space"],
         "configurations": sampled["configurations"],
         "fixed_config": sampled["fixed_config"],
-        "validation_sentences": config.validation_sentences,
-        "validation_seed": config.validation_seed,
+    }
+    if config.tuning_split == "validation":
+        plan["validation_sentences"] = config.validation_sentences
+        plan["validation_seed"] = config.validation_seed
+    return {
+        **plan,
         "objective": config.objective,
         "tie_break": "config_id_ascending",
-        "tuning_evaluation_split": "validation",
+        "tuning_evaluation_split": config.tuning_split,
     }
 
 
-def random_validation_score(results: list[dict], objective: str) -> float:
-    """Average random validation F1 across seeds, using final F1 or normalized curve AUC."""
+def winner_filename(plan: dict) -> str:
+    """Name test-selected winners apart so they are never mistaken for headline winners."""
+    if plan.get("tuning_evaluation_split") == "test":
+        return "oracle_config.json"
+    return "best_config.json"
+
+
+def random_tuning_score(results: list[dict], objective: str) -> float:
+    """Average random F1 across seeds, using final F1 or normalized curve AUC."""
     if not results or any(row["arm"] != "random" for row in results):
-        raise ValueError("tuning requires nonempty random-only validation results")
+        raise ValueError("tuning requires nonempty random-only results")
     scores = []
     for seed in sorted({row["seed"] for row in results}):
         rows = sorted((row for row in results if row["seed"] == seed), key=lambda r: r["round"])
@@ -226,9 +241,9 @@ def random_validation_score(results: list[dict], objective: str) -> float:
             raise ValueError("tuning scores must be finite")
         if len(points) < 2 or any(b[0] <= a[0] for a, b in zip(points, points[1:], strict=False)):
             raise ValueError("tuning requires increasing acquisition points")
-        if objective == "random_validation_final_entity_f1":
+        if objective in {"random_validation_final_entity_f1", "random_test_final_entity_f1"}:
             scores.append(points[-1][1])
-        elif objective == "random_validation_entity_f1_auc":
+        elif objective in {"random_validation_entity_f1_auc", "random_test_entity_f1_auc"}:
             area = sum(
                 (b[0] - a[0]) * (a[1] + b[1]) / 2 for a, b in zip(points, points[1:], strict=False)
             )
@@ -317,7 +332,7 @@ def write_summary(root: Path, plan: dict) -> dict:
             "mode": plan["mode"],
             "objective": plan["objective"],
             "complete": all(row["status"] == "complete" for row in trials)
-            and (root / "best_config.json").is_file()
+            and (root / winner_filename(plan)).is_file()
             and (root / "selection.json").is_file(),
             "trials": trials,
         }
@@ -373,7 +388,7 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         "--mode",
         choices=("compare", "tune-random", "compare-fixed"),
         default=argparse.SUPPRESS,
-        help="Compare sampled configurations on test (compare), compare one supplied configuration (compare-fixed), or tune random on validation (tune-random).",
+        help="Compare sampled configurations on test (compare), compare one supplied configuration (compare-fixed), or tune random on its tuning_split, validation by default (tune-random).",
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Print the plan without loading data or models."
@@ -492,7 +507,8 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             if tuning:
                 publication = ensure_sweep(config, plan, root)
                 for entry in plan["configurations"]:
-                    publish_trial(config, root, entry, publication, random_validation_score)
+                    publish_trial(config, root, entry, publication, random_tuning_score)
+                mark_winner(publication, root)
                 CONSOLE.print(f"Tuning chart: {publication[1][publication[2]]['workspace_url']}")
     if args.publish_wandb_only:
         CONSOLE.print(f"Saved tuning results published; no training required: {root}")
@@ -507,8 +523,8 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     (seed_examples, pool_inputs, pool_gold, test_examples), identity = load_splits(
         config.dataset, config.dataset_percent
     )
-    if tuning:
-        tune_pool, tune_gold, validation_examples, manifest = split_tuning_pool(
+    if tuning and config.tuning_split == "validation":
+        tune_pool, tune_gold, tune_evaluation, manifest = split_tuning_pool(
             pool_inputs,
             pool_gold,
             validation_sentences=config.validation_sentences,
@@ -521,8 +537,21 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 **identity,
                 "seed_sentences": len(seed_examples),
                 "tuning_pool_sentences": len(tune_pool),
-                "validation_sentences": len(validation_examples),
+                "validation_sentences": len(tune_evaluation),
                 "final_pool_sentences": len(pool_inputs),
+                "test_sentences": len(test_examples),
+            },
+        )
+    elif tuning:
+        # The appendix oracle tunes on the full pool and scores the test split (ADR 0007).
+        tune_pool, tune_gold, tune_evaluation = pool_inputs, pool_gold, test_examples
+        preserve_json(
+            root / "split.json",
+            {
+                **identity,
+                "tuning_split": "test",
+                "seed_sentences": len(seed_examples),
+                "tuning_pool_sentences": len(tune_pool),
                 "test_sentences": len(test_examples),
             },
         )
@@ -545,9 +574,9 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
 
         def execute(entry, pending_metrics, *, stage):
             nonlocal completed_runs
-            random_only = stage == "validation"
+            random_only = tuning
             inputs, gold, evaluation = (
-                (tune_pool, tune_gold, validation_examples)
+                (tune_pool, tune_gold, tune_evaluation)
                 if random_only
                 else (pool_inputs, pool_gold, test_examples)
             )
@@ -628,7 +657,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                         slot = slots[metric]
                         run_config = experiment.model_copy(update={"uq_metric": metric})
                         stats = (
-                            {"score": random_validation_score(results, config.objective)}
+                            {"score": random_tuning_score(results, config.objective)}
                             if random_only
                             else paired_summary(results)
                         )
@@ -647,9 +676,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                             "pool_sentences": len(inputs),
                             "evaluation_sentences": len(evaluation),
                         }
-                        metadata["validation_sentences" if random_only else "test_sentences"] = len(
-                            evaluation
-                        )
+                        metadata[f"{stage}_sentences"] = len(evaluation)
                         if tuning:
                             metadata.pop("uq_metric", None)
                             metadata["objective"] = config.objective
@@ -664,7 +691,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                             overall_task, completed=completed_runs, description=description
                         )
                 if random_only and publication is not None:
-                    publish_trial(config, root, entry, publication, random_validation_score)
+                    publish_trial(config, root, entry, publication, random_tuning_score)
             except BaseException as error:
                 for slot in slots.values():
                     if not (slot / "completed.json").exists():
@@ -690,7 +717,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                     if row["config_id"] == entry["config_id"] and row["status"] != "complete"
                 ]
             if pending_metrics:
-                execute(entry, pending_metrics, stage="validation" if tuning else "test")
+                execute(entry, pending_metrics, stage=config.tuning_split if tuning else "test")
 
         if tuning:
             trials = write_summary(root, plan)["trials"]
@@ -705,7 +732,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 ),
                 **best["parameters"],
             }
-            winner_path = root / "best_config.json"
+            winner_path = root / winner_filename(plan)
             if winner_path.exists():
                 saved = {
                     key: value
@@ -713,7 +740,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                     if key not in {*WANDB_FIELDS, "uq_metric"}
                 }
                 if saved != frozen:
-                    raise ValueError("Saved best_config.json differs; choose a new sweep_name")
+                    raise ValueError(f"Saved {winner_path.name} differs; choose a new sweep_name")
             else:
                 write_json(winner_path, frozen)
             preserve_json(
@@ -721,12 +748,15 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 {
                     "config_id": best["config_id"],
                     "objective": config.objective,
-                    "validation_score": best["score"],
-                    "selection_split": "validation",
+                    f"{config.tuning_split}_score": best["score"],
+                    "selection_split": config.tuning_split,
                 },
             )
+            if publication is not None:
+                mark_winner(publication, root)
             CONSOLE.print(
-                f"Frozen winner: {best['config_id']} · validation score {best['score']:.6f}"
+                f"Frozen winner: {best['config_id']} · {config.tuning_split} score "
+                f"{best['score']:.6f} · {winner_path.name}"
             )
             write_summary(root, plan)
     CONSOLE.print(f"Search complete. Results: {root / 'summary.json'}")

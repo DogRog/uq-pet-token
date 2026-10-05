@@ -382,9 +382,18 @@ def fake_wandb(monkeypatch):
 
         deleted_sweeps = set()
         warnings = []
+        tag_updates = []
 
         def Api(self):
             sdk = self
+
+            class SavedRun:
+                def __init__(self, path):
+                    self.path = path
+                    self.tags = []
+
+                def update(self):
+                    sdk.tag_updates.append((self.path, list(self.tags)))
 
             class API:
                 default_entity = "test"
@@ -392,6 +401,9 @@ def fake_wandb(monkeypatch):
                 def sweep(self, path):
                     if path.rsplit("/", 1)[-1] in sdk.deleted_sweeps:
                         raise ValueError(f"Could not find sweep <Sweep {path}>")
+
+                def run(self, path):
+                    return SavedRun(path)
 
             return API()
 

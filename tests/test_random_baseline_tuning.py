@@ -1,4 +1,4 @@
-"""Verify validation-only baseline selection, final isolation, and resumable execution."""
+"""Verify random-only baseline selection on validation or test, isolation, and resumes."""
 
 import argparse
 import json
@@ -42,15 +42,11 @@ def rows(score, *, arm="random", seeds=(0, 1)):
 
 def test_validation_score_normalizes_irregular_intervals_and_averages_seeds():
     data = rows(0.5, seeds=(0,)) + rows(0.9, seeds=(1,))
-    assert tune.random_validation_score(data, "random_validation_entity_f1_auc") == pytest.approx(
-        0.61
-    )
-    assert tune.random_validation_score(data, "random_validation_final_entity_f1") == pytest.approx(
-        0.7
-    )
+    assert tune.random_tuning_score(data, "random_validation_entity_f1_auc") == pytest.approx(0.61)
+    assert tune.random_tuning_score(data, "random_validation_final_entity_f1") == pytest.approx(0.7)
     for bad in ([], data[:-1], rows(0.5, arm="uncertainty"), rows(float("nan"))):
         with pytest.raises(ValueError):
-            tune.random_validation_score(bad, "random_validation_entity_f1_auc")
+            tune.random_tuning_score(bad, "random_validation_entity_f1_auc")
 
 
 def test_split_is_label_free_disjoint_reindexed_and_reproducible():
@@ -137,11 +133,16 @@ def fake_search(tmp_path, monkeypatch):
 
     def run_random(s, p, g, evaluation, **kwargs):
         assert s is seed
-        assert evaluation is not test and len(evaluation) == 2
-        assert len(p) == 4 and len(g) == 4
         assert all("ner_tags" not in row for row in p)
-        assert not {r["tokens"][0] for r in p} & {r["tokens"][0] for r in evaluation}
-        calls.append(("validation", kwargs))
+        if evaluation is test:
+            # Test tuning (the appendix oracle) trains on the full pool.
+            assert p is pool and g is gold
+            calls.append(("test", kwargs))
+        else:
+            assert len(evaluation) == 2
+            assert len(p) == 4 and len(g) == 4
+            assert not {r["tokens"][0] for r in p} & {r["tokens"][0] for r in evaluation}
+            calls.append(("validation", kwargs))
         output = rows(0.8 if kwargs["k"] == 16 else 0.3)
         # Publish complete rounds in the shared engine stub below.
         return output, [{"arm": "random", "token": "selected"}]
@@ -242,12 +243,15 @@ def test_tuning_wandb_logs_only_random_validation(fake_search, fake_wandb):
     for run in summaries:
         assert run.settings["settings"]["sweep_id"] == "sweep-1"
         assert run.logs[0][config.objective] == pytest.approx(
-            tune.random_validation_score(
+            tune.random_tuning_score(
                 rows(0.8 if run.settings["config"]["k"] == 16 else 0.3), config.objective
             )
         )
         assert "random_validation_final_entity_f1" in run.logs[0]
+        assert run.settings["config"]["evaluation_split"] == "validation"
+    assert len(fake_wandb.tag_updates) == 1 and fake_wandb.tag_updates[0][1] == ["winner"]
     for run in [r for r in fake_wandb.runs if r not in summaries]:
+        assert run.settings["name"].endswith("-validation-random")
         assert run.settings["config"]["evaluation_split"] == "validation"
         assert run.settings["config"]["random_only"]
         assert all("evaluation/entity_f1/random" in log for log in run.logs)
@@ -333,14 +337,103 @@ def test_offline_tuning_does_not_create_remote_sweep(fake_search, fake_wandb, mo
     assert len(fake_wandb.runs) == 4
 
 
-def test_tuning_workspace_axes_include_objective_and_f1():
+@pytest.mark.parametrize("split", ["validation", "test"])
+def test_tuning_workspace_ranks_configurations_by_objective(split):
     from uq_pet.utils.wandb_tuning import AXES, chart_workspace
 
-    workspace = chart_workspace("test", "project", "example", "random_validation_entity_f1_auc")
-    columns = workspace.sections[0].panels[0].columns
+    objective = f"random_{split}_entity_f1_auc"
+    workspace = chart_workspace("test", "project", "example", objective)
+    assert workspace.name == f"example — {split} tuning"
+    bars, coordinates = workspace.sections[0].panels
+    assert [metric.name for metric in bars.metrics] == [objective]
+    assert bars.title.endswith("the top bar wins")
+    (order,) = workspace.runset_settings.order
+    assert order.item.name == objective and not order.ascending
+    columns = coordinates.columns
     assert [column.metric.name for column in columns] == [
         *AXES,
-        "random_validation_final_entity_f1",
-        "random_validation_entity_f1_auc",
+        f"random_{split}_final_entity_f1",
+        objective,
     ]
     assert columns[0].log
+    workspace._to_model()
+
+
+def test_test_tuning_requires_a_test_objective():
+    with pytest.raises(ValueError, match="does not score the test split"):
+        RandomBaselineSearchConfig(tuning_split="test")
+    with pytest.raises(ValueError, match="does not score the validation split"):
+        RandomBaselineSearchConfig(objective="random_test_entity_f1_auc")
+
+
+def test_test_tuning_plan_drops_the_holdout_and_keeps_validation_plans_unchanged():
+    validation = tune.tuning_plan(RandomBaselineSearchConfig())
+    assert validation["tuning_evaluation_split"] == "validation"
+    assert {"validation_sentences", "validation_seed"} <= set(validation)
+    test = tune.tuning_plan(
+        RandomBaselineSearchConfig(tuning_split="test", objective="random_test_entity_f1_auc")
+    )
+    assert test["tuning_evaluation_split"] == "test"
+    assert not {"validation_sentences", "validation_seed"} & set(test)
+    assert test["configurations"] == validation["configurations"]
+    assert tune.winner_filename(test) == "oracle_config.json"
+    assert tune.winner_filename(validation) == "best_config.json"
+
+
+def test_test_tuning_scores_the_full_pool_on_test_and_names_the_oracle(fake_search, monkeypatch):
+    config, root, calls = fake_search
+    config = config.model_copy(
+        update={"tuning_split": "test", "objective": "random_test_entity_f1_auc"}
+    )
+    run_tuning(config)
+    assert [stage for stage, _ in calls] == ["test", "test"]
+    assert not (root / "best_config.json").exists()
+    frozen = json.loads((root / "oracle_config.json").read_text())
+    assert frozen["k"] == 16
+    selection = json.loads((root / "selection.json").read_text())
+    assert selection["selection_split"] == "test"
+    assert selection["test_score"] == pytest.approx(
+        tune.random_tuning_score(rows(0.8), "random_test_entity_f1_auc")
+    )
+    assert "validation_score" not in selection
+    split = json.loads((root / "split.json").read_text())
+    assert split["tuning_split"] == "test" and "validation_sentences" not in split
+    summary = json.loads((root / "summary.json").read_text())
+    assert summary["complete"]
+    for entry in summary["trials"]:
+        metadata = json.loads((root / entry["run_dir"] / "config.json").read_text())
+        assert metadata["evaluation_split"] == "test" and metadata["random_only"]
+        assert metadata["test_sentences"] == 1 and "validation_sentences" not in metadata
+    monkeypatch.setattr(tune, "load_splits", lambda *_: pytest.fail("complete resume loaded data"))
+    run_tuning(config)
+    assert len(calls) == 2
+
+
+def test_test_tuning_wandb_labels_test_and_tags_the_winner(fake_search, fake_wandb):
+    config, root, calls = fake_search
+    config = config.model_copy(
+        update={
+            "tuning_split": "test",
+            "objective": "random_test_entity_f1_auc",
+            "wandb_enabled": True,
+            "wandb_project": "pet",
+        }
+    )
+    run_tuning(config)
+    definition = fake_wandb.sweeps[0][0]
+    assert definition["metric"] == {"name": "random_test_entity_f1_auc", "goal": "maximize"}
+    assert "test-tuned random oracle" in definition["description"]
+    summaries = [r for r in fake_wandb.runs if r.settings["job_type"] == "random_tuning_summary"]
+    assert len(summaries) == 2
+    for run in summaries:
+        assert run.settings["config"]["evaluation_split"] == "test"
+        assert set(run.logs[0]) == {"random_test_entity_f1_auc", "random_test_final_entity_f1"}
+    for run in [r for r in fake_wandb.runs if r not in summaries]:
+        assert run.settings["name"].endswith("-test-random")
+        assert run.settings["config"]["evaluation_split"] == "test"
+    state = json.loads((root / "wandb_sweeps.json").read_text())["test/pet"]
+    assert state["winner"] == "config_0001"
+    winner_run = state["published"]["config_0001"]
+    assert fake_wandb.tag_updates == [(f"test/pet/{winner_run}", ["winner"])]
+    run_tuning(config)
+    assert len(fake_wandb.tag_updates) == 1

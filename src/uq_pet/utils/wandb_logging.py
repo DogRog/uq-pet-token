@@ -121,7 +121,7 @@ def wandb_comparison_logging(
                 acquisition = "random" if random_only else metric
                 name = f"{config.wandb_run_name or config.sweep_name}-{config_id}-{acquisition}-seed{seed}"
                 if random_only:
-                    name += "-validation-random"
+                    name += f"-{evaluation_split}-random"
                 settings = experiment.model_copy(
                     update={"uq_metric": metric, "model_seeds": [seed]}
                 )

@@ -227,17 +227,37 @@ class FixedComparisonConfig(RandomSearchConfig):
 
 
 class RandomBaselineSearchConfig(RandomSearchConfig):
-    """Tune random acquisition on validation and save the winning configuration."""
+    """Tune random acquisition and save the winning configuration.
+
+    Validation tuning is the headline protocol. Test tuning selects the appendix's
+    test-tuned random oracle on the full pool and the test split (ADR 0007).
+    """
 
     mode: Literal["tune-random"] = "tune-random"
     num_configs: int = Field(default=50, ge=1)
     sweep_name: str = "distilbert-random-baseline-50"
     sweeps_dir: Path = RESULTS_DIR / "random_baseline_search"
+    tuning_split: Literal["validation", "test"] = Field(
+        default="validation",
+        description="Split that scores trials: the validation holdout, or the test split "
+        "for the appendix-only test-tuned random oracle.",
+    )
     validation_sentences: int = Field(default=66, ge=1)
     validation_seed: int = Field(default=1729, ge=0)
-    objective: Literal["random_validation_entity_f1_auc", "random_validation_final_entity_f1"] = (
-        "random_validation_entity_f1_auc"
-    )
+    objective: Literal[
+        "random_validation_entity_f1_auc",
+        "random_validation_final_entity_f1",
+        "random_test_entity_f1_auc",
+        "random_test_final_entity_f1",
+    ] = "random_validation_entity_f1_auc"
+
+    @model_validator(mode="after")
+    def validate_objective_split(self) -> Self:
+        if not self.objective.startswith(f"random_{self.tuning_split}_"):
+            raise ValueError(
+                f"objective {self.objective} does not score the {self.tuning_split} split"
+            )
+        return self
 
 
 class SupervisedConfig(BaseModel):

@@ -2,15 +2,18 @@
   "checkpoint": "answerdotai/ModernBERT-base",
   "sweep_name": "modernbert-base-oracle-random-100",
   "sweeps_dir": "results/oracle_random",
-  "wandb_enabled": false,
+  "wandb_enabled": true,
+  "wandb_project": "modernbert-base-oracle-random",
 
   "model_seeds": [0, 1, 2, 3, 4],
   "precision": "auto",
   "seed_workers": 5,
 
-  "mode": "compare",
+  "mode": "tune-random",
   "num_configs": 100,
   "sampler_seed": 0,
+  "tuning_split": "test",
+  "objective": "random_test_entity_f1_auc",
 
   "max_pool_percent": 100.0,
   "score_batch_size": 256,

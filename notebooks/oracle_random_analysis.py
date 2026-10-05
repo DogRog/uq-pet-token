@@ -10,10 +10,14 @@ def _(mo):
     # Test-tuned random oracle (appendix)
 
     An appendix sensitivity check, never a headline result. The headline protocol tunes
-    the random arm on the validation holdout and freezes each checkpoint's winner
-    (`configs/best_uq/`). Here, the random arm's hyperparameters are instead **chosen by
-    their test score** among the same 100 sampled configurations, and every UQ metric is
-    compared against random at that configuration (ADR 0007).
+    the random arm on the validation holdout and freezes each checkpoint's validation
+    winner (`configs/best_uq/`). Here, the random arm is tuned **on the test split**
+    instead (ADR 0007):
+
+    1. **Stage 1** tunes random only, on the full pool, over the same 100 sampled
+       configurations, scores each one by seed-mean test entity-F1 AUC, and freezes the
+       best as the test-tuned random oracle (`oracle_config.json`).
+    2. **Stage 2** runs every UQ metric against random at that oracle configuration.
 
     This check is biased against UQ twice. The oracle random arm's test score carries the
     winner's curse of picking the best of 100 configurations on PET's 84 test sentences,
@@ -35,18 +39,18 @@ def _():
     import marimo as mo
     import polars as pl
 
-    from utils.oracle_analysis import config_gap_table, curve_auc, oracle_table, sweep_aucs
+    from utils.oracle_analysis import comparison_aucs, curve_auc, oracle_table, tuning_aucs
 
     return (
         Path,
         alt,
-        config_gap_table,
+        comparison_aucs,
         curve_auc,
         json,
         mo,
         oracle_table,
         pl,
-        sweep_aucs,
+        tuning_aucs,
     )
 
 
@@ -72,37 +76,58 @@ def _(Path, json, pl, refresh):
                 sweeps[checkpoint] = config_path.parent
         return sweeps
 
-    oracle_sweeps = by_checkpoint(oracle_root, "summary.json")
+    def read(path):
+        return json.loads(path.read_text()) if path.is_file() else None
+
+    tuning_sweeps = by_checkpoint(oracle_root, "summary.json")
+    comparison_sweeps = by_checkpoint(oracle_root / "uq", "summary.json")
     validation_sweeps = by_checkpoint(results_root / "random_baseline_search", "selection.json")
     best_uq_sweeps = by_checkpoint(results_root / "best_uq", "summary.json")
+    oracle_ids = {
+        checkpoint: selection["config_id"]
+        for checkpoint, sweep in tuning_sweeps.items()
+        if (selection := read(sweep / "selection.json")) is not None
+    }
 
-    coverage = pl.DataFrame(
-        [
+    coverage_rows = []
+    for checkpoint, sweep in tuning_sweeps.items():
+        trials = read(sweep / "summary.json")["trials"]
+        comparison = (
+            read(comparison_sweeps[checkpoint] / "summary.json")
+            if checkpoint in comparison_sweeps
+            else None
+        )
+        coverage_rows.append(
             {
                 "checkpoint": checkpoint,
-                "sweep": sweep.name,
-                "complete": summary["complete"],
-                "completed_comparisons": sum(
-                    row["status"] == "complete" for row in summary["comparisons"]
-                ),
-                "planned_comparisons": len(summary["comparisons"]),
-                "failed_comparisons": sum(
-                    row["status"] == "failed" for row in summary["comparisons"]
-                ),
+                "stage_1_trials": f"{sum(t['status'] == 'complete' for t in trials)}/{len(trials)}",
+                "stage_1_failed": sum(t["status"] == "failed" for t in trials),
+                "oracle_config_id": oracle_ids.get(checkpoint),
+                "stage_2_metrics": "not started"
+                if comparison is None
+                else f"{sum(c['status'] == 'complete' for c in comparison['comparisons'])}"
+                f"/{len(comparison['comparisons'])}",
             }
-            for checkpoint, sweep in oracle_sweeps.items()
-            for summary in [json.loads((sweep / "summary.json").read_text())]
-        ],
+        )
+    coverage = pl.DataFrame(
+        coverage_rows,
         schema={
             "checkpoint": pl.String,
-            "sweep": pl.String,
-            "complete": pl.Boolean,
-            "completed_comparisons": pl.Int64,
-            "planned_comparisons": pl.Int64,
-            "failed_comparisons": pl.Int64,
+            "stage_1_trials": pl.String,
+            "stage_1_failed": pl.Int64,
+            "oracle_config_id": pl.String,
+            "stage_2_metrics": pl.String,
         },
     )
-    return best_uq_sweeps, coverage, oracle_root, oracle_sweeps, validation_sweeps
+    return (
+        best_uq_sweeps,
+        comparison_sweeps,
+        coverage,
+        oracle_ids,
+        read,
+        tuning_sweeps,
+        validation_sweeps,
+    )
 
 
 @app.cell
@@ -114,58 +139,65 @@ def _(coverage, mo):
             "`bash scripts/run_oracle_random_all_models.sh` first."
         ),
     )
-    all_complete = bool(coverage["complete"].all())
     mo.vstack(
         [
             mo.md(
-                "**All sweeps complete.**"
-                if all_complete
-                else "**Provisional:** some sweeps are incomplete, so the oracle below is the "
-                "best of the configurations finished so far and may still change."
+                "Stage 1 must finish before an oracle is frozen; stage 2 starts after that. "
+                "The appendix table includes checkpoints with at least one completed UQ "
+                "metric."
             ),
             mo.ui.table(coverage, selection=None, label="Oracle sweep coverage"),
         ]
     )
-    return (all_complete,)
+    return
 
 
 @app.cell
 def _(
-    config_gap_table,
-    json,
-    oracle_sweeps,
+    comparison_aucs,
+    comparison_sweeps,
+    oracle_ids,
     oracle_table,
     pl,
-    sweep_aucs,
+    read,
+    tuning_aucs,
+    tuning_sweeps,
     validation_sweeps,
 ):
-    aucs_by_checkpoint = {
-        checkpoint: sweep_aucs(sweep) for checkpoint, sweep in oracle_sweeps.items()
+    tuning_by_checkpoint = {
+        checkpoint: tuning_aucs(sweep) for checkpoint, sweep in tuning_sweeps.items()
     }
     validation_winners = {
-        checkpoint: json.loads((sweep / "selection.json").read_text())["config_id"]
+        checkpoint: read(sweep / "selection.json")["config_id"]
         for checkpoint, sweep in validation_sweeps.items()
     }
-    ready = {checkpoint: aucs for checkpoint, aucs in aucs_by_checkpoint.items() if aucs.height}
+    started = {
+        checkpoint: comparison_aucs(comparison_sweeps[checkpoint])
+        for checkpoint in oracle_ids
+        if checkpoint in comparison_sweeps
+    }
+    compared = {checkpoint: aucs for checkpoint, aucs in started.items() if aucs.height}
     oracle = pl.concat(
         [
-            oracle_table(aucs, validation_winners.get(checkpoint)).insert_column(
-                0, pl.lit(checkpoint).alias("checkpoint")
-            )
-            for checkpoint, aucs in ready.items()
+            oracle_table(
+                tuning_by_checkpoint[checkpoint],
+                aucs,
+                oracle_ids[checkpoint],
+                validation_winners.get(checkpoint),
+            ).insert_column(0, pl.lit(checkpoint).alias("checkpoint"))
+            for checkpoint, aucs in compared.items()
         ]
+        or [pl.DataFrame()]
     )
-    across_configs = pl.concat(
-        [
-            config_gap_table(aucs).insert_column(0, pl.lit(checkpoint).alias("checkpoint"))
-            for checkpoint, aucs in ready.items()
-        ]
-    )
-    return across_configs, oracle, ready, validation_winners
+    return oracle, tuning_by_checkpoint, validation_winners
 
 
 @app.cell(hide_code=True)
 def _(mo, oracle, pl):
+    mo.stop(
+        oracle.is_empty(),
+        mo.md("No stage 2 comparisons yet; the appendix table appears once one completes."),
+    )
     appendix = oracle.select(
         "checkpoint",
         "uq_metric",
@@ -180,8 +212,7 @@ def _(mo, oracle, pl):
         "oracle_seed_band_sd_pp",
         "oracle_z",
         "oracle_p_holm",
-        "uq_best_config_id",
-        "symmetric_gap_pp",
+        "random_rerun_diff_pp",
     )
     mo.vstack(
         [
@@ -192,15 +223,16 @@ def _(mo, oracle, pl):
     model seeds, in percentage points.
 
     - **oracle_gain_pp**: how much choosing random's settings on the test split raises its
-      own test AUC above the validation-tuned winner. This is the inflation from tuning on
-      the test split (true gain plus winner's curse).
-    - **oracle_gap_pp**: UQ minus the oracle random arm, at the oracle configuration.
+      own test AUC above the validation winner, both from stage 1. This is the inflation
+      from tuning on the test split (true gain plus winner's curse).
+    - **oracle_gap_pp**: UQ minus random at the oracle configuration, paired within each
+      model seed in stage 2.
     - **oracle_z**: oracle_gap_pp divided by the seed band, the standard deviation of the
-      random arm's AUC across the model seeds at the oracle configuration.
+      random arm's AUC across the model seeds in stage 2.
     - **oracle_p_holm**: paired one-sample t-test of the per-seed gaps, Holm-adjusted
       across the three UQ metrics within each checkpoint.
-    - **symmetric_gap_pp**: each metric's own best configuration by test AUC against the
-      same oracle random arm, so that both arms are tuned on the test split.
+    - **random_rerun_diff_pp**: stage 2's random arm minus stage 1's at the oracle
+      configuration; it should be near zero.
             """),
             mo.ui.table(
                 appendix,
@@ -220,24 +252,22 @@ def _(mo, oracle, pl):
 
 
 @app.cell(hide_code=True)
-def _(alt, mo, pl, ready, validation_winners):
+def _(alt, mo, oracle_ids, pl, tuning_by_checkpoint, validation_winners):
     random_by_config = pl.concat(
         [
-            aucs.unique(["config_id", "seed"])
-            .group_by("config_id")
+            aucs.group_by("config_id")
             .agg((pl.col("random_auc").mean() * 100).alias("random_auc_pp"))
             .with_columns(pl.lit(checkpoint).alias("checkpoint"))
-            for checkpoint, aucs in ready.items()
+            for checkpoint, aucs in tuning_by_checkpoint.items()
+            if aucs.height
         ]
+        or [pl.DataFrame(schema={"config_id": pl.String, "random_auc_pp": pl.Float64})]
     )
-    oracle_ids = (
-        random_by_config.sort(["random_auc_pp", "config_id"], descending=[True, False])
-        .group_by("checkpoint", maintain_order=True)
-        .first()
-        .select("checkpoint", pl.col("config_id").alias("oracle_id"))
-    )
-    roles = random_by_config.join(oracle_ids, on="checkpoint").with_columns(
-        pl.when(pl.col("config_id") == pl.col("oracle_id"))
+    mo.stop(random_by_config.is_empty(), mo.md("No completed stage 1 trials yet."))
+    roles = random_by_config.with_columns(
+        pl.when(
+            pl.col("config_id") == pl.col("checkpoint").replace_strict(oracle_ids, default=None)
+        )
         .then(pl.lit("Test-tuned oracle"))
         .when(
             pl.col("config_id")
@@ -284,10 +314,11 @@ def _(alt, mo, pl, ready, validation_winners):
     mo.vstack(
         [
             mo.md("""
-    ## Random arm across the 100 sampled configurations
+    ## Stage 1: random arm across the sampled configurations
 
-    Each point is one configuration's random-arm test AUC. The oracle is the right-most
-    point by construction; its distance from the validation winner is the oracle gain.
+    Each point is one configuration's random-only test AUC. Once stage 1 finishes, the
+    oracle is the right-most point; its distance from the validation winner is the oracle
+    gain.
             """),
             random_chart,
         ]
@@ -296,91 +327,71 @@ def _(alt, mo, pl, ready, validation_winners):
 
 
 @app.cell(hide_code=True)
-def _(across_configs, mo):
-    mo.vstack(
-        [
-            mo.md("""
-    ## UQ against random with no tuning
-
-    The UQ-minus-random gap at every completed configuration, with no hyperparameter
-    selection on any split. This table does not depend on the validation holdout or on
-    the test-tuned oracle.
-            """),
-            mo.ui.table(
-                across_configs,
-                selection=None,
-                page_size=15,
-                label="UQ minus random across all sampled configurations",
-                format_mapping={
-                    "median_gap_pp": "{:.2f}",
-                    "mean_gap_pp": "{:.2f}",
-                    "min_gap_pp": "{:.2f}",
-                    "win_fraction": "{:.0%}",
-                },
-            ),
-        ]
-    )
-    return
-
-
-@app.cell(hide_code=True)
-def _(best_uq_sweeps, curve_auc, json, mo, pl, ready, validation_winners):
+def _(
+    best_uq_sweeps,
+    curve_auc,
+    mo,
+    pl,
+    read,
+    tuning_by_checkpoint,
+    validation_winners,
+):
     def best_uq_random_auc(sweep):
         """Seed-mean random AUC from the headline comparison; random is shared by metrics."""
-        summary = json.loads((sweep / "summary.json").read_text())
-        complete = [row for row in summary["comparisons"] if row["status"] == "complete"]
+        complete = [
+            row
+            for row in read(sweep / "summary.json")["comparisons"]
+            if row["status"] == "complete"
+        ]
         if not complete:
             return None
         aucs = curve_auc(pl.read_csv(sweep / complete[0]["run_dir"] / "results.csv"))
         random = [auc for (_, arm), auc in aucs.items() if arm == "random"]
         return sum(random) / len(random)
 
-    reproduction = pl.DataFrame(
-        [
+    reproduction_rows = []
+    for model, model_aucs in tuning_by_checkpoint.items():
+        if model not in best_uq_sweeps:
+            continue
+        winner = model_aucs.filter(pl.col("config_id") == (validation_winners.get(model) or ""))
+        headline = best_uq_random_auc(best_uq_sweeps[model])
+        reproduction_rows.append(
             {
-                "checkpoint": checkpoint,
-                "validation_config_id": validation_winners.get(checkpoint),
-                "oracle_sweep_random_auc_pp": 100 * winner["random_auc"].mean()
+                "checkpoint": model,
+                "validation_config_id": validation_winners.get(model),
+                "stage_1_random_auc_pp": 100 * winner["random_auc"].mean()
                 if winner.height
                 else None,
-                "best_uq_random_auc_pp": 100 * headline
-                if (headline := best_uq_random_auc(best_uq_sweeps[checkpoint])) is not None
-                else None,
+                "best_uq_random_auc_pp": None if headline is None else 100 * headline,
             }
-            for checkpoint, aucs in ready.items()
-            if checkpoint in best_uq_sweeps
-            for winner in [
-                aucs.filter(
-                    pl.col("config_id") == (validation_winners.get(checkpoint) or "")
-                ).unique(["seed"])
-            ]
-        ],
+        )
+    reproduction = pl.DataFrame(
+        reproduction_rows,
         schema={
             "checkpoint": pl.String,
             "validation_config_id": pl.String,
-            "oracle_sweep_random_auc_pp": pl.Float64,
+            "stage_1_random_auc_pp": pl.Float64,
             "best_uq_random_auc_pp": pl.Float64,
         },
     ).with_columns(
-        (pl.col("oracle_sweep_random_auc_pp") - pl.col("best_uq_random_auc_pp")).alias(
-            "difference_pp"
-        )
+        (pl.col("stage_1_random_auc_pp") - pl.col("best_uq_random_auc_pp")).alias("difference_pp")
     )
     mo.vstack(
         [
             mo.md("""
     ## Reproduction check
 
-    The oracle sweep includes each checkpoint's validation winner. Its random arm should
-    reproduce the random arm saved in `results/best_uq/`, up to GPU nondeterminism and a
-    last-bit learning-rate roundoff in one non-winning configuration.
+    Stage 1 includes each checkpoint's validation winner. Its random arm should reproduce
+    the random arm saved in `results/best_uq/`, up to GPU nondeterminism and a last-bit
+    learning-rate roundoff in one non-winning configuration. A large difference points to
+    a change in hardware, precision, or code between the runs.
             """),
             mo.ui.table(
                 reproduction,
                 selection=None,
-                label="Validation winner: oracle sweep against best_uq",
+                label="Validation winner: stage 1 against best_uq",
                 format_mapping={
-                    "oracle_sweep_random_auc_pp": "{:.3f}",
+                    "stage_1_random_auc_pp": "{:.3f}",
                     "best_uq_random_auc_pp": "{:.3f}",
                     "difference_pp": "{:.3f}",
                 },
@@ -401,58 +412,8 @@ def _(mo):
     annotation project could not reproduce this kind of tuning. This limits how realistic
     the absolute scores are, not the fairness of the comparison: only the random arm is
     tuned, and the uncertainty arm inherits its settings, so the holdout favours random.
-    The supervised baseline is tuned on the same holdout and carries the same caveat. The
-    table of UQ against random with no tuning shows how the comparison behaves without
-    any holdout at all.
+    The supervised baseline is tuned on the same holdout and carries the same caveat.
     """)
-    return
-
-
-@app.cell
-def _(all_complete, mo):
-    save = mo.ui.run_button(
-        label="Record oracle selection",
-        disabled=not all_complete,
-        tooltip="Available once every oracle sweep is complete.",
-    )
-    save
-    return (save,)
-
-
-@app.cell
-def _(json, mo, oracle, oracle_root, oracle_sweeps, save):
-    mo.stop(not save.value)
-    records = []
-    for checkpoint, oracle_id in (
-        oracle.select("checkpoint", "oracle_config_id").unique().sort("checkpoint").iter_rows()
-    ):
-        plan = json.loads((oracle_sweeps[checkpoint] / "plan.json").read_text())
-        parameters = next(
-            entry["parameters"]
-            for entry in plan["configurations"]
-            if entry["config_id"] == oracle_id
-        )
-        records.append(
-            {
-                "checkpoint": checkpoint,
-                "sweep": oracle_sweeps[checkpoint].name,
-                "config_id": oracle_id,
-                "parameters": parameters,
-            }
-        )
-    selection_path = oracle_root / "oracle_selection.json"
-    selection_path.write_text(
-        json.dumps(
-            {
-                "selection_split": "test",
-                "use": "appendix sensitivity only; never a headline or frozen configuration",
-                "objective": "seed-mean random test entity-F1 AUC; ties to lowest config ID",
-                "oracles": records,
-            },
-            indent=2,
-        )
-    )
-    mo.md(f"Recorded `{selection_path.relative_to(oracle_root.parent.parent)}`.")
     return
 
 
