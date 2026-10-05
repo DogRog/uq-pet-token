@@ -67,15 +67,20 @@ read the test split once per trained model.
 
 ## Agent skills
 
-The marimo skills from [marimo-team/skills](https://github.com/marimo-team/skills) are
-installed for Claude Code with the [Vercel skills CLI](https://github.com/vercel-labs/skills):
+The marimo skills from [marimo-team/skills](https://github.com/marimo-team/skills) and a
+selection of engineering skills from [mattpocock/skills](https://github.com/mattpocock/skills)
+are installed for Claude Code with the [Vercel skills CLI](https://github.com/vercel-labs/skills):
 
 ```bash
 npx skills add marimo-team/skills --agent claude-code --skill '*' -y
+npx skills add mattpocock/skills --agent claude-code --skill grilling grill-me \
+  grill-with-docs domain-modeling diagnosing-bugs tdd retro writing-for-agents \
+  improve-codebase-architecture codebase-design -y
 ```
 
 Installed files live under `.claude/skills/`, and `skills-lock.json` records their
-sources and hashes. Both are gitignored, so each checkout installs its own. Useful
+sources and hashes. Both are committed so local edits to the skills are versioned;
+`npx skills update` overwrites those edits, so review its diff before committing. Useful
 maintenance commands:
 
 ```bash

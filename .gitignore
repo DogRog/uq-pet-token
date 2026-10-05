@@ -23,7 +23,3 @@ wheels/
 # Marimo
 __marimo__
 layouts/
-
-# Agents
-/.claude
-skills-lock.json
