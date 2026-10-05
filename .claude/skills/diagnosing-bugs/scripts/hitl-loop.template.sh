@@ -31,9 +31,9 @@ capture() {
 
 # --- edit below ---------------------------------------------------------
 
-step "Open the app at http://localhost:3000 and sign in."
+step "Run: uv run marimo edit notebooks/bert_token_uq.py, then press Run experiment."
 
-capture ERRORED "Click the 'Export' button. Did it throw an error? (y/n)"
+capture ERRORED "Did the comparison chart show a half-finished round or an error? (y/n)"
 
 capture ERROR_MSG "Paste the error message (or 'none'):"
 

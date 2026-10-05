@@ -23,16 +23,15 @@ Spend disproportionate effort here. **Be aggressive. Be creative. Refuse to give
 
 ### Ways to construct one, in roughly this order
 
-1. **Failing test** at whatever seam reaches the bug: unit, integration, e2e.
-2. **Curl / HTTP script** against a running dev server.
-3. **CLI invocation** with a fixture input, diffing stdout against a known-good snapshot.
-4. **Headless browser script** (Playwright / Puppeteer) that drives the UI and asserts on DOM/console/network.
-5. **Replay a captured trace.** Save a real network request / payload / event log to disk; replay it through the code path in isolation.
-6. **Throwaway harness.** Spin up a minimal subset of the system (one service, mocked deps) that exercises the bug code path with a single function call.
-7. **Property / fuzz loop.** If the bug is "sometimes wrong output", run 1000 random inputs and look for the failure mode.
-8. **Bisection harness.** If the bug appeared between two known states (commit, dataset, version), automate "boot at state X, check, repeat" so you can `git bisect run` it.
-9. **Differential loop.** Run the same input through old-version vs new-version (or two configs) and diff outputs.
-10. **HITL bash script.** Last resort. If a human must click, drive _them_ with `scripts/hitl-loop.template.sh` so the loop is still structured. Captured output feeds back to you.
+1. **Failing test** at whatever seam reaches the bug, run as one pytest node: `uv run pytest tests/test_token_uq.py::test_name -x`. The `tiny_experiment` fixture trains a real one-layer model without network access.
+2. **Tiny batch run.** The notebook's batch mode with the smallest config that still shows the symptom: one seed, distilbert, a low `dataset_percent` and `max_pool_percent`, `"precision":"fp32"`. `uv run notebooks/bert_token_uq.py --config-json '{...}'`
+3. **Plan check.** The search, best-UQ, and supervised scripts take `--dry-run`, which validates and prints the plan without data or training: a seconds-long loop for config, plan, and resume bugs.
+4. **Replay saved artifacts.** Load a run's `plan.json`, `results.csv`, or `selections.json` from `results/` and push it through the analysis or resume path in isolation.
+5. **Throwaway harness.** A short script that builds the inputs by hand (a few pool sentences, a fake score dict) and calls the bug code path with a single function call.
+6. **Property / fuzz loop.** If the bug is "sometimes wrong output", run 1000 random inputs (pool sizes, `k`, ratios, label sets) and look for the failure mode.
+7. **Bisection harness.** If the bug appeared between two known states (commit, dataset revision, package version), automate "check out state X, run the loop" so you can `git bisect run uv run pytest <node> -x`.
+8. **Differential loop.** Run the same input through two settings and diff outputs: `fp32` vs `bf16`, `seed_workers=1` vs several, a resumed sweep vs a fresh one, old commit vs new.
+9. **HITL bash script.** Last resort. If a human must act (a GPU box, the marimo UI, a W&B dashboard), drive _them_ with `scripts/hitl-loop.template.sh` so the loop is still structured. Captured output feeds back to you.
 
 Build the right feedback loop, and the bug is 90% fixed.
 
@@ -42,21 +41,21 @@ Treat the loop as a product. Once you have _a_ loop, **tighten** it:
 
 - Can I make it faster? (Cache setup, skip unrelated init, narrow the test scope.)
 - Can I make the signal sharper? (Assert on the specific symptom, not "didn't crash".)
-- Can I make it more deterministic? (Pin time, seed RNG, isolate filesystem, freeze network.)
+- Can I make it more deterministic? (Pin seeds through `set_seed`, force `fp32` on CPU, write to `tmp_path`, stub downloads and W&B.)
 
 A 30-second flaky loop is barely better than no loop; a 2-second deterministic one is tight, a debugging superpower.
 
 ### Non-deterministic bugs
 
-The goal is not a clean repro but a **higher reproduction rate**. Loop the trigger 100×, parallelise, add stress, narrow timing windows, inject sleeps. A 50%-flake bug is debuggable; 1% is not, so keep raising the rate until it's debuggable.
+The goal is not a clean repro but a **higher reproduction rate**. Loop the trigger 100×, parallelise, add stress, narrow timing windows, inject sleeps. In training code, first separate real nondeterminism from unseeded randomness: a global RNG used where a local seeded one belongs, nondeterministic CUDA kernels (`torch.use_deterministic_algorithms(True)` exposes them), BF16 rounding, worker scheduling under `seed_workers > 1`. A 50%-flake bug is debuggable; 1% is not, so keep raising the rate until it's debuggable.
 
 ### When you genuinely cannot build a loop
 
-Stop and say so explicitly. List what you tried. Ask the user for: (a) access to whatever environment reproduces it, (b) a redacted captured artifact (HAR file, log dump, core dump, screen recording with timestamps), or (c) permission to add temporary production instrumentation. Do **not** proceed to hypothesise without a loop.
+Stop and say so explicitly. List what you tried. Ask the user for: (a) access to whatever environment reproduces it, (b) a redacted captured artifact (training log, the run's `plan.json` / `results.csv`, a W&B run link, a traceback), or (c) permission to add temporary instrumentation to a long run. Do **not** proceed to hypothesise without a loop.
 
 ### Completion criterion: a tight loop that goes red
 
-Phase 1 is done when the loop is **tight** and **red-capable**: you can name **one command** (a script path, a test invocation, a curl) that you have **already run at least once** (show the invocation and its output, redacted), and that is:
+Phase 1 is done when the loop is **tight** and **red-capable**: you can name **one command** (a pytest node, a batch run, a script path) that you have **already run at least once** (show the invocation and its output, redacted), and that is:
 
 - [ ] **Red-capable**: it drives the actual bug code path and asserts the **user's exact symptom**, so it can go red on this bug and green once fixed. Not "runs without erroring"; it must be able to _catch this specific bug_.
 - [ ] **Deterministic**: same verdict every run (flaky bugs: a pinned, high reproduction rate, per above).
@@ -103,13 +102,13 @@ Each probe must map to a specific prediction from Phase 3. **Change one variable
 
 Tool preference:
 
-1. **Debugger / REPL inspection** if the env supports it. One breakpoint beats ten logs.
+1. **Debugger / REPL inspection**: `breakpoint()` / pdb, or `uv run pytest --pdb`. One breakpoint beats ten logs.
 2. **Targeted logs** at the boundaries that distinguish hypotheses.
 3. Never "log everything and grep".
 
 **Tag every debug log** with a unique prefix, e.g. `[DEBUG-a4f2]`. Cleanup at the end becomes a single grep. Untagged logs survive; tagged logs die.
 
-**Perf branch.** For performance regressions, logs are usually wrong. Instead: establish a baseline measurement (timing harness, `performance.now()`, profiler, query plan), then bisect. Measure first, fix second.
+**Perf branch.** For performance regressions, logs are usually wrong. Instead: establish a baseline measurement (`time.perf_counter` harness, `cProfile` or `py-spy`, `torch.profiler` for GPU work), then bisect. Measure first, fix second.
 
 ## Phase 5: Fix + regression test
 

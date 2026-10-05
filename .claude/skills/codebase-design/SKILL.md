@@ -70,26 +70,24 @@ Good interfaces make testing natural:
 
 1. **Accept dependencies, don't create them.**
 
-   ```typescript
-   // Testable
-   function processOrder(order, paymentGateway) {}
+   ```python
+   # Testable: the caller passes the seed (or the loaded model, or the W&B run)
+   def select_random(available, k, *, seed): ...
 
-   // Hard to test
-   function processOrder(order) {
-     const gateway = new StripeGateway();
-   }
+   # Hard to test: depends on global RNG state seeded elsewhere
+   def select_random(available, k):
+       return random.sample(sorted(available), k)
    ```
 
 2. **Return results, don't produce side effects.**
 
-   ```typescript
-   // Testable
-   function calculateDiscount(cart): Discount {}
+   ```python
+   # Testable: returns the chosen keys; the caller removes them from the pool
+   def select_top_k(scores: dict[TokenKey, float], k: int) -> list[TokenKey]: ...
 
-   // Hard to test
-   function applyDiscount(cart): void {
-     cart.total -= discount;
-   }
+   # Hard to test: mutates the caller's pool and returns nothing
+   def acquire_top_k(scores: dict[TokenKey, float], available: set[TokenKey], k: int) -> None:
+       available.difference_update(sorted(scores, key=scores.get, reverse=True)[:k])
    ```
 
 3. **Small surface area.** Fewer methods = fewer tests needed. Fewer params = simpler test setup.
@@ -105,7 +103,7 @@ Good interfaces make testing natural:
 ## Rejected framings
 
 - **Depth as ratio of implementation-lines to interface-lines** (Ousterhout): rewards padding the implementation. We use depth-as-leverage instead.
-- **"Interface" as the TypeScript `interface` keyword or a class's public methods**: too narrow: interface here includes every fact a caller must know.
+- **"Interface" as a Python `Protocol`/ABC or a class's public methods**: too narrow: interface here includes every fact a caller must know.
 - **"Boundary"**: overloaded with DDD's bounded context. Say **seam** or **interface**.
 
 ## Going deeper
