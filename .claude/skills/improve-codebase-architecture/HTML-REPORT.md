@@ -43,13 +43,13 @@ The diagrams carry the weight. Prose is sparse, plain, and uses the glossary ter
 
 Each candidate is one `<article>`:
 
-- **Title**: short, names the deepening (e.g. "Collapse the Order intake pipeline").
+- **Title**: short, names the deepening (e.g. "Collapse the round update pipeline").
 - **Badge row**: recommendation strength (`Strong` = emerald, `Worth exploring` = amber, `Speculative` = slate), plus a tag for the dependency category (`in-process`, `local-substitutable`, `ports & adapters`, `mock`).
 - **Files**: monospaced list, `font-mono text-sm`.
 - **Before / After diagram**: the centrepiece. Two columns, side by side. See patterns below.
 - **Problem**: one sentence. What hurts.
 - **Solution**: one sentence. What changes.
-- **Wins**: bullets, ≤6 words each. e.g. "Tests hit one interface", "Pricing logic stops leaking", "Delete 4 shallow wrappers".
+- **Wins**: bullets, ≤6 words each. e.g. "Tests hit one interface", "Replay sampling stops leaking", "Delete 4 shallow wrappers".
 - **ADR callout** (if applicable): one line in an amber-tinted box.
 
 No paragraphs of explanation. If the diagram needs a paragraph to be understood, redraw the diagram.
@@ -66,9 +66,9 @@ Use a Mermaid `flowchart` or `graph` when the point is "X calls Y calls Z, and l
 <div class="rounded-lg border border-slate-200 bg-white p-4">
   <pre class="mermaid">
     flowchart LR
-      A[OrderHandler] --> B[OrderValidator]
-      B --> C[OrderRepo]
-      C -.leak.-> D[PricingClient]
+      A[RoundLoop] --> B[Selector]
+      B --> C[ReplaySampler]
+      C -.leak.-> D[WandbLogger]
       classDef leak stroke:#dc2626,stroke-width:2px;
       class C,D leak
   </pre>
@@ -113,10 +113,10 @@ Plain English, concise, but the architectural nouns and verbs come straight from
 
 **Phrasings that fit the style:**
 
-- "Order intake module is shallow: interface nearly matches the implementation."
-- "Pricing leaks across the seam."
+- "Replay module is shallow: interface nearly matches the implementation."
+- "W&B payload shape leaks across the seam."
 - "Deepen: one interface, one place to test."
-- "Two adapters justify the seam: HTTP in prod, in-memory in tests."
+- "Two adapters justify the seam: spawned seed workers in runs, in-process in tests."
 
 **Wins bullets** name the gain in glossary terms: *"locality: bugs concentrate in one module"*, *"leverage: one interface, N call sites"*, *"interface shrinks; implementation absorbs the wrappers"*. Don't write *"easier to maintain"* or *"cleaner code"*, because those terms aren't in the glossary and don't earn their place.
 

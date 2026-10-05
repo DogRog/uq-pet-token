@@ -16,8 +16,8 @@ Most repos have a single context:
 ├── GLOSSARY.md
 ├── docs/
 │   └── adr/
-│       ├── 0001-event-sourced-orders.md
-│       └── 0002-postgres-for-write-model.md
+│       ├── 0001-first-subword-supervision.md
+│       └── 0002-local-seeded-rngs.md
 └── src/
 ```
 
@@ -29,10 +29,10 @@ If a `GLOSSARY-MAP.md` exists at the root, the repo has multiple contexts. The m
 ├── docs/
 │   └── adr/                          ← system-wide decisions
 ├── src/
-│   ├── ordering/
+│   ├── acquisition/
 │   │   ├── GLOSSARY.md
 │   │   └── docs/adr/                 ← context-specific decisions
-│   └── billing/
+│   └── search/
 │       ├── GLOSSARY.md
 │       └── docs/adr/
 ```
@@ -43,11 +43,11 @@ Create files lazily: only when you have something to write. If no `GLOSSARY.md` 
 
 ### Challenge against the glossary
 
-When the user uses a term that conflicts with the existing language in `GLOSSARY.md`, call it out immediately. "Your glossary defines 'cancellation' as X, but you seem to mean Y. Which is it?"
+When the user uses a term that conflicts with the existing language in `GLOSSARY.md`, call it out immediately. "Your glossary defines a 'round' as one acquisition step for both arms, but you seem to mean one update pass. Which is it?"
 
 ### Sharpen fuzzy language
 
-When the user uses vague or overloaded terms, propose a precise canonical term. "You're saying 'account': do you mean the Customer or the User? Those are different things."
+When the user uses vague or overloaded terms, propose a precise canonical term. "You're saying 'sample': do you mean a candidate (one pool word) or a pool sentence? Those are different things."
 
 ### Discuss concrete scenarios
 
@@ -55,7 +55,7 @@ When domain relationships are being discussed, stress-test them with specific sc
 
 ### Cross-reference with code
 
-When the user states how something works, check whether the code agrees. If you find a contradiction, surface it: "Your code cancels entire Orders, but you just said partial cancellation is possible. Which is right?"
+When the user states how something works, check whether the code agrees. If you find a contradiction, surface it: "Your code scales replay to the number of candidates actually selected this round, but you just said replay is a fixed count per round. Which is right?"
 
 ### Update GLOSSARY.md inline
 

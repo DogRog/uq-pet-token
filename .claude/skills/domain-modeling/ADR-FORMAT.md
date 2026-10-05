@@ -38,10 +38,10 @@ If a decision is easy to reverse, skip it: you'll just reverse it. If it's not s
 
 ### What qualifies
 
-- **Architectural shape.** "We're using a monorepo." "The write model is event-sourced, the read model is projected into Postgres."
-- **Integration patterns between contexts.** "Ordering and Billing communicate via domain events, not synchronous HTTP."
-- **Technology choices that carry lock-in.** Database, message bus, auth provider, deployment target. Not every library: just the ones that would take a quarter to swap out.
-- **Boundary and scope decisions.** "Customer data is owned by the Customer context; other contexts reference it by ID only." The explicit no-s are as valuable as the yes-s.
-- **Deliberate deviations from the obvious path.** "We're using manual SQL instead of an ORM because X." Anything where a reasonable reader would assume the opposite. These stop the next engineer from "fixing" something that was deliberate.
-- **Constraints not visible in the code.** "We can't use AWS because of compliance requirements." "Response times must be under 200ms because of the partner API contract."
-- **Rejected alternatives when the rejection is non-obvious.** If you considered GraphQL and picked REST for subtle reasons, record it; otherwise someone will suggest GraphQL again in six months.
+- **Architectural shape.** "Sentence-level LLM selection lives in a separate repository; no code is ported between the two." "Both arms clone one bootstrap-trained model and optimizer state, then keep their own state across rounds."
+- **Integration patterns between contexts.** "Seed workers run in spawned processes and publish progress only after both arms finish a round, never a half-finished one."
+- **Technology choices that carry lock-in.** Dataset library pins, experiment tracker, encoder family, compute target. Not every library: just the ones that would invalidate saved results or take weeks to swap out. "`datasets` stays pinned to 2.19.2 so the splits never shift."
+- **Boundary and scope decisions.** "The test split is evaluation-only; tuning reads only the validation holdout." The explicit no-s are as valuable as the yes-s.
+- **Deliberate deviations from the obvious path.** "We mask unselected positions with `-100` instead of replacing input words with `[MASK]`, because X." Anything where a reasonable reader would assume the opposite. These stop the next engineer from "fixing" something that was deliberate.
+- **Constraints not visible in the code.** "Saved plans leave the full PET pool implicit, so sweeps saved before the `dataset` setting existed still resume."
+- **Rejected alternatives when the rejection is non-obvious.** If you considered YAML configs or a CLI framework and kept validated settings in `config.py`, record why; otherwise someone will suggest YAML again in six months.
