@@ -75,51 +75,53 @@ at the project root (see [Weights & Biases](#weights--biases)).
 
 ```mermaid
 flowchart LR
-    A[Bootstrap on 5 seed sentences] --> B[Clone weights and optimizer]
+    A[Train on 5 bootstrap sentences] --> B[Clone weights and optimizer]
     B --> U[Uncertainty arm]
     B --> R[Random arm]
     U --> S[Select K pool words]
     R --> S
     S --> L[Reveal selected labels]
-    L --> T[Update on new tokens + replay]
-    T --> E[Evaluate on test]
+    L --> T[Update on new words + replay]
+    T --> E[Evaluate on test split]
     E -->|next round| S
 ```
 
 ### Data splits
 
-PET is split 80/20 into train and test with a fixed seed. Five train sentences become the
-labelled seed and the rest form the unlabelled pool: **5 seed, 328 pool, and 84 test
-sentences**. Setting `"dataset": "conll2003"` (or choosing it in the notebook) runs the
+PET is split 80/20 into a train split and a test split with a fixed RNG seed. Five
+train-split sentences become the bootstrap sentences and the rest form the pool:
+**5 bootstrap, 328 pool, and 84 test sentences**. Setting `"dataset": "conll2003"` (or choosing it in the notebook) runs the
 same protocol on CoNLL-2003, loaded from `eriktks/conll2003` at a pinned revision. Its
-5 seed sentences and pool (14,036 sentences) come from CoNLL train, and evaluation uses
+5 bootstrap sentences and pool (14,036 sentences) come from the CoNLL train split, and evaluation uses
 the full CoNLL test split (3,453 sentences).
 
-`dataset_percent` keeps that percentage of either dataset's pool. Smaller pools are
-nested prefixes of one seeded shuffle, and the seed and test sentences do not change.
+The pool size (`dataset_percent`) keeps that percentage of either dataset's pool. Smaller
+pools are nested prefixes of one seeded shuffle, and the bootstrap and test sentences do
+not change.
 
 ### One run
 
 For every model seed:
 
-1. Fine-tune a fresh token classifier (15 PET tags, 9 CoNLL tags) on the five seed
+1. Fine-tune a fresh token classifier (15 PET tags, 9 CoNLL tags) on the five bootstrap
    sentences.
 2. Clone the exact fitted weights and optimizer state into uncertainty and random arms.
 3. Evaluate both arms before acquisition (round 0).
 4. At each round, acquire `K` previously unseen pool words, or the remaining budget
    in the final round:
    - uncertainty selects the largest score from the configured UQ metric;
-   - random draws uniformly from its remaining word pool.
+   - random draws uniformly from its remaining candidates.
 5. Reveal only the selected labels.
 6. Continue each arm from its current weights and optimizer state using the new
-   token-centred items plus limited replay.
-7. Evaluate on the held-out test set and repeat.
+   word-centred items plus limited replay.
+7. Evaluate on the test split and repeat.
 
 The full sentence remains model input, but each online training item labels exactly
 one word. Only its first subword contributes to loss; every other position is `-100`.
-By default, each round replays up to one older labelled token per new word, including
-seed tokens. Replay scales down with a smaller final round. A 100% pool budget acquires
-every scoreable word; lower percentage budgets round down only to a whole number of words.
+By default, each round replays up to one older labelled word per new word, including
+words from the bootstrap sentences. Replay scales down with a smaller final round. A 100%
+acquisition budget acquires every scoreable word; lower budgets round down only to a
+whole number of words.
 
 ### UQ metrics
 
@@ -132,7 +134,7 @@ more uncertain:
 
 ### Invariants
 
-- The test set is evaluation-only.
+- The test split is evaluation-only.
 - Pool inputs passed to uncertainty scoring contain no labels.
 - A label is read from the private pool lookup only after its word is selected.
 - Acquisition is without replacement and counts newly labelled words.
@@ -143,8 +145,8 @@ more uncertain:
 - Both arms begin from the same fitted state and receive the same update budget.
 - The uncertainty and random arms keep separate weights and optimizer histories.
 - Selection and replay use deterministic local random generators.
-- Training uses the seed for each arm and round for dropout as well as shuffling,
-  restoring the surrounding RNG states even if an update fails.
+- Training derives an RNG seed for each arm and round, used for dropout as well as
+  shuffling, and restores the surrounding RNG states even if an update fails.
 
 ## Interactive experiment
 
@@ -152,12 +154,12 @@ The notebook uses the validated defaults in `src/uq_pet/config.py`:
 
 | Setting | Default |
 | --- | --- |
-| Dataset / pool percentage | `pet` / `100` |
+| Dataset / pool size (%) | `pet` / `100` |
 | Checkpoint / model seeds | `distilbert-base-cased` / `0,1,2,3,4` |
 | UQ metric / new words per round | `entropy` / `32` |
-| Pool acquisition budget | `100%` of scoreable words |
+| Acquisition budget | `100%` of scoreable words |
 | Bootstrap epochs / online update passes | `20` / `1` |
-| Replay ratio | `1` older labelled token per new word |
+| Replay ratio | `1` older labelled word per new word |
 | Learning rate / weight decay | `5e-5` / `0.01` |
 | Training / scoring batch size | `8` items / `256` sentences |
 | Maximum tokenizer length | `256` |
@@ -168,7 +170,7 @@ Saved sweep and winner configurations override these defaults. The entity F1, ma
 entity F1, and token-accuracy charts appear after bootstrap evaluation and update live
 after both arms finish every round. The notebook also shows selected label counts, the
 run description, paired gap against random, cumulative NER-tag coverage, and the
-token-level selection log. A completed run writes:
+per-word selection log. A completed run writes:
 
 ```text
 results/bert_token_uq_<timestamp>/
@@ -186,8 +188,8 @@ uv run notebooks/bert_token_uq.py --config-json \
 
 ## Workflow
 
-The main study has three stages: tune the random baseline on validation, freeze each
-model's winner, and compare all UQ metrics against random on test. The supervised
+The main study has three stages: tune the random baseline on the validation holdout,
+freeze each model's winner, and compare all UQ metrics against random on the test split. The supervised
 baseline adds an upper bound.
 
 ### 1. Tune the random baseline
@@ -209,14 +211,14 @@ uv run scripts/bert_token_uq_search.py --config configs/tune_random/distilbert_t
 ```
 
 Each `configs/tune_random/*_tune_random_100.json` samples 100 configurations with five
-model seeds, two seed workers, the same validation split and objective, and its own
+model seeds, two seed workers, the same validation holdout and objective, and its own
 output folder. A dry run prints the plan without loading data or models.
 
-1. Keep the original seed and test sentences. Hold out 66 pool sentences for
-   validation with a fixed local RNG (on PET, 262 acquisition sentences remain).
-   Validation sentences cannot be acquired or replayed.
+1. Keep the original bootstrap and test sentences. Hold out 66 pool sentences as the
+   validation holdout with a fixed local RNG (on PET, a tuning pool of 262 sentences
+   remains). Validation holdout sentences cannot be acquired or replayed.
 2. Train only random selection for each sampled configuration (see
-   [Search space](#search-space)). Maximize the seed-mean normalized validation
+   [Search space](#search-space)). Maximize the model-seed mean of normalized validation
    entity-F1 AUC against acquired-pool percentage, including round 0. To optimize the
    endpoint instead, set `objective` to `random_validation_final_entity_f1` before
    starting. Ties use ascending config ID.
@@ -227,7 +229,7 @@ metadata and winning settings.
 
 Outputs under `results/random_baseline_search/<sweep-name>/`:
 
-- `plan.json` and `split.json`: fixed search settings and validation split provenance.
+- `plan.json` and `split.json`: fixed search settings and validation holdout provenance.
 - `tuning/<config-id>/`: validation settings, results, selections, progress, and completion score.
 - `best_config.json`: winning experiment settings, ready for a separate experiment.
 - `selection.json`: winner ID, objective, and validation score.
@@ -237,7 +239,7 @@ Repeat the tuning command to resume. Completed trials are reused and interrupted
 restart from bootstrap. Exact saved learning rates are kept despite tiny sampling
 roundoff on comparison.
 
-The winner is the best sampled configuration on this validation split, not a guaranteed
+The winner is the best sampled configuration on this validation holdout, not a guaranteed
 global optimum. Keep its settings frozen when assessing UQ methods; do not choose new
 hyperparameters from test results.
 
@@ -274,7 +276,7 @@ downloading data or training, `--config-json` accepts inline JSON instead of a f
 Results are grouped under `results/best_uq/<checkpoint>-best-uq/`, with `plan.json`,
 `search_config.json`, `summary.json`, and per-metric outputs under
 `runs/config_0000/<metric>/`. Each metric keeps its settings, evaluation rows, and
-selected tokens. Re-running skips completed comparisons; an interrupted comparison
+selected words. Re-running skips completed comparisons; an interrupted comparison
 restarts. Changed scientific settings require a new `--sweep-name`.
 
 ### 3. Supervised upper bound
@@ -288,15 +290,15 @@ subwords are supervised, and truncated pool words are excluded as in acquisition
    sampled from `sampler_seed` like the other sweeps: a log-uniform learning rate in
    [1e-6, 1e-4], and a batch size and weight decay drawn from `batch_sizes`
    (8, 16, 32) and `weight_decays` (0, 0.01). Each is trained for every model seed on
-   the seed sentences plus the tuning pool, then scored on the same 66-sentence
-   validation holdout used by random-baseline tuning. The highest seed-mean
+   the bootstrap sentences plus the tuning pool, then scored on the same 66-sentence
+   validation holdout used by random-baseline tuning. The highest model-seed mean
    validation entity F1 wins; ties go to the lowest config ID. The test split is not
    read.
-2. **Test runs.** The frozen winner is retrained from scratch for each seed on the seed
-   sentences plus `sentence_percents` of the full pool, then evaluated once on the test
-   split. The default `[100]` uses the complete training set. Other percentages, such
-   as `[10, 50, 100]`, take nested prefixes of a label-free, seed-specific sentence
-   order for a sentence-level annotation curve.
+2. **Test runs.** The frozen winner is retrained from scratch for each model seed on the
+   bootstrap sentences plus `sentence_percents` of the full pool, then evaluated once on
+   the test split. The default `[100]` uses the whole pool. Other percentages, such as
+   `[10, 50, 100]`, take nested prefixes of a label-free sentence order specific to each
+   model seed, for a sentence-level annotation curve.
 
 ```bash
 uv run scripts/run_supervised.py --config configs/supervised/distilbert.json --dry-run
@@ -313,7 +315,7 @@ the concurrency.
 `--stage tune` stops after freezing the winner, and `--stage test` requires it. Rerunning
 resumes. Completed trials and budgets are skipped, and failed ones are retried. Adding
 percentages later reuses the saved tuning. Changing the sampled search, epochs, seeds,
-checkpoint, validation split, or effective precision requires a new `sweep_name`, which
+checkpoint, validation holdout, or effective precision requires a new `sweep_name`, which
 defaults to `<checkpoint>-supervised`. W&B settings and `seed_workers` do not change the
 plan.
 
@@ -378,7 +380,7 @@ identical sampled configurations across checkpoints.
 For each configuration and seed, bootstrap runs once. Its fitted weights and optimizer
 state are held in CPU memory and cloned into each arm. The first UQ metric trains beside
 random; later metrics train their own UQ arms and reuse the random evaluation rows and
-selected-token records. At most two learner states reside on the GPU per seed (plus
+selected-word records. At most two learner states reside on the GPU per seed (plus
 transient BF16 execution copies and activations). All three UQ trajectories keep
 separate model and optimizer histories. The shared random baselines are repeated
 observations of one baseline, not independent observations to pool across metrics.
@@ -411,7 +413,7 @@ Outputs under `results/random_search/<sweep-name>/`:
 
 The AUC integrates UQ minus random entity F1 against acquired-pool percentage,
 normalizes by the observed acquisition interval, and averages across seeds. Each
-configuration has equal weight in per-metric summaries; wins use its seed-mean AUC
+configuration has equal weight in per-metric summaries; wins use its model-seed mean AUC
 gap, with absolute gaps at most 1e-12 treated as ties. Incomplete sweeps are explicitly
 marked, with completed and planned counts. No configuration is ranked or selected.
 
