@@ -37,7 +37,8 @@ The project includes:
 - [Reference](#reference): [search space](#search-space), [resuming](#resuming),
   [concurrency and performance](#concurrency-and-performance),
   [Weights & Biases](#weights--biases), [legacy outputs](#legacy-outputs)
-- [Development](#development): [checks](#checks), [layout](#layout)
+- [Development](#development): [checks](#checks), [layout](#layout),
+  [agent skills](#agent-skills)
 
 ## Quick start
 
@@ -576,7 +577,9 @@ bash scripts/tune_random_all_models.sh --dry-run
 bash scripts/run_supervised_all_models.sh --dry-run
 ```
 
-Contributor and agent conventions are in [AGENTS.md](AGENTS.md).
+Contributor and agent conventions are in [AGENTS.md](AGENTS.md). Project terms are
+defined in [GLOSSARY.md](GLOSSARY.md), and design decisions with their reasons are
+recorded in [docs/adr/](docs/adr/).
 
 ### Layout
 
@@ -609,3 +612,33 @@ Contributor and agent conventions are in [AGENTS.md](AGENTS.md).
 | `configs/random_search/` | sampled UQ-versus-random comparison settings |
 | `configs/supervised/` | supervised baseline settings |
 | `tests/` | offline protocol, model-boundary, CLI, concurrency, resume, and logging checks |
+| `GLOSSARY.md` | canonical project terms |
+| `docs/adr/` | design decisions and their reasons |
+| `.claude/skills/` | agent skills, versioned so local edits are kept |
+
+### Agent skills
+
+The marimo skills from [marimo-team/skills](https://github.com/marimo-team/skills) and a
+selection of engineering skills from [mattpocock/skills](https://github.com/mattpocock/skills)
+are installed for Claude Code with the [Vercel skills CLI](https://github.com/vercel-labs/skills):
+
+```bash
+npx skills add marimo-team/skills --agent claude-code --skill '*' -y
+npx skills add mattpocock/skills --agent claude-code --skill grilling grill-me \
+  grill-with-docs domain-modeling diagnosing-bugs tdd retro writing-for-agents \
+  improve-codebase-architecture codebase-design -y
+```
+
+Installed files live under `.claude/skills/`, and `skills-lock.json` records their
+sources and hashes. Both are committed so local edits to the skills are versioned;
+`npx skills update` overwrites those edits, so review its diff before committing. Useful
+maintenance commands:
+
+```bash
+npx skills list
+npx skills update --project --yes
+npx skills add owner/repository --agent claude-code
+```
+
+Use `--list` on an `add` command to inspect a repository before installing it, or
+`--skill <name>` to select particular skills.
