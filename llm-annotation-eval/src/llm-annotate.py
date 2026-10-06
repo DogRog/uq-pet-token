@@ -1,7 +1,7 @@
 import pathlib
 
 import dotenv
-import tqdm
+from rich.progress import track
 
 import autoannotate
 
@@ -150,7 +150,7 @@ max_documents = None
 documents = autoannotate.JsonImporter(RES_DIR / "gold" / "pet.jsonl").do_import()
 documents = documents[:max_documents]
 predicted_documents = []
-for document in tqdm.tqdm(documents):
+for document in track(documents, description="Annotating"):
     print(f"Predicting mentions of {document.name}...")
     document = document.copy(clear=["mentions", "relations", "entities"])
     mention_annotator = autoannotate.LLMMentionAnnotator(
