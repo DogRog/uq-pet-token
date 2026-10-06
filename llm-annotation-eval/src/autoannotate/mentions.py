@@ -12,7 +12,7 @@ from autoannotate import base, definitions, data, prompts
 class MentionParser(base.BaseParser):
     @staticmethod
     def parse_line(
-            line: str, document: data.Document
+            line: str, document: data.Document, taken_token_indices: typing.Set[int]
     ) -> typing.List[data.Mention]:
         split_line = line.split("\t")
         split_line = tuple(e for e in split_line if e.strip() != "")
@@ -41,8 +41,6 @@ class MentionParser(base.BaseParser):
         mention_text = mention_text.lower()
         mention_tokens = mention_text.split(" ")
 
-        res = []
-        found = False
         for i, token in enumerate(sentence):
             candidates = sentence[i: i + len(mention_tokens)]
             candidate_text = " ".join(c.text.lower() for c in candidates)
@@ -50,21 +48,26 @@ class MentionParser(base.BaseParser):
             if candidate_text.lower() != mention_text.lower():
                 continue
 
-            res.append(
+            candidate_indices = tuple(c.index_in_document for c in candidates)
+            if any(idx in taken_token_indices for idx in candidate_indices):
+                # this occurrence already belongs to a previously parsed mention,
+                # so the LLM is referring to a later occurrence of the same text
+                continue
+
+            taken_token_indices.update(candidate_indices)
+            return [
                 data.Mention(
-                    token_document_indices=tuple(
-                        c.index_in_document for c in candidates
-                    ),
+                    token_document_indices=candidate_indices,
                     type=mention_type.lower().strip(),
                 )
-            )
-            found = True
-        if not found:
-            print(f"Did not find predicted mention '{mention_text}'.")
-        return res
+            ]
+
+        print(f"Did not find predicted mention '{mention_text}' (or all occurrences are already taken).")
+        return []
 
     def parse(self, document: data.Document, string: str) -> data.Document:
         parsed_mentions: typing.List[data.Mention] = []
+        taken_token_indices: typing.Set[int] = set()
         num_parse_errors = 0
         for line in string.splitlines(keepends=False):
             line = line.strip()
@@ -74,7 +77,7 @@ class MentionParser(base.BaseParser):
                 continue
 
             try:
-                mentions_from_line = self.parse_line(line, document)
+                mentions_from_line = self.parse_line(line, document, taken_token_indices)
                 parsed_mentions.extend(mentions_from_line)
             except Exception:
                 num_parse_errors += 1
