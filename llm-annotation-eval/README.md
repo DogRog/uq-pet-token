@@ -34,6 +34,8 @@ uv run python src/llm-annotate.py
 
 Predictions are written to `res/pred/<model>/end-to-end/pet.jsonl`. Any `/` in the model ID becomes `_` in the folder name.
 
+Each document is saved as soon as it is annotated. If a run is interrupted (Ctrl+C, a timeout), start it again and it skips the documents already in that file. To redo a model from scratch, delete the file first.
+
 ### Evaluate
 
 Add the model's folder name to the `models` list in `src/llm-metrics.py`, then run:

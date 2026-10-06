@@ -1,6 +1,7 @@
 import collections
 import dataclasses
 import json
+import os
 import pathlib
 import typing
 
@@ -288,6 +289,19 @@ class JsonExporter:
         with open(self._path, "w", encoding="utf8") as f:
             f.write("\n".join(json_lines))
 
+    def append(self, document: Document):
+        """Appends a single document, e.g., to save each prediction as soon as it is done."""
+        path = pathlib.Path(self._path)
+        separator = ""
+        if path.exists() and path.stat().st_size > 0:
+            with open(path, "rb") as f:
+                f.seek(-1, os.SEEK_END)
+                # files written by export() don't end with a newline
+                if f.read(1) != b"\n":
+                    separator = "\n"
+        with open(path, "a", encoding="utf8") as f:
+            f.write(separator + json.dumps(self._dict_exporter.export_document(document)) + "\n")
+
 
 class DictExporter:
     def export_document(self, document: Document) -> typing.Dict:
@@ -438,6 +452,8 @@ class JsonImporter:
         documents: typing.List[Document] = []
         with open(self._file_path, "r", encoding="utf8") as f:
             for json_line in f:
+                if json_line.strip() == "":
+                    continue
                 json_data = json.loads(json_line)
                 documents.append(self._dict_importer.read_document_from_dict(json_data))
         return documents

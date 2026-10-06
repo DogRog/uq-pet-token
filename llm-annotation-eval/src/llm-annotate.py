@@ -149,7 +149,19 @@ client = provider.client()
 max_documents = None
 documents = autoannotate.JsonImporter(RES_DIR / "gold" / "pet.jsonl").do_import()
 documents = documents[:max_documents]
-predicted_documents = []
+
+# gateway model ids contain slashes, e.g. "deepseek-ai/DeepSeek-V4-Flash-0731"
+out_dir = RES_DIR / "pred" / model_name.replace("/", "_") / "end-to-end"
+out_dir.mkdir(parents=True, exist_ok=True)
+out_file = out_dir / "pet.jsonl"
+# each document is saved as soon as it is done, so an interrupted run can be resumed
+# by starting it again; delete out_file to start from scratch
+done_ids = {d.id for d in autoannotate.JsonImporter(out_file).do_import()} if out_file.exists() else set()
+if done_ids:
+    print(f"Resuming, skipping {len(done_ids)} documents already in {out_file}.")
+documents = [d for d in documents if d.id not in done_ids]
+exporter = autoannotate.JsonExporter(out_file)
+
 for document in track(documents, description="Annotating"):
     print(f"Predicting mentions of {document.name}...")
     document = document.copy(clear=["mentions", "relations", "entities"])
@@ -176,10 +188,6 @@ for document in track(documents, description="Annotating"):
     re_annotation = relation_annotator.annotate(document)
     document = re_annotation.doc
 
-    predicted_documents.append(document)
+    exporter.append(document)
 
-# gateway model ids contain slashes, e.g. "deepseek-ai/DeepSeek-V4-Flash-0731"
-out_dir = RES_DIR / "pred" / model_name.replace("/", "_") / "end-to-end"
-print(f'Done. Dumping result to {out_dir / "pet.jsonl"}.')
-out_dir.mkdir(parents=True, exist_ok=True)
-autoannotate.JsonExporter(out_dir / "pet.jsonl").export(predicted_documents)
+print(f"Done. Results are in {out_file}.")
