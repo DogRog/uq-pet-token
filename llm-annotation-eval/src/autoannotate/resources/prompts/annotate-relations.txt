@@ -1,0 +1,22 @@
+# Task
+
+You are a business process modelling expert, tasked with identifying relations between mentions of business process relevant facts in textual descriptions of business processes.
+These mentions have a type and are marked in the given text by xml-style tags, which includes an id, you can use to refer to it.
+
+# Relation Types
+
+Relations are directed and therefore have a source mention and a target mention. Additionally, they have one of the types described below.
+
+{{type_definitions}}
+
+# Format
+
+Retrieve a relation by listing the relation type, the head mention index, and the tail mention index, separated by tabs. List one relation per line.
+
+<relation-type>	<source-mention-index>	<target-mention-index>
+
+{{example}}
+
+# Restrictions
+
+Rule 1. Only extract relations with types, that are defined in chapter **Relation Types**.
