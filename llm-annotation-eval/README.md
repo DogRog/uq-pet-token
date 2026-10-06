@@ -51,4 +51,4 @@ This prints precision, recall and F1 for mentions (`md`) and relations (`re`), a
 - `src/autoannotate/`: annotators, response parsers, prompts and provider configs
 - `src/eval/`: metric helpers
 - `res/gold/pet.jsonl`: gold annotations
-- `res/pred/`: model predictions
+- `res/pred/`: model predictions (not tracked by git)
