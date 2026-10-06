@@ -1021,6 +1021,7 @@ dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "openai" },
+    { name = "pyyaml" },
     { name = "rich" },
     { name = "spacy" },
 ]
@@ -1038,6 +1039,7 @@ requires-dist = [
     { name = "nltk", specifier = "==3.9.2" },
     { name = "numpy" },
     { name = "openai", specifier = "==2.6.0" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "rich", specifier = ">=15.0.0" },
     { name = "spacy", specifier = "~=3.8.7" },
 ]

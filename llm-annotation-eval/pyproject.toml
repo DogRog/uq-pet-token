@@ -12,6 +12,7 @@ dependencies = [
     "en_core_web_md @ https://github.com/explosion/spacy-models/releases/download/en_core_web_md-3.8.0/en_core_web_md-3.8.0-py3-none-any.whl#sha256=5e6329fe3fecedb1d1a02c3ea2172ee0fede6cea6e4aefb6a02d832dba78a310",
     "rich>=15.0.0",
     "langextract==1.7.0",
+    "pyyaml>=6.0.3",
 ]
 
 [tool.uv]

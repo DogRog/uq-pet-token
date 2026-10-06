@@ -1,13 +1,10 @@
-import pathlib
+"""
+Mention and relation definitions and the few-shot format examples, the same for every run config.
 
-import dotenv
-from rich.progress import track
-
+A run's manifest (run.json) records the prompts rendered from these, and resuming a run
+refuses to continue if they changed in between.
+"""
 import autoannotate
-
-RES_DIR = pathlib.Path(__file__).parent.parent / "res"
-
-dotenv.load_dotenv()
 
 mention_definitions = [
     autoannotate.MentionDefinition(
@@ -124,70 +121,3 @@ the <actor id=1> LLM </actor> <activity id=0> extracts </activity> <activity_dat
 actor performer	0	1
 uses	0	2
 """
-
-
-# "openai" or "nhr" (OpenAI-compatible LLM gateway of NHR@FAU), see autoannotate.PROVIDERS
-# provider_name = "openai"
-# model_name = "gpt-6-sol"
-
-# for "nhr" use a gateway chat model id (LightOnOCR and Qwen3-Embedding are not chat models;
-# deepseek-ai/DeepSeek-V4-Flash-0731 is listed but did not respond as of 2026-10-06):
-#   moonshotai/Kimi-K3, moonshotai/Kimi-K2.6, deepseek-ai/DeepSeek-V4.1-Flash,
-#   zai-org/GLM-5.3, zai-org/GLM-5.3-Flash, zai-org/GLM-5.2-FP8,
-#   mistralai/Mistral-Medium-3.5-128B, RedHatAI/Mistral-Small-3.2-24B-Instruct-2506-FP8,
-#   GaleneAI/Magistral-Small-2509-FP8-Dynamic, Qwen/Qwen3.6-35B-A3B-FP8, Qwen/Qwen3.8-27B-FP8,
-#   RedHatAI/gemma-4-31B-it-FP8-block, google/gemma-4-E4B-it, gpt-oss-120b, XiaomiMiMo/MiMo-V2.6-Flash-RL,
-#   Aleph-Alpha/Kolibri-1, ibm-granite/granite-4.1-3b, Microsoft/Phi-4-mini-instruct
-provider_name = "nhr"
-model_name = "deepseek-ai/DeepSeek-V4.1-Flash"
-
-# None omits the parameter, most open-weight models on the NHR@FAU gateway don't support it
-reasoning_effort = "none" if provider_name == "openai" else None
-provider = autoannotate.get_provider(provider_name)
-client = provider.client()
-# set to an int to only annotate the first n documents, e.g. for quick test runs
-max_documents = None
-documents = autoannotate.JsonImporter(RES_DIR / "gold" / "pet.jsonl").do_import()
-documents = documents[:max_documents]
-
-# gateway model ids contain slashes, e.g. "deepseek-ai/DeepSeek-V4-Flash-0731"
-out_dir = RES_DIR / "pred" / model_name.replace("/", "_") / "end-to-end"
-out_dir.mkdir(parents=True, exist_ok=True)
-out_file = out_dir / "pet.jsonl"
-# each document is saved as soon as it is done, so an interrupted run can be resumed
-# by starting it again; delete out_file to start from scratch
-done_ids = {d.id for d in autoannotate.JsonImporter(out_file).do_import()} if out_file.exists() else set()
-if done_ids:
-    print(f"Resuming, skipping {len(done_ids)} documents already in {out_file}.")
-documents = [d for d in documents if d.id not in done_ids]
-exporter = autoannotate.JsonExporter(out_file)
-
-for document in track(documents, description="Annotating"):
-    print(f"Predicting mentions of {document.name}...")
-    document = document.copy(clear=["mentions", "relations", "entities"])
-    mention_annotator = autoannotate.LLMMentionAnnotator(
-        client=client,
-        language_model=model_name,
-        example=mention_format_example,
-        mention_definitions=mention_definitions,
-        reasoning_effort=reasoning_effort,
-        instruction_role=provider.instruction_role,
-    )
-    md_annotation = mention_annotator.annotate(document)
-    document = md_annotation.doc
-
-    print(f"Predicting relations of {document.name}...")
-    relation_annotator = autoannotate.LLMRelationsAnnotator(
-        client=client,
-        language_model=model_name,
-        example=relation_format_example,
-        type_definitions=relation_definitions,
-        reasoning_effort=reasoning_effort,
-        instruction_role=provider.instruction_role,
-    )
-    re_annotation = relation_annotator.annotate(document)
-    document = re_annotation.doc
-
-    exporter.append(document)
-
-print(f"Done. Results are in {out_file}.")

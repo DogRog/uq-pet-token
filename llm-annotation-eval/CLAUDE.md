@@ -4,47 +4,55 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Uses LLMs to annotate business process descriptions from the PET dataset with process element mentions (Activity, Actor, Activity Data, XOR/AND Gateway, Condition/Further Specification) and the relations between them (flow, uses, actor performer/recipient, same gateway, further specification), then scores predictions against the gold annotations in `res/gold/pet.jsonl` (44 documents).
+Uses LLMs to annotate business process descriptions from the PET dataset with process element mentions (Activity, Actor, Activity Data, XOR/AND Gateway, Condition/Further Specification) and the relations between them (flow, uses, actor performer/recipient, same gateway, further specification), then scores predictions against the gold annotations in `res/gold/pet.jsonl` (45 documents). The results are reported in a paper, so runs log everything needed to describe them.
 
 ## Commands
 
-Environment is managed with uv (Python 3.12, `package = false` — nothing is built or installed; scripts run directly from `src/`, so `src/` is the import root for `autoannotate`, `eval`, `data`).
+Environment is managed with uv (Python ≥3.10, `package = false` — nothing is built or installed; scripts run directly from `src/`, so `src/` is the import root for `autoannotate`, `eval`, `experiments`, `data`).
 
 ```bash
 uv sync
-uv run python src/llm-annotate.py   # annotate gold docs with an LLM
-uv run python src/llm-metrics.py    # score predictions
+uv run python src/run-configs.py configs/deepseek-v4.1-flash.yaml   # annotate + score one config
+uv run python src/run-configs.py configs/                           # every config
+uv run python src/llm-metrics.py    # score prediction folders listed in its `models` variable
 uv run pytest                       # all tests
 uv run pytest tests/test_mentions.py -k repeated   # a subset
 ```
 
-Tests in `tests/` never call an LLM: `conftest.py` provides `make_doc` (builds a `Document` from whitespace-tokenized sentences) and `fake_client` (stands in for `openai.OpenAI` with a canned answer). `llm-metrics.py` is loaded via `importlib` because of the hyphen in its name. Known bugs are kept as `xfail(strict=True)` tests, so fixing one makes its test fail until the marker is removed.
-
-There is no linter and the scripts take no CLI arguments. Both scripts are configured by editing module-level variables:
-
-- `src/llm-annotate.py` (bottom of file): `provider_name` (`"openai"` or `"nhr"`), `model_name`, `reasoning_effort`, `max_documents` (int for a quick run on the first n docs, `None` for all). The mention/relation type definitions and few-shot format examples fed into the prompts also live in this script.
-- `src/llm-metrics.py`: the `models` list of folder names under `res/pred/`.
+Tests in `tests/` never call an LLM: `conftest.py` provides `make_doc` (builds a `Document` from whitespace-tokenized sentences) and `fake_client` (stands in for `openai.OpenAI`; the answer can be a function of the request, which may raise). `llm-metrics.py` is loaded via `importlib` because of the hyphen in its name. Known bugs are kept as `xfail(strict=True)` tests, so fixing one makes its test fail until the marker is removed. There is no linter.
 
 API keys come from `.env` (`OPENAI_API_KEY`, `NHR_API_KEY`; see `.env.template`).
 
+Source files mix CRLF and LF line endings; keep each file's existing endings when editing.
+
+## Experiments
+
+A run config is a YAML file (`*.yaml`/`*.yml`) in `configs/` (keys: `provider`, `model`, `reasoning_effort`, `max_documents`, `repeats`; see `configs/README.md`, which also records which `reasoning_effort` values each NHR model accepts). The file stem is the config name. `src/run-configs.py` validates all configs and API keys before the first call, then for each config and repeat: `experiments.runner.annotate_run` → `experiments.report.score_run`, and finally rebuilds `res/pred/runs.csv` and `res/pred/summary.csv` from **every** run folder on disk.
+
+Run folder `res/pred/<config>/run-<i>/`: `end-to-end/pet.jsonl` (predictions), `calls.jsonl` (one line per LLM call: tokens, duration, finish reason, raw response, reasoning, parser issues), `run.json` (settings, rendered prompts, a session per start with git commit/dirty flag, package versions, gold sha256, plus totals), `metrics.json`. Resuming skips documents already in `pet.jsonl` but raises if `RunConfig.settings()` (provider, model, reasoning effort) or the rendered prompts differ from `run.json`. `totals` counts only the latest successful call per (document, step) of completed documents; the rest are `discarded_calls`.
+
+Mention/relation definitions and few-shot examples are shared by all configs, in `src/experiments/definitions.py`.
+
 ## Pipeline architecture
 
-`llm-annotate.py` runs two LLM calls per document, end to end:
+Two LLM calls per document, end to end:
 
-1. **Mentions** — `LLMMentionAnnotator` sends the document as numbered sentences (`i: tok tok tok`) and asks for `text<TAB>type<TAB>sentence_id` lines. `MentionParser` maps those back to token indices using LangExtract's `WordAligner` per sentence (exact match first, fuzzy fallback; a fuzzy match may not reuse tokens already claimed by an exact match). Unplaceable lines are dropped with a printed message, not raised.
+1. **Mentions** — `LLMMentionAnnotator` sends the document as numbered sentences (`i: tok tok tok`) and asks for `text<TAB>type<TAB>sentence_id` lines. `MentionParser` maps those back to token indices using LangExtract's `WordAligner` per sentence (exact match first, fuzzy fallback; a fuzzy match may not reuse tokens already claimed by an exact match).
 2. **Relations** — `LLMRelationsAnnotator` sends the text with predicted mentions inlined as XML-ish tags carrying their list index (`<actor id=1> clerk </actor>`, via `util.format_document_text_with_entity_mentions`) and asks for `type<TAB>head_id<TAB>tail_id` lines. `RelationParser` turns these into `Relation`s that reference mentions **by index into `document.mentions`** — so mention order/removal matters (`Document.remove_mention` reindexes relations).
 
+Parsers never raise on bad LLM output: they skip the line and call `BaseParser.report(kind, message)`, which prints and records it. Kinds are prefixed `dropped_` (line not used), `placed_` (used after fuzzy/out-of-order alignment) or are `ignored_line` (no tab, e.g. chatter); `runs.csv` sums the `dropped_` ones. `BaseAnnotator.annotate` returns an `LLMAnnotation` with the parsed doc plus everything the run log needs (tokens incl. `reasoning_tokens` when reported, raw response, `reasoning_content`/`reasoning` from the message's extra fields, finish reason, duration, issues).
+
 Shared plumbing in `src/autoannotate/`:
-- `base.BaseAnnotator`: builds chat-completion params; prompts are authored with a `developer` role and rewritten to the provider's `instruction_role` (`system` for NHR/vLLM-served open-weight models). `reasoning_effort=None` omits the parameter (most NHR models reject it).
+- `base.BaseAnnotator`: builds chat-completion params; prompts are authored with a `developer` role and rewritten to the provider's `instruction_role` (`system` for NHR/vLLM-served open-weight models). `reasoning_effort=None` omits the parameter. `get_instruction()` on the mention/relation annotators returns the document-independent instruction prompt.
 - `providers.py`: `PROVIDERS` registry; NHR@FAU is an OpenAI-compatible gateway, so everything goes through the `openai` client.
 - `prompts.Prompt`: templates in `resources/prompts/*.txt` with `{{param}}` placeholders; missing or unknown params assert.
 - `data.py`: `Document`/`Token`/`Mention`/`Relation`/`Entity` plus JSONL import/export. The importer lowercases mention and relation types, so gold `"Activity Data"` and predicted types compare as `"activity data"`.
 - `entities.py` (`LLMEntitiesAnnotator`, coreference into entities) and `BaseAnnotator.batch_line` exist but are not used by the current pipeline.
 
-Output: `res/pred/<model_name with "/" → "_">/end-to-end/pet.jsonl` (`res/pred/` is git-ignored). Each document is appended as soon as it finishes; re-running skips document ids already in that file, so delete the file to redo a model.
-
 ## Evaluation
 
-`llm-metrics.py` iterates `res/pred/<model>/<target>/` where target is `end-to-end` (scores `md` and `re`), `md`, or `re`/`isolated-re`; any other folder name raises. Matching is lenient: a predicted mention matches a gold one if types are equal and token sets **overlap at all**; a relation matches if type is equal and both head and tail mentions overlap. Matching is greedy one-to-one per document. Scores are precision/recall/F1 per document, reported as mean ± std across documents (macro), using `eval.metrics.Stats`.
+All matching lives in `src/eval/scoring.py`, used by both the experiment reports and `llm-metrics.py`. Matching is lenient: a predicted mention matches a gold one if types are equal and token sets **overlap at all**; a relation matches if type is equal and both head and tail mentions overlap. Matching is greedy one-to-one per document. `scoring.summarize` reports macro (mean ± population std of per-document P/R/F1, the numbers `llm-metrics.py` prints), micro (summed counts) and per-type micro scores. A document with no gold and no predicted annotations scores 1.0 (`eval.metrics.Stats`). `summary.csv` uses the sample SD across runs.
 
-`src/data/pet.py` is an older parallel copy of the data model (`PetDocument`, etc.) used only by `src/eval/metrics.py`; the scripts use `autoannotate.data`.
+`llm-metrics.py` iterates `res/pred/<entry>/<target>/` for each entry of its `models` list (e.g. `"deepseek-v4.1-flash/run-1"` or a pre-config folder like `"gpt-6-sol"`), where target is `end-to-end` (scores `md` and `re`), `md`, or `re`/`isolated-re`; any other folder name raises.
+
+`src/data/pet.py` is an older parallel copy of the data model (`PetDocument`, etc.); only `src/eval/metrics.py` imports it. Everything else uses `autoannotate.data`.

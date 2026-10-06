@@ -18,37 +18,60 @@ In `.env`, fill in the key for the provider you use:
 
 ## Usage
 
-### Annotate
+### Run experiments
 
-Set these values near the bottom of `src/llm-annotate.py`:
+Each experiment is a config file in `configs/`, e.g.:
 
-- `provider_name`: `"openai"` or `"nhr"`
-- `model_name`: e.g. `"gpt-6-sol"`, or an NHR model ID such as `"moonshotai/Kimi-K3"` (the available NHR chat models are listed in a comment there)
-- `max_documents`: an int for a quick test on the first few documents, or `None` for all
-
-Then run:
-
-```bash
-uv run python src/llm-annotate.py
+```yaml
+provider: nhr                             # or openai
+model: deepseek-ai/DeepSeek-V4.1-Flash
+reasoning_effort: low                     # optional, left out: not sent
+max_documents: 5                          # optional, for a quick test
+repeats: 3                                # optional, default 1
 ```
 
-Predictions are written to `res/pred/<model>/end-to-end/pet.jsonl`. Any `/` in the model ID becomes `_` in the folder name.
+[configs/README.md](configs/README.md) explains the keys and which `reasoning_effort` values each NHR model accepts. To annotate the gold documents and score the predictions, run:
 
-Each document is saved as soon as it is annotated. If a run is interrupted (Ctrl+C, a timeout), start it again and it skips the documents already in that file. To redo a model from scratch, delete the file first.
+```bash
+uv run python src/run-configs.py configs/deepseek-v4.1-flash.yaml
+```
 
-### Evaluate
+Pass several files, or `configs/` for all of them. Each run of a config gets its own folder, `res/pred/<config name>/run-<i>/`, containing:
 
-Add the model's folder name to the `models` list in `src/llm-metrics.py`, then run:
+- `end-to-end/pet.jsonl`: the predicted documents
+- `calls.jsonl`: one line per LLM call, with token usage (including reasoning tokens where the provider reports them), duration, finish reason, the raw response, the reasoning text, and the lines the parser had to drop or fix
+- `run.json`: the settings, the exact prompts, and per session the start and end time, git commit, Python and package versions, and a hash of the gold file, plus totals over all calls
+- `metrics.json`: precision, recall and F1 for mentions (`md`) and relations (`re`), as the mean ± SD over documents (macro), micro-averaged, and per type
+
+After every invocation, two tables are rebuilt from all run folders:
+
+- `res/pred/runs.csv`: one row per run, with scores, tokens, time and parser problems
+- `res/pred/summary.csv`: one row per config, the mean and sample SD over its complete runs
+
+Each document is saved as soon as it is annotated. If a run is interrupted (Ctrl+C, a timeout), start it again and it continues with the documents that are left. It refuses to continue if the model, provider, reasoning effort or prompts changed since; rename the config for a new experiment, or delete its folder to start over.
+
+### Evaluate predictions on their own
+
+`src/llm-metrics.py` scores prediction folders directly, including ones from before the configs. Add folder names under `res/pred/` (e.g. `"deepseek-v4.1-flash/run-1"`) to its `models` list, then run:
 
 ```bash
 uv run python src/llm-metrics.py
 ```
 
-This prints precision, recall and F1 for mentions (`md`) and relations (`re`), as mean ± standard deviation over documents.
+It prints precision, recall and F1 for mentions (`md`) and relations (`re`), as mean ± standard deviation over documents, the same numbers as the macro scores in `metrics.json`.
+
+### Tests
+
+```bash
+uv run pytest
+```
 
 ## Layout
 
-- `src/autoannotate/`: annotators, response parsers, prompts and provider configs
-- `src/eval/`: metric helpers
+- `configs/`: experiment configs
+- `src/run-configs.py`: runs configs
+- `src/experiments/`: config loading, the run loop and its logs, reporting; `definitions.py` holds the mention and relation definitions and few-shot examples used in the prompts
+- `src/autoannotate/`: annotators, response parsers, prompt templates and provider configs
+- `src/eval/`: matching and metrics
 - `res/gold/pet.jsonl`: gold annotations
-- `res/pred/`: model predictions (not tracked by git)
+- `res/pred/`: model predictions and run logs (not tracked by git)
