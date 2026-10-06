@@ -40,18 +40,34 @@ def make_doc():
 
 
 class FakeClient:
-    """Stands in for openai.OpenAI, answers every chat completion with a fixed text."""
+    """
+    Stands in for openai.OpenAI.
 
-    def __init__(self, answer: str, prompt_tokens: int = 11, completion_tokens: int = 7):
+    :param answer: the answer to every chat completion, or a function from the request params to
+                   the answer, which may raise to simulate a failed request
+    :param reasoning: reasoning text returned next to the answer, like vLLM's reasoning_content
+    :param reasoning_tokens: None to not report them, like most open-weight models
+    """
+
+    def __init__(self, answer: typing.Union[str, typing.Callable[[typing.Dict], str]],
+                 prompt_tokens: int = 11, completion_tokens: int = 7,
+                 reasoning: typing.Optional[str] = None, reasoning_tokens: typing.Optional[int] = None,
+                 finish_reason: str = "stop"):
         self.calls: typing.List[typing.Dict] = []
-        self._answer = answer
-        self._usage = types.SimpleNamespace(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
+        self._answer = answer if callable(answer) else lambda params: answer
+        details = types.SimpleNamespace(reasoning_tokens=reasoning_tokens) if reasoning_tokens is not None else None
+        self._usage = types.SimpleNamespace(
+            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, completion_tokens_details=details
+        )
+        self._model_extra = {"reasoning_content": reasoning} if reasoning is not None else {}
+        self._finish_reason = finish_reason
         self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=self._create))
 
     def _create(self, **params):
         self.calls.append(params)
-        message = types.SimpleNamespace(content=self._answer)
-        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=message)], usage=self._usage)
+        message = types.SimpleNamespace(content=self._answer(params), model_extra=self._model_extra)
+        choice = types.SimpleNamespace(message=message, finish_reason=self._finish_reason)
+        return types.SimpleNamespace(choices=[choice], usage=self._usage, model=params["model"] + "-2026-10-01")
 
 
 @pytest.fixture

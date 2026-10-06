@@ -1,5 +1,4 @@
 import pathlib
-import traceback
 import typing
 
 import langextract as lx
@@ -27,11 +26,7 @@ class MentionParser(base.BaseParser):
         split_line = tuple(e for e in split_line if e.strip() != "")
 
         if len(split_line) < 3 or len(split_line) > 4:
-            print("Malformed line:", line)
-            raise ValueError(
-                f"Skipping line {split_line}, as it is not formatted "
-                f"properly, expected between 3 and 4 arguments."
-            )
+            raise ValueError(f"Expected 3 or 4 tab-separated fields, got {len(split_line)}.")
 
         if len(split_line) == 3:
             mention_text, mention_type, sentence_id = split_line
@@ -42,17 +37,15 @@ class MentionParser(base.BaseParser):
         try:
             sentence_id = int(sentence_id)
         except ValueError:
-            print(f"No numerical sentence id in line: {line}")
-            raise ValueError(f"Invalid sentence index '{sentence_id}', skipping line.")
+            raise ValueError(f"Invalid sentence index '{sentence_id}'.")
 
         if not 0 <= sentence_id < len(document.sentences):
-            raise ValueError(f"Sentence index {sentence_id} out of range, skipping line.")
+            raise ValueError(f"Sentence index {sentence_id} out of range.")
 
         return mention_text.strip(), mention_type.lower().strip(), sentence_id
 
-    @staticmethod
     def align_sentence(
-            sentence: typing.List[data.Token], lines: typing.List[typing.Tuple[str, str]]
+            self, sentence: typing.List[data.Token], lines: typing.List[typing.Tuple[str, str]]
     ) -> typing.List[typing.Optional[data.Mention]]:
         """
         Places the (text, type) lines predicted for one sentence on its tokens.
@@ -88,29 +81,33 @@ class MentionParser(base.BaseParser):
 
         res: typing.List[typing.Optional[data.Mention]] = []
         for extraction in aligned:
-            if extraction.char_interval is None:
-                print(f"Did not find predicted mention '{extraction.extraction_text}'.")
-                res.append(None)
-                continue
-
-            indices = token_indices(extraction)
+            indices = token_indices(extraction) if extraction.char_interval is not None else ()
             if len(indices) == 0:
-                print(f"Did not find predicted mention '{extraction.extraction_text}'.")
+                self.report("dropped_not_found", f"Did not find predicted mention '{extraction.extraction_text}'.")
                 res.append(None)
                 continue
             if extraction.alignment_status != lx.data.AlignmentStatus.MATCH_EXACT:
                 if any(idx in taken_token_indices for idx in indices):
                     # the fuzzy fallback may land on an occurrence another line already
                     # claimed, e.g. if the LLM listed a text more often than it occurs
-                    print(f"Did not find a free occurrence of predicted mention '{extraction.extraction_text}'.")
+                    self.report(
+                        "dropped_no_free_occurrence",
+                        f"Did not find a free occurrence of predicted mention '{extraction.extraction_text}'."
+                    )
                     res.append(None)
                     continue
                 matched_text = " ".join(t.text for t in sentence if t.index_in_document in indices)
                 if matched_text.lower() == extraction.extraction_text.lower():
                     # the aligner also falls back to fuzzy matching for lines out of text order
-                    print(f"Predicted mention '{extraction.extraction_text}' is out of text order, placed it anyway.")
+                    self.report(
+                        "placed_out_of_order",
+                        f"Predicted mention '{extraction.extraction_text}' is out of text order, placed it anyway."
+                    )
                 else:
-                    print(f"Fuzzy matched predicted mention '{extraction.extraction_text}' to '{matched_text}'.")
+                    self.report(
+                        "placed_fuzzy",
+                        f"Fuzzy matched predicted mention '{extraction.extraction_text}' to '{matched_text}'."
+                    )
                 taken_token_indices.update(indices)
 
             res.append(data.Mention(token_document_indices=indices, type=extraction.extraction_class))
@@ -119,21 +116,19 @@ class MentionParser(base.BaseParser):
     def parse(self, document: data.Document, string: str) -> data.Document:
         # lines grouped by sentence, in the order the LLM produced them
         lines_by_sentence: typing.Dict[int, typing.List[typing.Tuple[int, str, str]]] = {}
-        num_parse_errors = 0
         for line_index, line in enumerate(string.splitlines(keepends=False)):
             line = line.strip()
             if line == "":
                 continue
             if "\t" not in line:
+                self.report("ignored_line", f"Skipping non-tab-separated line '{line}'.")
                 continue
 
             try:
                 mention_text, mention_type, sentence_id = self.parse_line(line, document)
                 lines_by_sentence.setdefault(sentence_id, []).append((line_index, mention_text, mention_type))
-            except Exception:
-                num_parse_errors += 1
-                print("Error during parsing of line, skipping line. Error was:")
-                print(traceback.format_exc())
+            except ValueError as e:
+                self.report("dropped_malformed", f"Skipping line '{line}': {e}")
 
         # keep the mentions in the order of the LLM output
         mentions_by_line: typing.Dict[int, data.Mention] = {}
@@ -172,14 +167,18 @@ class LLMMentionAnnotator(base.BaseAnnotator):
         self._defs = mention_definitions
         self._example = example
 
+    def get_instruction(self) -> str:
+        """The instruction message, the same for every document."""
+        example = self._example if self._example is not None else ""
+        type_definitions = "\n".join(f" - {f.for_llm()}" for f in self._defs)
+        return self._prompt_template(type_definitions=type_definitions, example=example)
+
     def get_messages(
             self,
             document: data.Document
     ) -> typing.List[typing.Union[ChatCompletionDeveloperMessageParam, ChatCompletionUserMessageParam]]:
         text = self._format(document)
-        example = self._example if self._example is not None else ""
-        type_definitions = "\n".join(f" - {f.for_llm()}" for f in self._defs)
-        prompt = self._prompt_template(type_definitions=type_definitions, example=example)
+        prompt = self.get_instruction()
 
         return [
             ChatCompletionDeveloperMessageParam(

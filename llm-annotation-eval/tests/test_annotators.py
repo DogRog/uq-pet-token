@@ -104,3 +104,49 @@ class TestProviders:
     @pytest.mark.parametrize("name, role", [("openai", "developer"), ("nhr", "system")])
     def test_instruction_roles(self, name, role):
         assert autoannotate.get_provider(name).instruction_role == role
+
+
+def test_annotate_returns_what_the_run_log_needs(fake_client, make_doc):
+    client = fake_client("Mentions:\nclerk\tActor\t0", reasoning="the clerk acts", reasoning_tokens=3, finish_reason="stop")
+
+    annotation = mention_annotator(client).annotate(make_doc(["the clerk works"]))
+
+    assert annotation.response == "Mentions:\nclerk\tActor\t0"
+    assert annotation.reasoning == "the clerk acts"
+    assert annotation.reasoning_tokens == 3
+    assert annotation.finish_reason == "stop"
+    assert annotation.response_model == "test-model-2026-10-01"
+    assert annotation.duration_s >= 0
+    assert [i["kind"] for i in annotation.issues] == ["ignored_line"]
+
+
+def test_annotate_without_reasoning_or_reasoning_token_count(fake_client, make_doc):
+    annotation = mention_annotator(fake_client("clerk\tActor\t0")).annotate(make_doc(["the clerk works"]))
+
+    assert annotation.reasoning is None
+    assert annotation.reasoning_tokens is None
+    assert annotation.issues == []
+
+
+def test_annotate_handles_missing_answer(fake_client, make_doc):
+    # e.g. a reasoning model that used all tokens before answering
+    client = fake_client(lambda params: None, finish_reason="length")
+
+    annotation = mention_annotator(client).annotate(make_doc(["the clerk works"]))
+
+    assert annotation.response == ""
+    assert annotation.doc.mentions == []
+    assert annotation.finish_reason == "length"
+
+
+def test_issues_are_reset_for_every_document(fake_client, make_doc):
+    annotator = mention_annotator(fake_client("chatter\nclerk\tActor\t0"))
+    annotator.annotate(make_doc(["the clerk works"]))
+
+    assert len(annotator.annotate(make_doc(["the clerk works"])).issues) == 1
+
+
+@pytest.mark.parametrize("make_annotator", [mention_annotator, relation_annotator])
+def test_instruction_is_the_first_message(fake_client, make_doc, make_annotator):
+    annotator = make_annotator(fake_client(""))
+    assert annotator.get_messages(make_doc(["a"]))[0]["content"][0]["text"] == annotator.get_instruction()

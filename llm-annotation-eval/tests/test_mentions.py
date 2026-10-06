@@ -101,3 +101,27 @@ class TestParse:
         # "the form" occurs at tokens 4 and 10, but the second clerk (token 7) is listed first
         mentions = parse(doc, "clerk\tActor\t0", "clerk\tActor\t0", "form\tActivity Data\t0", "form\tActivity Data\t0")
         assert len(set(mentions)) == len(mentions)
+
+
+
+@pytest.mark.parametrize("answer, kind", [
+    ("Here are the mentions:", "ignored_line"),
+    ("clerk\tActor\tx", "dropped_malformed"),
+    ("secretary\tActor\t1", "dropped_not_found"),
+    ("clerk\tActor\t0\nclerk\tActor\t0\nclerk\tActor\t0", "dropped_no_free_occurrence"),
+    ("signs\tActivity\t0\nchecks\tActivity\t0", "placed_out_of_order"),
+    ("the manager approve\tActivity\t1", "placed_fuzzy"),
+])
+def test_reports_issues_by_kind(doc, answer, kind):
+    parser = MentionParser()
+
+    parser.parse(doc, answer)
+
+    assert [i["kind"] for i in parser.issues] == [kind]
+    assert parser.issues[0]["message"]
+
+
+def test_no_issues_for_a_clean_answer(doc):
+    parser = MentionParser()
+    parser.parse(doc, "clerk\tActor\t0\nchecks\tActivity\t0")
+    assert parser.issues == []

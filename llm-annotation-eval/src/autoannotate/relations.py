@@ -11,10 +11,11 @@ from autoannotate import util, base, definitions, data, prompts
 class RelationParser(base.BaseParser):
     def parse(self, document: data.Document, string: str) -> data.Document:
         document = document.copy(clear=["relations"])
-        total_errors = 0
         for line in string.splitlines(keepends=False):
+            if line.strip() == "":
+                continue
             if "\t" not in line:
-                print(f"Skipping non-tab-separated line {line}.")
+                self.report("ignored_line", f"Skipping non-tab-separated line '{line}'.")
                 continue
             split_line = line.split("\t")
             if len(split_line) == 3:
@@ -24,22 +25,24 @@ class RelationParser(base.BaseParser):
                 relation_type, head_index, tail_index = split_line[:3]
                 explanation = "\t".join(split_line[3:])
             else:
-                print(
-                    f"Expected exactly 3-4 arguments in line {line}, got {len(split_line)}. Skipping."
+                self.report(
+                    "dropped_malformed",
+                    f"Skipping line '{line}': expected 3 or 4 tab-separated fields, got {len(split_line)}."
                 )
-                total_errors += 1
                 continue
             relation_type = relation_type.lower().strip()
             try:
                 head_index = int(head_index)
                 tail_index = int(tail_index)
             except ValueError:
-                total_errors += 1
+                self.report("dropped_malformed", f"Skipping line '{line}': mention ids are not numbers.")
                 continue
             # negative indices would silently refer to mentions from the end of the list
-            if not 0 <= head_index < len(document.mentions):
-                continue
-            if not 0 <= tail_index < len(document.mentions):
+            if not (0 <= head_index < len(document.mentions) and 0 <= tail_index < len(document.mentions)):
+                self.report(
+                    "dropped_unknown_mention",
+                    f"Skipping line '{line}': there are only {len(document.mentions)} mentions."
+                )
                 continue
             document.relations.append(
                 data.Relation(
@@ -63,14 +66,18 @@ class LLMRelationsAnnotator(base.BaseAnnotator):
         self._example = example
         self._defs = type_definitions
 
+    def get_instruction(self) -> str:
+        """The instruction message, the same for every document."""
+        example = self._example if self._example is not None else ""
+        type_definitions = "\n".join(f" - {f.for_llm()}" for f in self._defs)
+        return self._prompt_template(type_definitions=type_definitions, example=example)
+
     def get_messages(
             self,
             document: data.Document
     ) -> typing.List[typing.Union[ChatCompletionDeveloperMessageParam, ChatCompletionUserMessageParam]]:
         text = util.format_document_text_with_entity_mentions(document)
-        example = self._example if self._example is not None else ""
-        type_definitions = "\n".join(f" - {f.for_llm()}" for f in self._defs)
-        prompt = self._prompt_template(type_definitions=type_definitions, example=example)
+        prompt = self.get_instruction()
 
         return [
             ChatCompletionDeveloperMessageParam(

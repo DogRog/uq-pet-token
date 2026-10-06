@@ -46,3 +46,13 @@ def test_replaces_existing_relations_and_keeps_mentions(doc):
 
     assert parsed.relations == [data.Relation("uses", 1, 2)]
     assert parsed.mentions == doc.mentions
+
+
+def test_reports_issues_by_kind(doc):
+    parser = RelationParser()
+
+    parser.parse(doc, "\n".join(["Relations:", "", "uses\t1", "uses\tone\t2", "uses\t1\t3", "uses\t1\t2"]))
+
+    assert [i["kind"] for i in parser.issues] == [
+        "ignored_line", "dropped_malformed", "dropped_malformed", "dropped_unknown_mention"
+    ]
