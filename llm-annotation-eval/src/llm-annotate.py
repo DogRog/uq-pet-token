@@ -130,8 +130,16 @@ uses	0	2
 # provider_name = "openai"
 # model_name = "gpt-6-sol"
 
+# for "nhr" use a gateway chat model id (LightOnOCR and Qwen3-Embedding are not chat models;
+# deepseek-ai/DeepSeek-V4-Flash-0731 is listed but did not respond as of 2026-10-06):
+#   moonshotai/Kimi-K3, moonshotai/Kimi-K2.6, deepseek-ai/DeepSeek-V4.1-Flash,
+#   zai-org/GLM-5.3, zai-org/GLM-5.3-Flash, zai-org/GLM-5.2-FP8,
+#   mistralai/Mistral-Medium-3.5-128B, RedHatAI/Mistral-Small-3.2-24B-Instruct-2506-FP8,
+#   GaleneAI/Magistral-Small-2509-FP8-Dynamic, Qwen/Qwen3.6-35B-A3B-FP8, Qwen/Qwen3.8-27B-FP8,
+#   RedHatAI/gemma-4-31B-it-FP8-block, google/gemma-4-E4B-it, gpt-oss-120b, XiaomiMiMo/MiMo-V2.6-Flash-RL,
+#   Aleph-Alpha/Kolibri-1, ibm-granite/granite-4.1-3b, Microsoft/Phi-4-mini-instruct
 provider_name = "nhr"
-model_name = "deepseek-ai/DeepSeek-V4-Flash-0731"
+model_name = "deepseek-ai/DeepSeek-V4.1-Flash"
 
 # None omits the parameter, most open-weight models on the NHR@FAU gateway don't support it
 reasoning_effort = "none" if provider_name == "openai" else None
