@@ -36,9 +36,10 @@ class RelationParser(base.BaseParser):
             except ValueError:
                 total_errors += 1
                 continue
-            if head_index >= len(document.mentions):
+            # negative indices would silently refer to mentions from the end of the list
+            if not 0 <= head_index < len(document.mentions):
                 continue
-            if tail_index >= len(document.mentions):
+            if not 0 <= tail_index < len(document.mentions):
                 continue
             document.relations.append(
                 data.Relation(
