@@ -1,7 +1,0 @@
-numpy
-tqdm
-spacy~=3.8.7
-openai==2.6.0
-nltk==3.9.2
-dotenv==0.9.9
-en_core_web_md @ https://github.com/explosion/spacy-models/releases/download/en_core_web_md-3.8.0/en_core_web_md-3.8.0-py3-none-any.whl#sha256=5e6329fe3fecedb1d1a02c3ea2172ee0fede6cea6e4aefb6a02d832dba78a310
