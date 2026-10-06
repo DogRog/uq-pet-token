@@ -1,7 +1,6 @@
 import pathlib
 
 import dotenv
-import openai
 import tqdm
 
 import autoannotate
@@ -9,8 +8,6 @@ import autoannotate
 RES_DIR = pathlib.Path(__file__).parent.parent / "res"
 
 dotenv.load_dotenv()
-
-client = openai.Client()
 
 mention_definitions = [
     autoannotate.MentionDefinition(
@@ -129,7 +126,17 @@ uses	0	2
 """
 
 
-model_name = "gpt-6-sol"
+# "openai" or "nhr" (OpenAI-compatible LLM gateway of NHR@FAU), see autoannotate.PROVIDERS
+# provider_name = "openai"
+# model_name = "gpt-6-sol"
+
+provider_name = "nhr"
+model_name = "deepseek-ai/DeepSeek-V4-Flash-0731"
+
+# None omits the parameter, most open-weight models on the NHR@FAU gateway don't support it
+reasoning_effort = "none" if provider_name == "openai" else None
+provider = autoannotate.get_provider(provider_name)
+client = provider.client()
 # set to an int to only annotate the first n documents, e.g. for quick test runs
 max_documents = None
 documents = autoannotate.JsonImporter(RES_DIR / "gold" / "pet.jsonl").do_import()
@@ -143,7 +150,8 @@ for document in tqdm.tqdm(documents):
         language_model=model_name,
         example=mention_format_example,
         mention_definitions=mention_definitions,
-        reasoning_effort="none"
+        reasoning_effort=reasoning_effort,
+        instruction_role=provider.instruction_role,
     )
     md_annotation = mention_annotator.annotate(document)
     document = md_annotation.doc
@@ -154,14 +162,16 @@ for document in tqdm.tqdm(documents):
         language_model=model_name,
         example=relation_format_example,
         type_definitions=relation_definitions,
-        reasoning_effort="none"
+        reasoning_effort=reasoning_effort,
+        instruction_role=provider.instruction_role,
     )
     re_annotation = relation_annotator.annotate(document)
     document = re_annotation.doc
 
     predicted_documents.append(document)
 
-print(f'Done. Dumping result to {RES_DIR / "pred" / model_name / "end-to-end" / "pet.jsonl"}.')
-out_dir = RES_DIR / "pred" / model_name / "end-to-end"
+# gateway model ids contain slashes, e.g. "deepseek-ai/DeepSeek-V4-Flash-0731"
+out_dir = RES_DIR / "pred" / model_name.replace("/", "_") / "end-to-end"
+print(f'Done. Dumping result to {out_dir / "pet.jsonl"}.')
 out_dir.mkdir(parents=True, exist_ok=True)
 autoannotate.JsonExporter(out_dir / "pet.jsonl").export(predicted_documents)

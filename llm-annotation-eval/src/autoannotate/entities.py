@@ -49,8 +49,9 @@ class EntityParser(base.BaseParser):
 
 class LLMEntitiesAnnotator(base.BaseAnnotator):
     def __init__(self, client: openai.OpenAI, language_model: str,
-                 reasoning_effort: typing.Literal["none", "minimal", "low", "medium", "high"]):
-        super().__init__(client, language_model, reasoning_effort)
+                 reasoning_effort: base.ReasoningEffort,
+                 instruction_role: typing.Literal["developer", "system"] = "developer"):
+        super().__init__(client, language_model, reasoning_effort, instruction_role)
         prompt_folder = pathlib.Path(__file__).parent.resolve() / "resources" / "prompts"
         self._prompt_template = prompts.Prompt(prompt_folder / "annotate-entities.txt")
 

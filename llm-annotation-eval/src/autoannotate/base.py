@@ -20,13 +20,19 @@ class BaseParser(abc.ABC):
         raise NotImplementedError()
 
 
+ReasoningEffort = typing.Optional[typing.Literal["none", "minimal", "low", "medium", "high"]]
+
+
 class BaseAnnotator(abc.ABC):
     def __init__(self, client: openai.OpenAI, language_model: str,
-                 reasoning_effort: typing.Literal["none", "minimal", "low", "medium", "high"]):
+                 reasoning_effort: ReasoningEffort,
+                 instruction_role: typing.Literal["developer", "system"] = "developer"):
         self.client = client
         self.language_model = language_model
         self.parser = self.get_parser()
+        # None omits the parameter, for models / providers that do not support it
         self.reasoning_effort = reasoning_effort
+        self.instruction_role = instruction_role
 
     @abc.abstractmethod
     def get_messages(
@@ -40,11 +46,17 @@ class BaseAnnotator(abc.ABC):
         raise NotImplementedError()
 
     def get_params(self, document: data.Document):
-        return {
-            "messages": self.get_messages(document),
+        messages = [
+            {**m, "role": self.instruction_role} if m["role"] == "developer" else m
+            for m in self.get_messages(document)
+        ]
+        params = {
+            "messages": messages,
             "model": self.language_model,
-            "reasoning_effort": self.reasoning_effort,
         }
+        if self.reasoning_effort is not None:
+            params["reasoning_effort"] = self.reasoning_effort
+        return params
 
     def batch_line(self, document: data.Document, task_id: str) -> typing.Dict:
         params = self.get_params(document)
