@@ -1,0 +1,6 @@
+# reasoning can't be switched off, the gateway rejects reasoning_effort none
+task: md-test-sentences
+provider: nhr
+model: gpt-oss-120b
+reasoning_effort: high
+repeats: 5

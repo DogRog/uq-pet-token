@@ -6,6 +6,7 @@ import openai
 import pytest
 
 from autoannotate import JsonExporter, JsonImporter, data
+from eval import test_split
 from experiments import report, runner
 from experiments.config import RunConfig
 
@@ -28,6 +29,24 @@ def gold_file(tmp_path, make_doc):
         for doc_id in ("doc-a", "doc-b", "doc-c")
     ]
     JsonExporter(str(path)).export(documents)
+    return path
+
+
+@pytest.fixture
+def test():
+    """The first sentence of every gold document as a test sentence, see eval.test_split."""
+    tokens = "the clerk checks the form".split()
+    tags = ["O", "B-Actor", "B-Activity", "B-Activity Data", "I-Activity Data"]
+    return [
+        {"document name": doc, "sentence-ID": 0, "tokens": tokens, "ner-tags": tags}
+        for doc in ("doc-a", "doc-b", "doc-c")
+    ]
+
+
+@pytest.fixture
+def test_file(tmp_path, test):
+    path = tmp_path / "test.jsonl"
+    path.write_text("".join(json.dumps(row) + "\n" for row in test))
     return path
 
 
@@ -177,13 +196,13 @@ def test_parallel_workers(tmp_path, gold_file, client):
     assert manifest["totals"]["all"]["calls"] == 6
 
 
-def test_mention_detection_only(tmp_path, gold_file, client):
+def test_mention_detection_only(tmp_path, gold_file, client, test):
     pred_dir = tmp_path / "pred"
     config = RunConfig(name="md-only", provider="nhr", model="m", task="md")
     directory = runner.run_dir(pred_dir, config, 1)
 
     runner.annotate_run(config, 1, directory, gold_file, client)
-    metrics = report.score_run(directory, gold_file, "md")
+    metrics = report.score_run(directory, gold_file, "md", test)
     [row] = report.write_summary(pred_dir)
 
     assert [d.id for d in JsonImporter(runner.predictions_file(directory, "md")).do_import()] == ["doc-a", "doc-b", "doc-c"]
@@ -192,7 +211,11 @@ def test_mention_detection_only(tmp_path, gold_file, client):
     manifest = read_manifest(directory)
     assert list(manifest["prompts"]) == ["mentions"]
     assert manifest["totals"]["relations"]["calls"] == 0
-    assert set(metrics) == {"documents", "md"}
+    assert set(metrics) == {"documents", "md", "test"}
+    # the clerk and the checking match exactly, the form is missed
+    assert metrics["test"]["entity_precision"] == 1.0
+    assert metrics["test"]["entity_recall"] == pytest.approx(2 / 3)
+    assert row["test_f1"] == pytest.approx(0.8)
     assert row["task"] == "md" and row["md_f1"] == pytest.approx(0.8)
     assert row["re_f1"] is None
     with open(pred_dir / "runs.csv") as f:
@@ -231,7 +254,7 @@ def test_resuming_with_other_prompts_fails(tmp_path, gold_file, client, monkeypa
         runner.annotate_run(CONFIG, 1, directory, gold_file, client)
 
 
-def test_score_and_summarize_repeated_runs(tmp_path, gold_file, client, fake_client):
+def test_score_and_summarize_repeated_runs(tmp_path, gold_file, client, fake_client, test):
     pred_dir = tmp_path / "pred"
     config = RunConfig(name="repeated", provider="nhr", model="m", repeats=2)
     # the second run finds nothing
@@ -239,7 +262,7 @@ def test_score_and_summarize_repeated_runs(tmp_path, gold_file, client, fake_cli
     for run, run_client in enumerate(clients, start=1):
         directory = runner.run_dir(pred_dir, config, run)
         runner.annotate_run(config, run, directory, gold_file, run_client)
-        metrics = report.score_run(directory, gold_file, "end-to-end")
+        metrics = report.score_run(directory, gold_file, "end-to-end", test)
         assert json.loads((directory / "metrics.json").read_text()) == metrics
 
     summary = report.write_summary(pred_dir)
@@ -270,3 +293,27 @@ def test_score_and_summarize_repeated_runs(tmp_path, gold_file, client, fake_cli
 def test_summary_ignores_folders_without_run_logs(tmp_path):
     (tmp_path / "old-model" / "end-to-end").mkdir(parents=True)
     assert report.write_summary(tmp_path) == []
+
+
+def test_test_sentences_are_annotated_on_their_own(tmp_path, gold_file, client, test, test_file):
+    pred_dir = tmp_path / "pred"
+    config = RunConfig(name="sentences", provider="nhr", model="m", task="md-test-sentences")
+    directory = runner.run_dir(pred_dir, config, 1)
+
+    runner.annotate_run(config, 1, directory, test_file, client, workers=2)
+    metrics = report.score_run(directory, gold_file, "md-test-sentences", test)
+    [row] = report.write_summary(pred_dir)
+
+    predicted = JsonImporter(runner.predictions_file(directory, "md-test-sentences")).do_import()
+    assert sorted(d.id for d in predicted) == ["doc-a#0", "doc-b#0", "doc-c#0"]
+    # one request per sentence, with only that sentence
+    assert len(client.calls) == 3
+    prompts = [c["messages"][1]["content"][0]["text"] for c in client.calls]
+    assert all(p.endswith("\n\n0: the clerk checks the form") for p in prompts)
+    assert read_manifest(directory)["sessions"][0]["gold_file"].endswith("test.jsonl")
+    # no gold documents to score single sentences against, only the test split
+    assert set(metrics) == {"documents", "test"}
+    assert metrics["test"]["entity_f1"] == pytest.approx(0.8)
+    assert row["md_f1"] is None and row["test_f1"] == pytest.approx(0.8)
+    predictions_file = runner.predictions_file(directory, "md-test-sentences")
+    assert test_split.export(predictions_file, test) is not None

@@ -1,0 +1,6 @@
+# no reasoning on the gateway: none, high and the default all answer directly, low and medium are rejected
+task: md-test-sentences
+provider: nhr
+model: GaleneAI/Magistral-Small-2509-FP8-Dynamic
+reasoning_effort: none
+repeats: 5

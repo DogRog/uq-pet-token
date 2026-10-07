@@ -32,6 +32,7 @@ from rich.progress import track
 
 import autoannotate
 from autoannotate import data
+from eval import test_split
 from experiments import definitions
 from experiments.config import RunConfig
 
@@ -193,11 +194,24 @@ def totals(directory: pathlib.Path, task: str) -> typing.Dict[str, typing.Any]:
     }
 
 
+def input_documents(task: str, input_file: pathlib.Path) -> typing.List[data.Document]:
+    """The documents a run annotates.
+
+    Args:
+        task: see experiments.config.TASKS
+        input_file: the gold documents, or for md-test-sentences the test split
+    """
+    if task == "md-test-sentences":
+        return test_split.sentence_documents(test_split.load_test_split(input_file))
+    return autoannotate.JsonImporter(input_file).do_import()
+
+
 def annotate_run(
         config: RunConfig, run: int, directory: pathlib.Path, gold_file: pathlib.Path, client, workers: int = 1
 ) -> None:
     """Annotates the gold documents that are not yet in the run's predictions.
 
+    :param gold_file: the gold documents, or for md-test-sentences the test split
     :param workers: number of documents annotated at the same time
     """
     provider = autoannotate.get_provider(config.provider)
@@ -225,7 +239,7 @@ def annotate_run(
         prompts["relations"] = relation_annotator.get_instruction()
     manifest = _load_manifest(directory, config, run, prompts)
 
-    documents = autoannotate.JsonImporter(gold_file).do_import()[:config.max_documents]
+    documents = input_documents(config.task, gold_file)[:config.max_documents]
     out_file = predictions_file(directory, config.task)
     done_ids = {d.id for d in autoannotate.JsonImporter(out_file).do_import()} if out_file.exists() else set()
     todo = [d for d in documents if d.id not in done_ids]

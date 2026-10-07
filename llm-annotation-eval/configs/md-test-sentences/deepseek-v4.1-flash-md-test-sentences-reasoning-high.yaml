@@ -1,0 +1,5 @@
+task: md-test-sentences
+provider: nhr
+model: deepseek-ai/DeepSeek-V4.1-Flash
+reasoning_effort: high
+repeats: 5

@@ -15,6 +15,7 @@ uv sync
 uv run python src/run-configs.py configs/deepseek-v4.1-flash.yaml   # annotate + score one config
 uv run python src/run-configs.py configs/md/ --workers 4            # every config in a folder
 uv run marimo edit notebooks/eval_table.py   # results table: scores every pet.jsonl in res/pred/
+uv run python src/export-test-predictions.py # test-predictions.jsonl for uq-pet-token, per run
 uv run marimo check notebooks/eval_table.py  # lint the notebook
 uv run pytest                       # all tests
 uv run pytest tests/test_mentions.py -k repeated   # a subset
@@ -56,5 +57,7 @@ Shared plumbing in `src/autoannotate/`:
 All matching lives in `src/eval/scoring.py`, used by both the experiment reports and the results notebook. Matching is lenient: a predicted mention matches a gold one if types are equal and token sets **overlap at all**; a relation matches if type is equal and both head and tail mentions overlap. Matching is greedy one-to-one per document. `scoring.summarize` reports macro (mean ± population std of per-document P/R/F1), micro (summed counts) and per-type micro scores. A document with no gold and no predicted annotations scores 1.0 (`eval.metrics.Stats`). `summary.csv` uses the sample SD across runs.
 
 `notebooks/eval_table.py` scores every `res/pred/<folder>/run-<i>/<task>/pet.jsonl` (config runs) and `res/pred/<folder>/<task>/pet.jsonl` (predictions from before the configs) with `scoring.score` rather than reading `metrics.json`; the folder name says what to score: `end-to-end` (`md` and `re`), `md`, or `re`/`isolated-re`. Notebook cells must not define the same name twice, so cell-local variables start with `_` (`uv run marimo check` catches it).
+
+This project is a baseline for `../uq-pet-token`, which trains token classifiers on PET v1.1 and evaluates on a fixed 84-sentence test split. `src/eval/test_split.py` reproduces that evaluation: `res/gold/pet-v1.1-test.jsonl` is the split (generated with uq-pet-token's `load_pet_splits`, same format and order; PET v1.1 labels differ from `res/gold/pet.jsonl` in 8 test sentences), predicted mentions of test sentences become BIO tags (overlaps: first listed wins; unknown types kept so they count as wrong), and `evaluate` mirrors uq-pet-token's `evaluate_predictions` with seqeval 1.2.2 (strict span match, micro). `export` writes `test-predictions.jsonl` next to a run's `pet.jsonl`; `run-configs.py` calls it after scoring each run. Task `md-test-sentences` annotates each test sentence on its own: `runner.input_documents` turns the test split into one-sentence documents with ids `<document>#<sentence-ID>` (`test_split.sentence_documents`), `run-configs.py` passes the test file as the run's input, and `report.score_run` scores those runs only on the test split. `metrics.json` of every run that covers the test sentences has a `test` entry, which `runs.csv`/`summary.csv` show as `test_*` columns. Verified identical to uq-pet-token's own scorer on real predictions.
 
 `src/data/pet.py` is an older parallel copy of the data model (`PetDocument`, etc.); only `src/eval/metrics.py` imports it. Everything else uses `autoannotate.data`.

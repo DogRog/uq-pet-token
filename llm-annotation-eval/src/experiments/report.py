@@ -17,24 +17,50 @@ from rich.console import Console
 from rich.table import Table
 
 import autoannotate
-from eval import scoring
+from eval import scoring, test_split
 from experiments import runner
 
 TASKS = ("md", "re")
 SCORES = ("precision", "recall", "f1")
 # per-run values that are averaged over runs in summary.csv
+# scores on uq-pet-token's test sentences, see eval.test_split: metrics.json key -> column
+TEST_SCORES = {
+    "entity_precision": "test_precision",
+    "entity_recall": "test_recall",
+    "entity_f1": "test_f1",
+    "entity_macro_f1": "test_macro_f1",
+}
 RUN_VALUES = (
     [f"{t}_{s}" for t in TASKS for s in SCORES]
     + [f"{t}_micro_{s}" for t in TASKS for s in SCORES]
+    + list(TEST_SCORES.values())
     + ["prompt_tokens", "completion_tokens", "reasoning_tokens", "llm_seconds"]
 )
 
 
-def score_run(directory: pathlib.Path, gold_file: pathlib.Path, task: str) -> typing.Dict[str, typing.Any]:
-    """:param task: "end-to-end" scores mentions and relations, "md" only mentions"""
+def score_run(
+    directory: pathlib.Path, gold_file: pathlib.Path, task: str, test: typing.List[test_split.Row]
+) -> typing.Dict[str, typing.Any]:
+    """Scores a run on the gold documents and, if it covers them, on the test sentences.
+
+    Args:
+        directory: the run folder
+        gold_file: the gold documents
+        task: "end-to-end" is scored on mentions and relations, "md" on mentions, and
+            "md-test-sentences" only on the test sentences
+        test: uq-pet-token's test sentences, see eval.test_split
+    """
     predicted = autoannotate.JsonImporter(runner.predictions_file(directory, task)).do_import()
-    tasks = ("md", "re") if task == "end-to-end" else ("md",)
-    metrics = scoring.score(autoannotate.JsonImporter(gold_file).do_import(), predicted, tasks)
+    if task == "md-test-sentences":
+        metrics = {"documents": len(predicted)}
+    else:
+        tasks = ("md", "re") if task == "end-to-end" else ("md",)
+        metrics = scoring.score(autoannotate.JsonImporter(gold_file).do_import(), predicted, tasks)
+    test_predicted, dropped = test_split.predict_test_split(test, predicted)
+    if test_predicted is not None:
+        # mentions dropped as they overlap an earlier one, which BIO tags can't represent
+        test_scores = test_split.evaluate(test, test_predicted)
+        metrics["test"] = {**test_scores, "dropped_overlapping": dropped}
     runner.write_json(directory / "metrics.json", metrics)
     return metrics
 
@@ -58,6 +84,10 @@ def _run_row(directory: pathlib.Path) -> typing.Dict[str, typing.Any]:
             row[f"{task}_{name}_sd_docs"] = task_metrics["macro"][name]["std"] if task_metrics else None
         for name in SCORES:
             row[f"{task}_micro_{name}"] = task_metrics["micro"][name] if task_metrics else None
+    # empty if the run did not annotate all test sentences
+    test_metrics = metrics.get("test")
+    for key, column in TEST_SCORES.items():
+        row[column] = test_metrics[key] if test_metrics else None
     row.update({
         "prompt_tokens": totals["all"]["prompt_tokens"],
         "completion_tokens": totals["all"]["completion_tokens"],
@@ -136,13 +166,17 @@ def print_summary(summary: typing.List[typing.Dict[str, typing.Any]]) -> None:
             value += f" ± {row[f'{key}_sd_runs']:.1%}" if percent else f" ± {row[f'{key}_sd_runs']:,.0f}"
         return value
 
-    table = Table(title="Mean over complete runs (± SD over runs); F1 is the mean over documents")
-    for column in ("config", "task", "reasoning", "runs", "docs", "MD F1", "RE F1", "tokens in", "tokens out"):
+    table = Table(
+        title="Mean over complete runs (± SD over runs); MD and RE F1 are means over documents, "
+        "test F1 is on uq-pet-token's test sentences"
+    )
+    columns = ("config", "task", "reasoning", "runs", "docs", "MD F1", "RE F1", "test F1")
+    for column in (*columns, "tokens in", "tokens out"):
         table.add_column(column)
     for row in summary:
         table.add_row(
             row["config"], row["task"], str(row["reasoning_effort"] or "-"), str(row["runs"]), row["documents"],
-            fmt(row, "md_f1"), fmt(row, "re_f1"),
+            fmt(row, "md_f1"), fmt(row, "re_f1"), fmt(row, "test_f1"),
             fmt(row, "prompt_tokens", percent=False), fmt(row, "completion_tokens", percent=False),
         )
     Console().print(table)

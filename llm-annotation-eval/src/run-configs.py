@@ -1,7 +1,8 @@
 """Runs the experiments defined by config files.
 
-Annotates the gold documents with the configured LLM, scores the predictions, and updates
-res/pred/runs.csv and res/pred/summary.csv.
+Annotates the gold documents with the configured LLM, scores the predictions, writes each run's
+test-predictions.jsonl for uq-pet-token (see eval.test_split), and updates res/pred/runs.csv and
+res/pred/summary.csv.
 
     uv run python src/run-configs.py configs/deepseek-v4.1-flash.yaml
     uv run python src/run-configs.py configs/          # every *.yaml in the folder
@@ -18,11 +19,14 @@ import dotenv
 import yaml
 
 import autoannotate
+from eval import test_split
 from experiments import config as run_config
 from experiments import report, runner
 
 REPO_DIR = pathlib.Path(__file__).parent.parent
 GOLD_FILE = REPO_DIR / "res" / "gold" / "pet.jsonl"
+# uq-pet-token's PET test split, see eval.test_split
+TEST_FILE = REPO_DIR / "res" / "gold" / "pet-v1.1-test.jsonl"
 PRED_DIR = REPO_DIR / "res" / "pred"
 
 
@@ -53,12 +57,16 @@ def main():
     dotenv.load_dotenv(REPO_DIR / ".env")
     clients = {c.provider: autoannotate.get_provider(c.provider).client() for c in configs}
 
+    test = test_split.load_test_split(TEST_FILE)
     failed = []
     for config in configs:
         for run in range(1, config.repeats + 1):
             directory = runner.run_dir(PRED_DIR, config, run)
             try:
-                runner.annotate_run(config, run, directory, GOLD_FILE, clients[config.provider], args.workers)
+                # a md-test-sentences run annotates the test sentences instead of the documents
+                input_file = TEST_FILE if config.task == "md-test-sentences" else GOLD_FILE
+                client = clients[config.provider]
+                runner.annotate_run(config, run, directory, input_file, client, args.workers)
             except Exception:
                 traceback.print_exc()
                 print(f"{config.name} run {run} failed, skipping the rest of {config.name}.")
@@ -66,7 +74,8 @@ def main():
                 break
             finally:
                 if runner.predictions_file(directory, config.task).exists():
-                    report.score_run(directory, GOLD_FILE, config.task)
+                    report.score_run(directory, GOLD_FILE, config.task, test)
+                    test_split.export(runner.predictions_file(directory, config.task), test)
 
     report.print_summary(report.write_summary(PRED_DIR))
     print(f"Tables: {PRED_DIR / 'summary.csv'} (per config), {PRED_DIR / 'runs.csv'} (per run).")

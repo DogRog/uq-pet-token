@@ -13,6 +13,7 @@ dependencies = [
     "rich>=15.0.0",
     "langextract==1.7.0",
     "pyyaml>=6.0.3",
+    "seqeval==1.2.2",
 ]
 
 [tool.uv]

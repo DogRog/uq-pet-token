@@ -59,6 +59,20 @@ uv run marimo edit notebooks/eval_table.py
 
 The notebook scores every `pet.jsonl` in `res/pred/` against the gold annotations, including predictions from before the configs (`res/pred/<folder>/<task>/pet.jsonl`), and shows one row per folder and task: precision, recall and F1 for mentions (`md`) and, where predicted, relations (`re`), and output tokens per document. Scores are macro-averaged over documents; a dropdown switches ± between the standard deviation over runs and over documents. Only runs with all their documents are included.
 
+A dropdown chooses what to evaluate on: all 45 documents as above, or the test split of [uq-pet-token](../uq-pet-token), for which these LLMs are a baseline (see below).
+
+### Test split of uq-pet-token
+
+uq-pet-token trains token classifiers on PET v1.1 and evaluates them on 84 test sentences. To compare the LLMs with them on the same data and metric:
+
+- `res/gold/pet-v1.1-test.jsonl` holds those 84 sentences with their PET v1.1 BIO tags, in uq-pet-token's format and order. It was generated with uq-pet-token's `load_pet_splits` at commit 1ea66af (an 80/20 split of the 417 sentences with seed 3407); `src/eval/test_split.py` documents the details. PET v1.1 corrects some labels of `res/gold/pet.jsonl`, in 8 of the 84 test sentences.
+- Runs of the usual tasks annotate whole documents; only their mentions in the test sentences are scored. Runs with `task: md-test-sentences` (configs in `configs/md-test-sentences/`) instead send each test sentence on its own, without the rest of its document, the input uq-pet-token's models get; their predictions are single sentences with ids like `doc-2.1#27`, scored only on the test split. Mentions are converted to BIO tags (of overlapping mentions, the one listed first is kept). Scores use seqeval like uq-pet-token: a mention counts only if its type and both span boundaries match, micro-averaged over the test split. They are therefore lower than the overlap-based scores on all documents.
+- Every run gets a `test-predictions.jsonl` next to its `pet.jsonl`: the 84 test sentences with predicted tags, for uq-pet-token to score with its own `evaluate_predictions`. `run-configs.py` writes it after each run; for predictions made before, run:
+
+```bash
+uv run python src/export-test-predictions.py
+```
+
 ### Tests
 
 ```bash
@@ -74,4 +88,5 @@ uv run pytest
 - `src/autoannotate/`: annotators, response parsers, prompt templates and provider configs
 - `src/eval/`: matching and metrics
 - `res/gold/pet.jsonl`: gold annotations
+- `res/gold/pet-v1.1-test.jsonl`: uq-pet-token's test split, with PET v1.1 tags
 - `res/pred/`: model predictions and run logs (not tracked by git)

@@ -10,13 +10,13 @@ uv run python src/run-configs.py configs/md/ --workers 8
 
 `--workers` sets how many documents of a run are annotated at the same time (default 4). Each session in `run.json` records it, as parallel requests can slow down each call.
 
-`configs/md/` holds the mention-detection experiments: 6 NHR models, each without reasoning and with `low` and `high` reasoning where the model supports it (see the table below), 5 runs each.
+`configs/md/` holds the mention-detection experiments: 6 NHR models, each without reasoning and with `low` and `high` reasoning where the model supports it (see the table below), 5 runs each. `configs/md-test-sentences/` repeats them on the test sentences alone, one config for each of `configs/md/`.
 
 | Key | Required | Meaning |
 |---|---|---|
 | `provider` | yes | `openai` or `nhr` (NHR@FAU gateway), see `src/autoannotate/providers.py` |
 | `model` | yes | model ID, e.g. `gpt-6-sol` or `deepseek-ai/DeepSeek-V4.1-Flash` |
-| `task` | no | `end-to-end` (default): mentions, then relations between them. `md`: mention detection only, no relation calls and no relation scores |
+| `task` | no | `end-to-end` (default): mentions, then relations between them. `md`: mention detection only, no relation calls and no relation scores. `md-test-sentences`: mention detection on uq-pet-token's 84 test sentences, one sentence per request without its document (see the README) |
 | `reasoning_effort` | no | `none`, `minimal`, `low`, `medium` or `high`. Left out (or `null`), the parameter is not sent and the model uses its default |
 | `max_documents` | no | only annotate the first n gold documents, e.g. for a quick test. Left out: all |
 | `repeats` | no | number of runs, default 1. Each run goes to `run-<i>/`, and `summary.csv` reports mean ± SD over runs |
