@@ -13,20 +13,24 @@ def doc(make_doc):
     return make_doc(SENTENCES)
 
 
+def parse_line(line):
+    return MentionParser.parse_line(line, len(SENTENCES))
+
+
 def parse(doc, *lines):
     parsed = MentionParser().parse(doc, "\n".join(lines))
     return [(m.type, m.token_document_indices) for m in parsed.mentions]
 
 
 class TestParseLine:
-    def test_three_fields(self, doc):
-        assert MentionParser.parse_line("Clerk\tActor\t0", doc) == ("Clerk", "actor", 0)
+    def test_three_fields(self):
+        assert parse_line("Clerk\tActor\t0") == ("Clerk", "actor", 0)
 
-    def test_fourth_field_is_an_ignored_explanation(self, doc):
-        assert MentionParser.parse_line("clerk\tActor\t0\tdoes the work", doc) == ("clerk", "actor", 0)
+    def test_fourth_field_is_an_ignored_explanation(self):
+        assert parse_line("clerk\tActor\t0\tdoes the work") == ("clerk", "actor", 0)
 
-    def test_empty_fields_are_dropped(self, doc):
-        assert MentionParser.parse_line("clerk\t\tActor\t0", doc) == ("clerk", "actor", 0)
+    def test_empty_fields_are_dropped(self):
+        assert parse_line("clerk\t\tActor\t0") == ("clerk", "actor", 0)
 
     @pytest.mark.parametrize("line", [
         "clerk\tActor",  # too few fields
@@ -35,9 +39,9 @@ class TestParseLine:
         "clerk\tActor\t2",  # sentence id out of range
         "clerk\tActor\t-1",
     ])
-    def test_invalid_lines_raise(self, doc, line):
+    def test_invalid_lines_raise(self, line):
         with pytest.raises(ValueError):
-            MentionParser.parse_line(line, doc)
+            parse_line(line)
 
 
 class TestParse:

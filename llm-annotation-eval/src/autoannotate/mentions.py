@@ -23,28 +23,22 @@ class MentionParser(base.BaseParser):
     """
 
     @staticmethod
-    def parse_line(line: str, document: data.Document) -> typing.Tuple[str, str, int]:
-        split_line = line.split("\t")
-        split_line = tuple(e for e in split_line if e.strip() != "")
-
-        if len(split_line) < 3 or len(split_line) > 4:
-            raise ValueError(f"Expected 3 or 4 tab-separated fields, got {len(split_line)}.")
-
-        if len(split_line) == 3:
-            mention_text, mention_type, sentence_id = split_line
-        else:
-            mention_text, mention_type, sentence_id, explanation = split_line
-            # print(f"Explanation for {mention_text}: {explanation}")
+    def parse_line(line: str, num_sentences: int) -> typing.Tuple[str, str, int]:
+        fields = [f.strip() for f in line.split("\t") if f.strip() != ""]
+        if len(fields) not in (3, 4):
+            raise ValueError(f"Expected 3 or 4 tab-separated fields, got {len(fields)}.")
+        # a 4th field is an explanation, which is ignored
+        mention_text, mention_type, sentence_id = fields[:3]
 
         try:
             sentence_id = int(sentence_id)
         except ValueError:
             raise ValueError(f"Invalid sentence index '{sentence_id}'.")
 
-        if not 0 <= sentence_id < len(document.sentences):
+        if not 0 <= sentence_id < num_sentences:
             raise ValueError(f"Sentence index {sentence_id} out of range.")
 
-        return mention_text.strip(), mention_type.lower().strip(), sentence_id
+        return mention_text, mention_type.lower(), sentence_id
 
     def align_sentence(
             self, sentence: typing.List[data.Token], lines: typing.List[typing.Tuple[str, str]]
@@ -71,6 +65,8 @@ class MentionParser(base.BaseParser):
         )
 
         def token_indices(extraction: lx.data.Extraction) -> typing.Tuple[int, ...]:
+            if extraction.char_interval is None:
+                return ()
             start, end = extraction.char_interval.start_pos, extraction.char_interval.end_pos
             return tuple(idx for s, e, idx in token_spans if s < end and e > start)
 
@@ -82,7 +78,7 @@ class MentionParser(base.BaseParser):
 
         res: typing.List[typing.Optional[data.Mention]] = []
         for extraction in aligned:
-            indices = token_indices(extraction) if extraction.char_interval is not None else ()
+            indices = token_indices(extraction)
             if len(indices) == 0:
                 self.report("dropped_not_found", f"Did not find predicted mention '{extraction.extraction_text}'.")
                 res.append(None)
@@ -115,9 +111,10 @@ class MentionParser(base.BaseParser):
         return res
 
     def parse(self, document: data.Document, string: str) -> data.Document:
-        # lines grouped by sentence, in the order the LLM produced them
-        lines_by_sentence: typing.Dict[int, typing.List[typing.Tuple[int, str, str]]] = {}
-        for line_index, line in enumerate(string.splitlines(keepends=False)):
+        sentences = document.sentences
+        # (text, type, sentence id) per line, in the order the LLM produced them
+        lines: typing.List[typing.Tuple[str, str, int]] = []
+        for line in string.splitlines(keepends=False):
             line = line.strip()
             if line == "":
                 continue
@@ -126,33 +123,20 @@ class MentionParser(base.BaseParser):
                 continue
 
             try:
-                mention_text, mention_type, sentence_id = self.parse_line(line, document)
-                lines_by_sentence.setdefault(sentence_id, []).append((line_index, mention_text, mention_type))
+                lines.append(self.parse_line(line, len(sentences)))
             except ValueError as e:
                 self.report("dropped_malformed", f"Skipping line '{line}': {e}")
 
-        # keep the mentions in the order of the LLM output
-        mentions_by_line: typing.Dict[int, data.Mention] = {}
-        for sentence_id, lines in lines_by_sentence.items():
-            aligned = self.align_sentence(
-                document.sentences[sentence_id],
-                [(mention_text, mention_type) for _, mention_text, mention_type in lines]
-            )
-            for (line_index, _, _), mention in zip(lines, aligned):
-                if mention is not None:
-                    mentions_by_line[line_index] = mention
-        parsed_mentions = [mentions_by_line[i] for i in sorted(mentions_by_line)]
+        # aligned sentence by sentence, but kept in the order of the LLM output
+        mentions: typing.List[typing.Optional[data.Mention]] = [None] * len(lines)
+        for sentence_id in dict.fromkeys(s for _, _, s in lines):
+            positions = [i for i, (_, _, s) in enumerate(lines) if s == sentence_id]
+            aligned = self.align_sentence(sentences[sentence_id], [lines[i][:2] for i in positions])
+            for i, mention in zip(positions, aligned):
+                mentions[i] = mention
 
-        doc = data.Document(
-            id=document.id,
-            text=document.text,
-            name=document.name,
-            category=document.category,
-            tokens=[t.copy() for t in document.tokens],
-            mentions=parsed_mentions,
-            relations=[],
-            entities=[],
-        )
+        doc = document.copy(clear=["mentions", "relations", "entities"])
+        doc.mentions = [m for m in mentions if m is not None]
         return doc
 
 
