@@ -78,8 +78,8 @@ def summarize(per_document: typing.List[typing.Dict[str, Stats]]) -> typing.Dict
         per_document: stats per type for every scored document
 
     Returns:
-        "macro": mean and std (over documents) of the per-document scores, as printed by
-        llm-metrics.py; "micro": scores of the counts summed over all documents;
+        "macro": mean and std (over documents) of the per-document scores, as the results
+        notebook shows them; "micro": scores of the counts summed over all documents;
         "per_type": micro scores and counts per type
     """
     totals = [total(stats) for stats in per_document]

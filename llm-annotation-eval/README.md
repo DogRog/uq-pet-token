@@ -57,17 +57,7 @@ Each document is saved as soon as it is annotated. If a run is interrupted (Ctrl
 uv run marimo edit notebooks/eval_table.py
 ```
 
-The notebook reads every scored run in `res/pred/` and shows one row per config: precision, recall and F1 as mean ± SD (over runs or over documents, selectable), output tokens and seconds per document, F1 per mention type, and a LaTeX version of the table to download. Model display names are set in the `MODEL_NAMES` cell.
-
-### Evaluate predictions on their own
-
-`src/llm-metrics.py` scores prediction folders directly, including ones from before the configs. Add folder names under `res/pred/` (e.g. `"deepseek-v4.1-flash/run-1"`) to its `models` list, then run:
-
-```bash
-uv run python src/llm-metrics.py
-```
-
-It prints precision, recall and F1 for mentions (`md`) and relations (`re`), as mean ± standard deviation over documents, the same numbers as the macro scores in `metrics.json`.
+The notebook scores every `pet.jsonl` in `res/pred/` against the gold annotations, including predictions from before the configs (`res/pred/<folder>/<task>/pet.jsonl`), and shows one row per folder and task: precision, recall and F1 for mentions (`md`) and, where predicted, relations (`re`), and output tokens per document. Scores are macro-averaged over documents; a dropdown switches ± between the standard deviation over runs and over documents. Only runs with all their documents are included.
 
 ### Tests
 

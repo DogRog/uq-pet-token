@@ -14,15 +14,14 @@ Environment is managed with uv (Python ≥3.10, `package = false` — nothing is
 uv sync
 uv run python src/run-configs.py configs/deepseek-v4.1-flash.yaml   # annotate + score one config
 uv run python src/run-configs.py configs/md/ --workers 4            # every config in a folder
-uv run python src/llm-metrics.py    # score prediction folders listed in its `models` variable
-uv run marimo edit notebooks/eval_table.py   # results table (+ LaTeX) from all scored runs
+uv run marimo edit notebooks/eval_table.py   # results table: scores every pet.jsonl in res/pred/
 uv run marimo check notebooks/eval_table.py  # lint the notebook
 uv run pytest                       # all tests
 uv run pytest tests/test_mentions.py -k repeated   # a subset
 uv run ruff check src/ tests/      # lint; add --fix for the auto-fixable ones
 ```
 
-Tests in `tests/` never call an LLM: `conftest.py` provides `make_doc` (builds a `Document` from whitespace-tokenized sentences) and `fake_client` (stands in for `openai.OpenAI`; the answer can be a function of the request, which may raise). `llm-metrics.py` is loaded via `importlib` because of the hyphen in its name. Known bugs are kept as `xfail(strict=True)` tests, so fixing one makes its test fail until the marker is removed. Ruff is configured in `pyproject.toml` (Google docstring convention, 100 columns, missing docstrings allowed, no docstring rules in `tests/`); the code does not pass it cleanly yet.
+Tests in `tests/` never call an LLM: `conftest.py` provides `make_doc` (builds a `Document` from whitespace-tokenized sentences) and `fake_client` (stands in for `openai.OpenAI`; the answer can be a function of the request, which may raise). Known bugs are kept as `xfail(strict=True)` tests, so fixing one makes its test fail until the marker is removed. Ruff is configured in `pyproject.toml` (Google docstring convention, 100 columns, missing docstrings allowed, no docstring rules in `tests/`); the code does not pass it cleanly yet.
 
 API keys come from `.env` (`OPENAI_API_KEY`, `NHR_API_KEY`; see `.env.template`).
 
@@ -54,8 +53,8 @@ Shared plumbing in `src/autoannotate/`:
 
 ## Evaluation
 
-All matching lives in `src/eval/scoring.py`, used by both the experiment reports and `llm-metrics.py`. Matching is lenient: a predicted mention matches a gold one if types are equal and token sets **overlap at all**; a relation matches if type is equal and both head and tail mentions overlap. Matching is greedy one-to-one per document. `scoring.summarize` reports macro (mean ± population std of per-document P/R/F1, the numbers `llm-metrics.py` prints), micro (summed counts) and per-type micro scores. A document with no gold and no predicted annotations scores 1.0 (`eval.metrics.Stats`). `summary.csv` uses the sample SD across runs.
+All matching lives in `src/eval/scoring.py`, used by both the experiment reports and the results notebook. Matching is lenient: a predicted mention matches a gold one if types are equal and token sets **overlap at all**; a relation matches if type is equal and both head and tail mentions overlap. Matching is greedy one-to-one per document. `scoring.summarize` reports macro (mean ± population std of per-document P/R/F1), micro (summed counts) and per-type micro scores. A document with no gold and no predicted annotations scores 1.0 (`eval.metrics.Stats`). `summary.csv` uses the sample SD across runs.
 
-`llm-metrics.py` iterates `res/pred/<entry>/<target>/` for each entry of its `models` list (e.g. `"deepseek-v4.1-flash/run-1"` or a pre-config folder like `"gpt-6-sol"`), where target is `end-to-end` (scores `md` and `re`), `md`, or `re`/`isolated-re`; any other folder name raises.
+`notebooks/eval_table.py` scores every `res/pred/<folder>/run-<i>/<task>/pet.jsonl` (config runs) and `res/pred/<folder>/<task>/pet.jsonl` (predictions from before the configs) with `scoring.score` rather than reading `metrics.json`; the folder name says what to score: `end-to-end` (`md` and `re`), `md`, or `re`/`isolated-re`. Notebook cells must not define the same name twice, so cell-local variables start with `_` (`uv run marimo check` catches it).
 
 `src/data/pet.py` is an older parallel copy of the data model (`PetDocument`, etc.); only `src/eval/metrics.py` imports it. Everything else uses `autoannotate.data`.

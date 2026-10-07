@@ -8,7 +8,7 @@ import autoannotate
 
 REASONING_EFFORTS = typing.get_args(typing.get_args(autoannotate.ReasoningEffort)[0])
 # "end-to-end": mentions, then relations between them; "md": mention detection only.
-# Also the name of the predictions folder in a run, as llm-metrics.py expects.
+# Also the name of the predictions folder in a run, which the results notebook scores by.
 TASKS = ("end-to-end", "md")
 
 

@@ -67,7 +67,7 @@ def test_score_only_scores_predicted_documents(make_doc):
 
     assert result["documents"] == 1
     assert result["md"]["micro"]["f1"] == 1.0
-    # no relations in gold or prediction counts as perfect, like llm-metrics.py
+    # no relations in gold or prediction counts as perfect
     assert result["re"]["macro"]["f1"]["mean"] == 1.0
 
 
