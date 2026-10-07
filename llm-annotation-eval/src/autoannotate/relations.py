@@ -2,10 +2,15 @@ import pathlib
 import typing
 
 import openai
-from openai.types.chat import ChatCompletionDeveloperMessageParam, ChatCompletionUserMessageParam, \
-    ChatCompletionContentPartTextParam
+from openai.types.chat import ChatCompletionContentPartTextParam
+from openai.types.chat import ChatCompletionDeveloperMessageParam
+from openai.types.chat import ChatCompletionUserMessageParam
 
-from autoannotate import util, base, definitions, data, prompts
+from autoannotate import base
+from autoannotate import data
+from autoannotate import definitions
+from autoannotate import prompts
+from autoannotate import util
 
 
 class RelationParser(base.BaseParser):
@@ -18,12 +23,9 @@ class RelationParser(base.BaseParser):
                 self.report("ignored_line", f"Skipping non-tab-separated line '{line}'.")
                 continue
             split_line = line.split("\t")
-            if len(split_line) == 3:
-                relation_type, head_index, tail_index = split_line
-            elif len(split_line) >= 4:
-                # explanations may contain tabs themselves, so keep everything after the indices
+            if len(split_line) >= 3:
+                # anything after the indices is an explanation (which may contain tabs) and unused
                 relation_type, head_index, tail_index = split_line[:3]
-                explanation = "\t".join(split_line[3:])
             else:
                 self.report(
                     "dropped_malformed",

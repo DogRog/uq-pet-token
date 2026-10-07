@@ -1,6 +1,7 @@
-"""
-Runs the experiments defined by config files: annotates the gold documents with the configured
-LLM, scores the predictions, and updates res/pred/runs.csv and res/pred/summary.csv.
+"""Runs the experiments defined by config files.
+
+Annotates the gold documents with the configured LLM, scores the predictions, and updates
+res/pred/runs.csv and res/pred/summary.csv.
 
     uv run python src/run-configs.py configs/deepseek-v4.1-flash.yaml
     uv run python src/run-configs.py configs/          # every *.yaml in the folder
@@ -18,7 +19,8 @@ import yaml
 
 import autoannotate
 from experiments import config as run_config
-from experiments import report, runner
+from experiments import report
+from experiments import runner
 
 REPO_DIR = pathlib.Path(__file__).parent.parent
 GOLD_FILE = REPO_DIR / "res" / "gold" / "pet.jsonl"

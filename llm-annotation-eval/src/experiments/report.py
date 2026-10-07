@@ -1,5 +1,4 @@
-"""
-Scores runs and collects them into tables for reporting.
+"""Scores runs and collects them into tables for reporting.
 
 - <run folder>/metrics.json: scores of one run, see eval.scoring.score
 - res/pred/runs.csv: one row per run, with scores, token usage and parser issues
@@ -114,7 +113,7 @@ def collect_runs(pred_dir: pathlib.Path) -> typing.List[typing.Dict[str, typing.
 
 
 def write_summary(pred_dir: pathlib.Path) -> typing.List[typing.Dict[str, typing.Any]]:
-    """Writes runs.csv and summary.csv to pred_dir, :return: the summary rows"""
+    """Writes runs.csv and summary.csv to pred_dir and returns the summary rows."""
     runs = collect_runs(pred_dir)
     if not runs:
         return []

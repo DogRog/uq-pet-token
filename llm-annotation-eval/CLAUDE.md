@@ -19,9 +19,10 @@ uv run marimo edit notebooks/eval_table.py   # results table (+ LaTeX) from all 
 uv run marimo check notebooks/eval_table.py  # lint the notebook
 uv run pytest                       # all tests
 uv run pytest tests/test_mentions.py -k repeated   # a subset
+uv run ruff check src/ tests/      # lint; add --fix for the auto-fixable ones
 ```
 
-Tests in `tests/` never call an LLM: `conftest.py` provides `make_doc` (builds a `Document` from whitespace-tokenized sentences) and `fake_client` (stands in for `openai.OpenAI`; the answer can be a function of the request, which may raise). `llm-metrics.py` is loaded via `importlib` because of the hyphen in its name. Known bugs are kept as `xfail(strict=True)` tests, so fixing one makes its test fail until the marker is removed. There is no linter.
+Tests in `tests/` never call an LLM: `conftest.py` provides `make_doc` (builds a `Document` from whitespace-tokenized sentences) and `fake_client` (stands in for `openai.OpenAI`; the answer can be a function of the request, which may raise). `llm-metrics.py` is loaded via `importlib` because of the hyphen in its name. Known bugs are kept as `xfail(strict=True)` tests, so fixing one makes its test fail until the marker is removed. Ruff is configured in `pyproject.toml` (Google docstring convention, 100 columns, missing docstrings allowed, no docstring rules in `tests/`); the code does not pass it cleanly yet.
 
 API keys come from `.env` (`OPENAI_API_KEY`, `NHR_API_KEY`; see `.env.template`).
 

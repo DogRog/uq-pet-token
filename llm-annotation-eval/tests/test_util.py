@@ -1,4 +1,5 @@
-from autoannotate import data, util
+from autoannotate import data
+from autoannotate import util
 
 
 def test_ner_to_tag_replaces_spaces_and_adds_attributes():

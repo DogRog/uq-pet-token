@@ -1,6 +1,7 @@
 import pytest
 
-from autoannotate import RelationParser, data
+from autoannotate import RelationParser
+from autoannotate import data
 
 
 @pytest.fixture

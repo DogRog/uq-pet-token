@@ -1,5 +1,4 @@
-"""
-Mention and relation definitions and the few-shot format examples, the same for every run config.
+"""Mention and relation definitions and the few-shot format examples, the same for every run config.
 
 A run's manifest (run.json) records the prompts rendered from these, and resuming a run
 refuses to continue if they changed in between.

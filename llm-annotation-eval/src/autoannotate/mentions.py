@@ -4,15 +4,18 @@ import typing
 import langextract as lx
 import openai
 from langextract import resolver
-from openai.types.chat import ChatCompletionDeveloperMessageParam, ChatCompletionUserMessageParam, \
-    ChatCompletionContentPartTextParam
+from openai.types.chat import ChatCompletionContentPartTextParam
+from openai.types.chat import ChatCompletionDeveloperMessageParam
+from openai.types.chat import ChatCompletionUserMessageParam
 
-from autoannotate import base, definitions, data, prompts
+from autoannotate import base
+from autoannotate import data
+from autoannotate import definitions
+from autoannotate import prompts
 
 
 class MentionParser(base.BaseParser):
-    """
-    Maps the LLM's ``text<TAB>type<TAB>sentence`` lines back to tokens.
+    """Maps the LLM's ``text<TAB>type<TAB>sentence`` lines back to tokens.
 
     The text of a line does not say which occurrence in the sentence is meant, so the lines
     of each sentence are placed with LangExtract's aligner: in the order the LLM produced
@@ -47,8 +50,7 @@ class MentionParser(base.BaseParser):
     def align_sentence(
             self, sentence: typing.List[data.Token], lines: typing.List[typing.Tuple[str, str]]
     ) -> typing.List[typing.Optional[data.Mention]]:
-        """
-        Places the (text, type) lines predicted for one sentence on its tokens.
+        """Places the (text, type) lines predicted for one sentence on its tokens.
 
         :return: one entry per line, in the same order, None if the line could not be placed
         """

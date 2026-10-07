@@ -1,5 +1,4 @@
-"""
-Scores predicted mentions and relations against the gold annotations.
+"""Scores predicted mentions and relations against the gold annotations.
 
 A predicted mention matches a gold mention of the same type if their tokens overlap at all.
 A predicted relation matches a gold relation of the same type if both its head and its tail
@@ -73,11 +72,15 @@ def _scores(stats: Stats) -> typing.Dict[str, float]:
 
 
 def summarize(per_document: typing.List[typing.Dict[str, Stats]]) -> typing.Dict[str, typing.Any]:
-    """
-    :param per_document: stats per type for every scored document
-    :return: "macro": mean and std (over documents) of the per-document scores, as printed by
-             llm-metrics.py; "micro": scores of the counts summed over all documents;
-             "per_type": micro scores and counts per type
+    """Aggregates per-document stats into macro, micro and per-type scores.
+
+    Args:
+        per_document: stats per type for every scored document
+
+    Returns:
+        "macro": mean and std (over documents) of the per-document scores, as printed by
+        llm-metrics.py; "micro": scores of the counts summed over all documents;
+        "per_type": micro scores and counts per type
     """
     totals = [total(stats) for stats in per_document]
     macro = {}
@@ -103,8 +106,9 @@ def score(
         gold_documents: typing.List[data.Document], predicted_documents: typing.List[data.Document],
         tasks: typing.Sequence[str] = ("md", "re"),
 ) -> typing.Dict[str, typing.Any]:
-    """
-    Scores mentions ("md") and/or relations ("re") of the predicted documents, which must be in the gold data.
+    """Scores mentions ("md") and/or relations ("re") of the predicted documents.
+
+    The predicted documents must all be in the gold data.
     """
     gold_by_id = {d.id: d for d in gold_documents}
     unknown = [d.id for d in predicted_documents if d.id not in gold_by_id]

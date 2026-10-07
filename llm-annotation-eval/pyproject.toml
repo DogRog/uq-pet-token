@@ -24,9 +24,29 @@ dev = [
     "marimo>=0.25.1",
     "pandas>=2.3.3",
     "pytest>=9.1.1",
+    "ruff>=0.16.10",
 ]
 
 [tool.pytest.ini_options]
 # the scripts import autoannotate, eval and data from src/, so the tests do too
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+# src/ is the import root, so autoannotate, eval, experiments and data are first-party
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "D"]
+# missing docstrings (D100-D107) are not enforced yet; existing docstrings must be Google style
+ignore = ["D1"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+force-single-line = true

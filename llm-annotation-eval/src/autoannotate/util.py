@@ -34,12 +34,10 @@ def document_from_string(text: str, doc_id: str) -> data.Document:
 def ner_to_tag(
         ner: str, attributes: typing.Dict[str, str]
 ) -> typing.Tuple[str, str]:
-    """
-    Converts NER tags to xml style opening and closing tags.
+    """Converts NER tags to xml style opening and closing tags.
 
-    Examples
+    Examples:
     ------------------
-
     > ner_to_tag("activity")
     > <activity>, </activity>
 
@@ -60,15 +58,16 @@ def ner_to_tag(
 
 def format_document_text_with_entity_mentions(document: data.Document,
                                               only_types: typing.Optional[typing.List[str]] = None) -> str:
-    """
+    """Formats the document text with its mentions enclosed in XML-style tags.
 
-    :param only_types: only print XML-style tags for the following mention types
-    :param document: the PET style document to format
-    :return: text of the document with entity mentions enclosed
-             in XML-style tags, e.g.,
-             ``then the <actor id=0>clerk</actor> <activity id=1>sends</activity> [...]``
-    """
+    Args:
+        document: the PET style document to format
+        only_types: only print XML-style tags for the following mention types
 
+    Returns:
+        text of the document with entity mentions enclosed in XML-style tags, e.g.,
+        ``then the <actor id=0>clerk</actor> <activity id=1>sends</activity> [...]``
+    """
     if only_types is not None:
         only_types = [t.lower() for t in only_types]
 

@@ -15,7 +15,7 @@ class Scores:
         return Scores(p=stats.precision, r=stats.recall, f1=stats.f1)
 
     def __add__(self, other):
-        if type(other) != Scores:
+        if type(other) is not Scores:
             raise TypeError(f"Can not add Scores and {type(other)}")
         return Scores(p=self.p + other.p, r=self.r + other.r, f1=self.f1 + other.f1)
 
@@ -56,7 +56,7 @@ class Stats:
             return self.num_ok / self.num_gold
 
     def __add__(self, other):
-        if type(other) != Stats:
+        if type(other) is not Stats:
             raise TypeError(f"Can not add Stats and {type(other)}")
         return Stats(
             num_pred=self.num_pred + other.num_pred,
@@ -183,7 +183,7 @@ def _tag(
     if isinstance(e, pet.PetRelation):
         return e.type
     if isinstance(e, pet.PetEntity):
-        assert type(document) == pet.PetDocument
+        assert type(document) is pet.PetDocument
         return e.get_tag(document)
     raise AssertionError(f"Unknown type {type(e)}")
 

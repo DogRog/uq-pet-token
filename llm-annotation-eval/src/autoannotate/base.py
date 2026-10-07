@@ -4,7 +4,8 @@ import time
 import typing
 
 import openai
-from openai.types.chat import ChatCompletionUserMessageParam, ChatCompletionDeveloperMessageParam
+from openai.types.chat import ChatCompletionDeveloperMessageParam
+from openai.types.chat import ChatCompletionUserMessageParam
 
 from autoannotate import data
 
@@ -37,8 +38,7 @@ class BaseParser(abc.ABC):
         raise NotImplementedError()
 
     def report(self, kind: str, message: str) -> None:
-        """
-        Records a problem with the parsed response, e.g. a line that had to be dropped.
+        """Records a problem with the parsed response, e.g. a line that had to be dropped.
 
         :param kind: category to count problems by, prefixed with what happened to the line:
                      "dropped_..." (not used), "placed_..." (used anyway) or "ignored_line"

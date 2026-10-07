@@ -17,10 +17,9 @@ class DocumentBase:
         raise NotImplementedError()
 
     def get_hint(self) -> str:
-        """
-        Get hint of this document for LLM.
+        """Get hint of this document for LLM.
 
-        Returns
+        Returns:
         -------
         str
             Hint as string.

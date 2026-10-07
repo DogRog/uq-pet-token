@@ -1,5 +1,4 @@
-"""
-Annotates the gold documents for one run of a config, and logs what is needed to report on it.
+"""Annotates the gold documents for one run of a config, and logs what is needed to report on it.
 
 A run folder (res/pred/<config>/run-<i>/) contains:
 
@@ -155,9 +154,10 @@ def _call(
 
 
 def totals(directory: pathlib.Path, task: str) -> typing.Dict[str, typing.Any]:
-    """
-    Sums up calls.jsonl over the documents in the predictions. A document that was interrupted
-    and annotated again when resuming only counts with the calls whose results were kept.
+    """Sums up calls.jsonl over the documents in the predictions.
+
+    A document that was interrupted and annotated again when resuming only counts with the calls
+    whose results were kept.
     """
     out_file = predictions_file(directory, task)
     done_ids = {d.id for d in autoannotate.JsonImporter(out_file).do_import()} if out_file.exists() else set()
@@ -196,8 +196,7 @@ def totals(directory: pathlib.Path, task: str) -> typing.Dict[str, typing.Any]:
 def annotate_run(
         config: RunConfig, run: int, directory: pathlib.Path, gold_file: pathlib.Path, client, workers: int = 1
 ) -> None:
-    """
-    Annotates the gold documents that are not yet in the run's predictions.
+    """Annotates the gold documents that are not yet in the run's predictions.
 
     :param workers: number of documents annotated at the same time
     """
