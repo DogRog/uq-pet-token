@@ -101,15 +101,23 @@ def _write_csv(path: pathlib.Path, rows: typing.List[typing.Dict[str, typing.Any
     os.replace(tmp_path, path)
 
 
+def run_dirs(pred_dir: pathlib.Path) -> typing.List[pathlib.Path]:
+    """Run folders in pred_dir that have been scored."""
+    return sorted(d.parent for d in pred_dir.glob("*/run-*/metrics.json") if (d.parent / "run.json").exists())
+
+
+def collect_runs(pred_dir: pathlib.Path) -> typing.List[typing.Dict[str, typing.Any]]:
+    """:return: one row per scored run in pred_dir, the rows of runs.csv"""
+    runs = [_run_row(d) for d in run_dirs(pred_dir)]
+    runs.sort(key=lambda r: (r["config"], r["run"]))
+    return runs
+
+
 def write_summary(pred_dir: pathlib.Path) -> typing.List[typing.Dict[str, typing.Any]]:
     """Writes runs.csv and summary.csv to pred_dir, :return: the summary rows"""
-    run_dirs = sorted(
-        d.parent for d in pred_dir.glob("*/run-*/metrics.json") if (d.parent / "run.json").exists()
-    )
-    if not run_dirs:
+    runs = collect_runs(pred_dir)
+    if not runs:
         return []
-    runs = [_run_row(d) for d in run_dirs]
-    runs.sort(key=lambda r: (r["config"], r["run"]))
     _write_csv(pred_dir / "runs.csv", runs)
 
     by_config: typing.Dict[str, typing.List[typing.Dict[str, typing.Any]]] = {}

@@ -51,6 +51,14 @@ After every invocation, two tables are rebuilt from all run folders:
 
 Each document is saved as soon as it is annotated. If a run is interrupted (Ctrl+C, a timeout), start it again and it continues with the documents that are left. It refuses to continue if the model, provider, reasoning effort or prompts changed since; rename the config for a new experiment, or delete its folder to start over.
 
+### Results table
+
+```bash
+uv run marimo edit notebooks/eval_table.py
+```
+
+The notebook reads every scored run in `res/pred/` and shows one row per config: precision, recall and F1 as mean ± SD (over runs or over documents, selectable), output tokens and seconds per document, F1 per mention type, and a LaTeX version of the table to download. Model display names are set in the `MODEL_NAMES` cell.
+
 ### Evaluate predictions on their own
 
 `src/llm-metrics.py` scores prediction folders directly, including ones from before the configs. Add folder names under `res/pred/` (e.g. `"deepseek-v4.1-flash/run-1"`) to its `models` list, then run:
@@ -70,6 +78,7 @@ uv run pytest
 ## Layout
 
 - `configs/`: experiment configs
+- `notebooks/eval_table.py`: marimo notebook with the results table
 - `src/run-configs.py`: runs configs
 - `src/experiments/`: config loading, the run loop and its logs, reporting; `definitions.py` holds the mention and relation definitions and few-shot examples used in the prompts
 - `src/autoannotate/`: annotators, response parsers, prompt templates and provider configs

@@ -15,6 +15,8 @@ uv sync
 uv run python src/run-configs.py configs/deepseek-v4.1-flash.yaml   # annotate + score one config
 uv run python src/run-configs.py configs/md/ --workers 4            # every config in a folder
 uv run python src/llm-metrics.py    # score prediction folders listed in its `models` variable
+uv run marimo edit notebooks/eval_table.py   # results table (+ LaTeX) from all scored runs
+uv run marimo check notebooks/eval_table.py  # lint the notebook
 uv run pytest                       # all tests
 uv run pytest tests/test_mentions.py -k repeated   # a subset
 ```
