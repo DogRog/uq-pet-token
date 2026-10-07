@@ -1,7 +1,6 @@
 import pytest
 
-from experiments.config import RunConfig
-from experiments.config import load_config
+from experiments.config import RunConfig, load_config
 
 
 @pytest.fixture

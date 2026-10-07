@@ -19,8 +19,7 @@ import yaml
 
 import autoannotate
 from experiments import config as run_config
-from experiments import report
-from experiments import runner
+from experiments import report, runner
 
 REPO_DIR = pathlib.Path(__file__).parent.parent
 GOLD_FILE = REPO_DIR / "res" / "gold" / "pet.jsonl"

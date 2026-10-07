@@ -4,8 +4,7 @@ import time
 import typing
 
 import openai
-from openai.types.chat import ChatCompletionDeveloperMessageParam
-from openai.types.chat import ChatCompletionUserMessageParam
+from openai.types.chat import ChatCompletionDeveloperMessageParam, ChatCompletionUserMessageParam
 
 from autoannotate import data
 

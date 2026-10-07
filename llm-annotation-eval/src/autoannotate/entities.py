@@ -2,14 +2,13 @@ import pathlib
 import typing
 
 import openai
-from openai.types.chat import ChatCompletionContentPartTextParam
-from openai.types.chat import ChatCompletionDeveloperMessageParam
-from openai.types.chat import ChatCompletionUserMessageParam
+from openai.types.chat import (
+    ChatCompletionContentPartTextParam,
+    ChatCompletionDeveloperMessageParam,
+    ChatCompletionUserMessageParam,
+)
 
-from autoannotate import base
-from autoannotate import data
-from autoannotate import prompts
-from autoannotate import util
+from autoannotate import base, data, prompts, util
 
 
 class EntityParser(base.BaseParser):

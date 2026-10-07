@@ -4,14 +4,13 @@ import typing
 import langextract as lx
 import openai
 from langextract import resolver
-from openai.types.chat import ChatCompletionContentPartTextParam
-from openai.types.chat import ChatCompletionDeveloperMessageParam
-from openai.types.chat import ChatCompletionUserMessageParam
+from openai.types.chat import (
+    ChatCompletionContentPartTextParam,
+    ChatCompletionDeveloperMessageParam,
+    ChatCompletionUserMessageParam,
+)
 
-from autoannotate import base
-from autoannotate import data
-from autoannotate import definitions
-from autoannotate import prompts
+from autoannotate import base, data, definitions, prompts
 
 
 class MentionParser(base.BaseParser):
