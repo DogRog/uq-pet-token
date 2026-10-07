@@ -1,6 +1,8 @@
 import csv
 import json
 
+import httpx
+import openai
 import pytest
 
 from autoannotate import JsonExporter, JsonImporter, data
@@ -8,6 +10,8 @@ from experiments import report, runner
 from experiments.config import RunConfig
 
 CONFIG = RunConfig(name="test-config", provider="nhr", model="org/Model-1", reasoning_effort="low")
+REQUEST = httpx.Request("POST", "https://llm.test/v1/chat/completions")
+TIMEOUT = openai.APITimeoutError(request=REQUEST)
 
 
 @pytest.fixture
@@ -55,7 +59,7 @@ def test_run_writes_predictions_calls_and_manifest(tmp_path, gold_file, client):
 
     runner.annotate_run(CONFIG, 1, directory, gold_file, client)
 
-    predicted = JsonImporter(runner.predictions_file(directory)).do_import()
+    predicted = JsonImporter(runner.predictions_file(directory, "end-to-end")).do_import()
     assert [d.id for d in predicted] == ["doc-a", "doc-b", "doc-c"]
     assert predicted[0].relations == [data.Relation("actor performer", 1, 0)]
 
@@ -70,11 +74,16 @@ def test_run_writes_predictions_calls_and_manifest(tmp_path, gold_file, client):
     assert calls[0]["num_predicted"] == 2
     assert [i["kind"] for i in calls[0]["issues"]] == ["ignored_line"]
     assert all(c["reasoning_effort"] == "low" for c in client.calls)
+    # the gateway's response cache would make repeated runs copies of the first
+    assert all(c["extra_body"] == {"cache": {"no-cache": True}} for c in client.calls)
 
     manifest = read_manifest(directory)
     assert manifest["config"] == "test-config" and manifest["run"] == 1
-    assert manifest["settings"] == {"provider": "nhr", "model": "org/Model-1", "reasoning_effort": "low"}
+    assert manifest["settings"] == {
+        "task": "end-to-end", "provider": "nhr", "model": "org/Model-1", "reasoning_effort": "low"
+    }
     assert manifest["api"]["instruction_role"] == "system"
+    assert manifest["api"]["extra_body"] == {"cache": {"no-cache": True}}
     assert "relations between" in manifest["prompts"]["relations"]
     [session] = manifest["sessions"]
     assert session["outcome"] == "completed"
@@ -99,28 +108,96 @@ def test_max_documents(tmp_path, gold_file, client):
     assert read_manifest(directory)["totals"]["documents"] == 2
 
 
-def test_failed_run_is_logged_and_resumes(tmp_path, gold_file, fake_client):
-    directory = runner.run_dir(tmp_path, CONFIG, 1)
-    failing = fake_client(lambda params: answer(params, fail_on="doc-b"))
+def raise_for(*doc_ids, error):
+    def _answer(params):
+        if any(doc_id in params["messages"][1]["content"][0]["text"] for doc_id in doc_ids):
+            raise error
+        return answer(params)
+    return _answer
 
-    with pytest.raises(TimeoutError):
-        runner.annotate_run(CONFIG, 1, directory, gold_file, failing)
+
+def test_temporary_failure_skips_the_document_until_the_next_start(tmp_path, gold_file, fake_client):
+    directory = runner.run_dir(tmp_path, CONFIG, 1)
+
+    runner.annotate_run(CONFIG, 1, directory, gold_file, fake_client(raise_for("doc-b", error=TIMEOUT)))
 
     manifest = read_manifest(directory)
-    assert manifest["sessions"][0]["outcome"] == "failed"
-    assert "request timed out" in manifest["sessions"][0]["error"]
-    assert manifest["totals"]["documents"] == 1
-    assert read_calls(directory)[-1]["error"] == "TimeoutError: request timed out"
+    [session] = manifest["sessions"]
+    assert session["outcome"] == "incomplete"
+    assert session["failed_documents"] == ["doc-b"]
+    assert manifest["totals"]["documents"] == 2
+    assert [c["error"] for c in read_calls(directory) if "error" in c] == ["APITimeoutError: Request timed out."]
 
     runner.annotate_run(CONFIG, 1, directory, gold_file, fake_client(answer))
 
     manifest = read_manifest(directory)
-    assert [s["outcome"] for s in manifest["sessions"]] == ["failed", "completed"]
-    assert manifest["sessions"][1]["documents_to_do"] == 2
+    assert [s["outcome"] for s in manifest["sessions"]] == ["incomplete", "completed"]
+    assert manifest["sessions"][1]["documents_to_do"] == 1
     assert manifest["totals"]["documents"] == 3
     assert manifest["totals"]["all"]["calls"] == 6
-    # the failed call of the second document
     assert manifest["totals"]["discarded_calls"] == 1
+
+
+def test_rejected_request_stops_the_run(tmp_path, gold_file, fake_client):
+    directory = runner.run_dir(tmp_path, CONFIG, 1)
+    rejected = openai.BadRequestError(
+        "reasoning_effort=low is not supported", response=httpx.Response(400, request=REQUEST), body=None
+    )
+
+    with pytest.raises(openai.BadRequestError):
+        runner.annotate_run(CONFIG, 1, directory, gold_file, fake_client(raise_for("doc-b", "doc-c", error=rejected)))
+
+    manifest = read_manifest(directory)
+    assert manifest["sessions"][0]["outcome"] == "failed"
+    assert "not supported" in manifest["sessions"][0]["error"]
+    assert manifest["totals"]["documents"] == 1
+
+
+def test_failures_in_a_row_stop_the_run(tmp_path, gold_file, fake_client):
+    directory = runner.run_dir(tmp_path, CONFIG, 1)
+
+    with pytest.raises(RuntimeError, match="3 documents in a row failed"):
+        runner.annotate_run(CONFIG, 1, directory, gold_file, fake_client(raise_for("doc", error=TIMEOUT)))
+
+    [session] = read_manifest(directory)["sessions"]
+    assert session["outcome"] == "failed"
+    assert len(session["failed_documents"]) == 3
+
+
+def test_parallel_workers(tmp_path, gold_file, client):
+    directory = runner.run_dir(tmp_path, CONFIG, 1)
+
+    runner.annotate_run(CONFIG, 1, directory, gold_file, client, workers=3)
+
+    predicted = JsonImporter(runner.predictions_file(directory, "end-to-end")).do_import()
+    assert sorted(d.id for d in predicted) == ["doc-a", "doc-b", "doc-c"]
+    assert len(read_calls(directory)) == 6
+    manifest = read_manifest(directory)
+    assert manifest["sessions"][0]["workers"] == 3
+    assert manifest["totals"]["all"]["calls"] == 6
+
+
+def test_mention_detection_only(tmp_path, gold_file, client):
+    pred_dir = tmp_path / "pred"
+    config = RunConfig(name="md-only", provider="nhr", model="m", task="md")
+    directory = runner.run_dir(pred_dir, config, 1)
+
+    runner.annotate_run(config, 1, directory, gold_file, client)
+    metrics = report.score_run(directory, gold_file, "md")
+    [row] = report.write_summary(pred_dir)
+
+    assert [d.id for d in JsonImporter(runner.predictions_file(directory, "md")).do_import()] == ["doc-a", "doc-b", "doc-c"]
+    assert not (directory / "end-to-end").exists()
+    assert {c["step"] for c in read_calls(directory)} == {"mentions"}
+    manifest = read_manifest(directory)
+    assert list(manifest["prompts"]) == ["mentions"]
+    assert manifest["totals"]["relations"]["calls"] == 0
+    assert set(metrics) == {"documents", "md"}
+    assert row["task"] == "md" and row["md_f1"] == pytest.approx(0.8)
+    assert row["re_f1"] is None
+    with open(pred_dir / "runs.csv") as f:
+        assert next(csv.DictReader(f))["re_f1"] == ""
+    report.print_summary([row])
 
 
 def test_complete_run_is_not_started_again(tmp_path, gold_file, client, fake_client):
@@ -162,7 +239,7 @@ def test_score_and_summarize_repeated_runs(tmp_path, gold_file, client, fake_cli
     for run, run_client in enumerate(clients, start=1):
         directory = runner.run_dir(pred_dir, config, run)
         runner.annotate_run(config, run, directory, gold_file, run_client)
-        metrics = report.score_run(directory, gold_file)
+        metrics = report.score_run(directory, gold_file, "end-to-end")
         assert json.loads((directory / "metrics.json").read_text()) == metrics
 
     summary = report.write_summary(pred_dir)

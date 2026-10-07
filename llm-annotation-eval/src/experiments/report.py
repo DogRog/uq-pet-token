@@ -9,6 +9,7 @@ The tables are rebuilt from every run folder in res/pred/, not only the configs 
 """
 import csv
 import json
+import os
 import pathlib
 import statistics
 import typing
@@ -30,9 +31,11 @@ RUN_VALUES = (
 )
 
 
-def score_run(directory: pathlib.Path, gold_file: pathlib.Path) -> typing.Dict[str, typing.Any]:
-    predicted = autoannotate.JsonImporter(runner.predictions_file(directory)).do_import()
-    metrics = scoring.score(autoannotate.JsonImporter(gold_file).do_import(), predicted)
+def score_run(directory: pathlib.Path, gold_file: pathlib.Path, task: str) -> typing.Dict[str, typing.Any]:
+    """:param task: "end-to-end" scores mentions and relations, "md" only mentions"""
+    predicted = autoannotate.JsonImporter(runner.predictions_file(directory, task)).do_import()
+    tasks = ("md", "re") if task == "end-to-end" else ("md",)
+    metrics = scoring.score(autoannotate.JsonImporter(gold_file).do_import(), predicted, tasks)
     runner.write_json(directory / "metrics.json", metrics)
     return metrics
 
@@ -49,11 +52,13 @@ def _run_row(directory: pathlib.Path) -> typing.Dict[str, typing.Any]:
         "complete": metrics["documents"] == manifest["documents_planned"],
     }
     for task in TASKS:
+        # empty for tasks the run did not do, e.g. relations in mention detection runs
+        task_metrics = metrics.get(task)
         for name in SCORES:
-            row[f"{task}_{name}"] = metrics[task]["macro"][name]["mean"]
-            row[f"{task}_{name}_sd_docs"] = metrics[task]["macro"][name]["std"]
+            row[f"{task}_{name}"] = task_metrics["macro"][name]["mean"] if task_metrics else None
+            row[f"{task}_{name}_sd_docs"] = task_metrics["macro"][name]["std"] if task_metrics else None
         for name in SCORES:
-            row[f"{task}_micro_{name}"] = metrics[task]["micro"][name]
+            row[f"{task}_micro_{name}"] = task_metrics["micro"][name] if task_metrics else None
     row.update({
         "prompt_tokens": totals["all"]["prompt_tokens"],
         "completion_tokens": totals["all"]["completion_tokens"],
@@ -71,6 +76,7 @@ def _summary_row(config: str, runs: typing.List[typing.Dict[str, typing.Any]]) -
     documents = sorted({r["documents"] for r in complete})
     row: typing.Dict[str, typing.Any] = {
         "config": config,
+        "task": runs[0]["task"],
         "provider": runs[0]["provider"],
         "model": runs[0]["model"],
         "reasoning_effort": runs[0]["reasoning_effort"],
@@ -86,10 +92,13 @@ def _summary_row(config: str, runs: typing.List[typing.Dict[str, typing.Any]]) -
 
 
 def _write_csv(path: pathlib.Path, rows: typing.List[typing.Dict[str, typing.Any]]) -> None:
-    with open(path, "w", encoding="utf8", newline="") as f:
+    # write to a temporary file and rename, so parallel invocations never leave a half-written table
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with open(tmp_path, "w", encoding="utf8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
+    os.replace(tmp_path, path)
 
 
 def write_summary(pred_dir: pathlib.Path) -> typing.List[typing.Dict[str, typing.Any]]:
@@ -121,11 +130,11 @@ def print_summary(summary: typing.List[typing.Dict[str, typing.Any]]) -> None:
         return value
 
     table = Table(title="Mean over complete runs (± SD over runs); F1 is the mean over documents")
-    for column in ("config", "reasoning", "runs", "docs", "MD F1", "RE F1", "tokens in", "tokens out"):
+    for column in ("config", "task", "reasoning", "runs", "docs", "MD F1", "RE F1", "tokens in", "tokens out"):
         table.add_column(column)
     for row in summary:
         table.add_row(
-            row["config"], str(row["reasoning_effort"] or "-"), str(row["runs"]), row["documents"],
+            row["config"], row["task"], str(row["reasoning_effort"] or "-"), str(row["runs"]), row["documents"],
             fmt(row, "md_f1"), fmt(row, "re_f1"),
             fmt(row, "prompt_tokens", percent=False), fmt(row, "completion_tokens", percent=False),
         )

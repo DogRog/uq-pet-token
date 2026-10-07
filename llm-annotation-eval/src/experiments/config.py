@@ -7,6 +7,9 @@ import yaml
 import autoannotate
 
 REASONING_EFFORTS = typing.get_args(typing.get_args(autoannotate.ReasoningEffort)[0])
+# "end-to-end": mentions, then relations between them; "md": mention detection only.
+# Also the name of the predictions folder in a run, as llm-metrics.py expects.
+TASKS = ("end-to-end", "md")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -16,6 +19,7 @@ class RunConfig:
     name: str
     provider: str
     model: str
+    task: str = "end-to-end"
     # None: don't send the parameter, many models on the NHR@FAU gateway reject some values
     reasoning_effort: autoannotate.ReasoningEffort = None
     # None: all gold documents
@@ -24,7 +28,9 @@ class RunConfig:
 
     def settings(self) -> typing.Dict[str, typing.Any]:
         """Settings that change the predictions, a run must not be resumed with different ones."""
-        return {"provider": self.provider, "model": self.model, "reasoning_effort": self.reasoning_effort}
+        return {
+            "task": self.task, "provider": self.provider, "model": self.model, "reasoning_effort": self.reasoning_effort
+        }
 
 
 def load_config(path: pathlib.Path) -> RunConfig:
@@ -47,6 +53,8 @@ def load_config(path: pathlib.Path) -> RunConfig:
     config = RunConfig(name=path.stem, **values)
     if config.provider not in autoannotate.PROVIDERS:
         raise ValueError(f"{path}: unknown provider '{config.provider}', expected one of {list(autoannotate.PROVIDERS)}.")
+    if config.task not in TASKS:
+        raise ValueError(f"{path}: task must be one of {list(TASKS)}.")
     if config.reasoning_effort is not None and config.reasoning_effort not in REASONING_EFFORTS:
         raise ValueError(f"{path}: reasoning_effort must be one of {list(REASONING_EFFORTS)}, or left out.")
     if config.max_documents is not None and not (isinstance(config.max_documents, int) and config.max_documents > 0):

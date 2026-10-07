@@ -100,16 +100,19 @@ def summarize(per_document: typing.List[typing.Dict[str, Stats]]) -> typing.Dict
 
 
 def score(
-        gold_documents: typing.List[data.Document], predicted_documents: typing.List[data.Document]
+        gold_documents: typing.List[data.Document], predicted_documents: typing.List[data.Document],
+        tasks: typing.Sequence[str] = ("md", "re"),
 ) -> typing.Dict[str, typing.Any]:
-    """Scores mentions ("md") and relations ("re") of the predicted documents, which must be in the gold data."""
+    """
+    Scores mentions ("md") and/or relations ("re") of the predicted documents, which must be in the gold data.
+    """
     gold_by_id = {d.id: d for d in gold_documents}
     unknown = [d.id for d in predicted_documents if d.id not in gold_by_id]
     assert not unknown, f"Predicted documents not in the gold data: {unknown}"
     pairs = [(gold_by_id[d.id], d) for d in predicted_documents]
     assert pairs, "No predicted documents to score."
+    stats_by_type = {"md": mention_stats, "re": relation_stats}
     return {
         "documents": len(pairs),
-        "md": summarize([mention_stats(g, p) for g, p in pairs]),
-        "re": summarize([relation_stats(g, p) for g, p in pairs]),
+        **{task: summarize([stats_by_type[task](g, p) for g, p in pairs]) for task in tasks},
     }

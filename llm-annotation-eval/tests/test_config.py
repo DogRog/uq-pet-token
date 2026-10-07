@@ -21,17 +21,18 @@ def test_minimal_config_uses_defaults(write_config):
 
 def test_full_config(write_config):
     config = load_config(write_config(
-        "provider: openai\nmodel: gpt-6-sol\nreasoning_effort: high\nmax_documents: 5\nrepeats: 3"
+        "provider: openai\nmodel: gpt-6-sol\ntask: md\nreasoning_effort: high\nmax_documents: 5\nrepeats: 3"
     ))
 
     assert config == RunConfig(
-        name="my-run", provider="openai", model="gpt-6-sol", reasoning_effort="high", max_documents=5, repeats=3
+        name="my-run", provider="openai", model="gpt-6-sol", task="md", reasoning_effort="high", max_documents=5,
+        repeats=3,
     )
 
 
 def test_settings_are_what_changes_predictions(write_config):
     config = load_config(write_config("provider: nhr\nmodel: m\nreasoning_effort: low\nrepeats: 2"))
-    assert config.settings() == {"provider": "nhr", "model": "m", "reasoning_effort": "low"}
+    assert config.settings() == {"task": "end-to-end", "provider": "nhr", "model": "m", "reasoning_effort": "low"}
 
 
 @pytest.mark.parametrize("text, message", [
@@ -40,6 +41,7 @@ def test_settings_are_what_changes_predictions(write_config):
     ("provider: azure\nmodel: m", "unknown provider"),
     ("provider: nhr\nmodel: m\nreasoning: high", "unknown keys"),
     ("provider: nhr\nmodel: m\nreasoning_effort: max", "reasoning_effort"),
+    ("provider: nhr\nmodel: m\ntask: re", "task must be one of"),
     ("provider: nhr\nmodel: m\nmax_documents: 0", "max_documents"),
     ("provider: nhr\nmodel: m\nrepeats: 0", "repeats"),
     ("provider: nhr\nmodel: m\nrepeats: '3'", "repeats"),

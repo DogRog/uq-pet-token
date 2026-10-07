@@ -13,7 +13,7 @@ Environment is managed with uv (Python ≥3.10, `package = false` — nothing is
 ```bash
 uv sync
 uv run python src/run-configs.py configs/deepseek-v4.1-flash.yaml   # annotate + score one config
-uv run python src/run-configs.py configs/                           # every config
+uv run python src/run-configs.py configs/md/ --workers 4            # every config in a folder
 uv run python src/llm-metrics.py    # score prediction folders listed in its `models` variable
 uv run pytest                       # all tests
 uv run pytest tests/test_mentions.py -k repeated   # a subset
@@ -27,9 +27,9 @@ Source files mix CRLF and LF line endings; keep each file's existing endings whe
 
 ## Experiments
 
-A run config is a YAML file (`*.yaml`/`*.yml`) in `configs/` (keys: `provider`, `model`, `reasoning_effort`, `max_documents`, `repeats`; see `configs/README.md`, which also records which `reasoning_effort` values each NHR model accepts). The file stem is the config name. `src/run-configs.py` validates all configs and API keys before the first call, then for each config and repeat: `experiments.runner.annotate_run` → `experiments.report.score_run`, and finally rebuilds `res/pred/runs.csv` and `res/pred/summary.csv` from **every** run folder on disk.
+A run config is a YAML file (`*.yaml`/`*.yml`) in `configs/` or a subfolder like `configs/md/` (keys: `task` (`end-to-end` or `md` = mentions only), `provider`, `model`, `reasoning_effort`, `max_documents`, `repeats`; see `configs/README.md`, which also records which `reasoning_effort` values each NHR model accepts). The file stem is the config name. `src/run-configs.py` validates all configs and API keys before the first call, then for each config and repeat: `experiments.runner.annotate_run` → `experiments.report.score_run`; a failing run skips the rest of its config. Finally it rebuilds `res/pred/runs.csv` and `res/pred/summary.csv` from **every** run folder on disk.
 
-Run folder `res/pred/<config>/run-<i>/`: `end-to-end/pet.jsonl` (predictions), `calls.jsonl` (one line per LLM call: tokens, duration, finish reason, raw response, reasoning, parser issues), `run.json` (settings, rendered prompts, a session per start with git commit/dirty flag, package versions, gold sha256, plus totals), `metrics.json`. Resuming skips documents already in `pet.jsonl` but raises if `RunConfig.settings()` (provider, model, reasoning effort) or the rendered prompts differ from `run.json`. `totals` counts only the latest successful call per (document, step) of completed documents; the rest are `discarded_calls`.
+Run folder `res/pred/<config>/run-<i>/`: `<task>/pet.jsonl` (predictions), `calls.jsonl` (one line per LLM call: tokens, duration, finish reason, raw response, reasoning, parser issues), `run.json` (settings, rendered prompts, a session per start with git commit/dirty flag, package versions, gold sha256, plus totals), `metrics.json`. Documents are annotated by a thread pool (`--workers`); `_write_lock` guards the shared files, and `BaseAnnotator.annotate` creates a parser per call so issues don't mix between threads. Transient API errors (`runner.TRANSIENT_ERRORS`) skip the document (session outcome `incomplete`); other errors or `MAX_CONSECUTIVE_FAILURES` in a row stop the run. Resuming skips documents already in `pet.jsonl` but raises if `RunConfig.settings()` (task, provider, model, reasoning effort) or the rendered prompts differ from `run.json`. `totals` counts only the latest successful call per (document, step) of completed documents; the rest are `discarded_calls`.
 
 Mention/relation definitions and few-shot examples are shared by all configs, in `src/experiments/definitions.py`.
 
@@ -44,7 +44,7 @@ Parsers never raise on bad LLM output: they skip the line and call `BaseParser.r
 
 Shared plumbing in `src/autoannotate/`:
 - `base.BaseAnnotator`: builds chat-completion params; prompts are authored with a `developer` role and rewritten to the provider's `instruction_role` (`system` for NHR/vLLM-served open-weight models). `reasoning_effort=None` omits the parameter. `get_instruction()` on the mention/relation annotators returns the document-independent instruction prompt.
-- `providers.py`: `PROVIDERS` registry; NHR@FAU is an OpenAI-compatible gateway, so everything goes through the `openai` client.
+- `providers.py`: `PROVIDERS` registry; NHR@FAU is an OpenAI-compatible gateway (LiteLLM), so everything goes through the `openai` client. The gateway caches responses to identical requests, so `Provider.extra_body` sends `{"cache": {"no-cache": True}}` with every NHR request; without it, repeated runs are copies of the first.
 - `prompts.Prompt`: templates in `resources/prompts/*.txt` with `{{param}}` placeholders; missing or unknown params assert.
 - `data.py`: `Document`/`Token`/`Mention`/`Relation`/`Entity` plus JSONL import/export. The importer lowercases mention and relation types, so gold `"Activity Data"` and predicted types compare as `"activity data"`.
 - `entities.py` (`LLMEntitiesAnnotator`, coreference into entities) and `BaseAnnotator.batch_line` exist but are not used by the current pipeline.

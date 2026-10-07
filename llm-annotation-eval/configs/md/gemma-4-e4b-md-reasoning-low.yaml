@@ -1,0 +1,5 @@
+task: md
+provider: nhr
+model: google/gemma-4-E4B-it
+reasoning_effort: low
+repeats: 5

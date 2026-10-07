@@ -1,0 +1,5 @@
+task: md
+provider: nhr
+model: deepseek-ai/DeepSeek-V4.1-Flash
+reasoning_effort: low
+repeats: 5

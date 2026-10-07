@@ -5,10 +5,13 @@ LLM, scores the predictions, and updates res/pred/runs.csv and res/pred/summary.
     uv run python src/run-configs.py configs/deepseek-v4.1-flash.yaml
     uv run python src/run-configs.py configs/          # every *.yaml in the folder
 
-Running a config again resumes its unfinished runs and rescores all of them.
+Running a config again resumes its unfinished runs and rescores all of them. If a run of a config
+fails, its remaining runs are skipped and the next config is run; the exit code is 1 then.
 """
 import argparse
 import pathlib
+import sys
+import traceback
 
 import dotenv
 import yaml
@@ -26,7 +29,11 @@ def main():
     parser = argparse.ArgumentParser(description="Annotate and score with the given run configs.")
     parser.add_argument("configs", nargs="+", type=pathlib.Path,
                         help="config files, or folders to run every *.yaml / *.yml in")
+    parser.add_argument("--workers", type=int, default=4,
+                        help="documents annotated at the same time per run (default: %(default)s)")
     args = parser.parse_args()
+    if args.workers < 1:
+        parser.error("--workers must be at least 1")
 
     paths = []
     for path in args.configs:
@@ -45,14 +52,26 @@ def main():
     dotenv.load_dotenv(REPO_DIR / ".env")
     clients = {c.provider: autoannotate.get_provider(c.provider).client() for c in configs}
 
+    failed = []
     for config in configs:
         for run in range(1, config.repeats + 1):
             directory = runner.run_dir(PRED_DIR, config, run)
-            runner.annotate_run(config, run, directory, GOLD_FILE, clients[config.provider])
-            report.score_run(directory, GOLD_FILE)
+            try:
+                runner.annotate_run(config, run, directory, GOLD_FILE, clients[config.provider], args.workers)
+            except Exception:
+                traceback.print_exc()
+                print(f"{config.name} run {run} failed, skipping the rest of {config.name}.")
+                failed.append(config.name)
+                break
+            finally:
+                if runner.predictions_file(directory, config.task).exists():
+                    report.score_run(directory, GOLD_FILE, config.task)
 
     report.print_summary(report.write_summary(PRED_DIR))
     print(f"Tables: {PRED_DIR / 'summary.csv'} (per config), {PRED_DIR / 'runs.csv'} (per run).")
+    if failed:
+        print(f"Failed: {', '.join(failed)}. Run them again to resume.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

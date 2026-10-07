@@ -25,6 +25,7 @@ Each experiment is a config file in `configs/`, e.g.:
 ```yaml
 provider: nhr                             # or openai
 model: deepseek-ai/DeepSeek-V4.1-Flash
+task: md                                  # optional: md = mentions only, default end-to-end
 reasoning_effort: low                     # optional, left out: not sent
 max_documents: 5                          # optional, for a quick test
 repeats: 3                                # optional, default 1
@@ -36,12 +37,12 @@ repeats: 3                                # optional, default 1
 uv run python src/run-configs.py configs/deepseek-v4.1-flash.yaml
 ```
 
-Pass several files, or `configs/` for all of them. Each run of a config gets its own folder, `res/pred/<config name>/run-<i>/`, containing:
+Pass several files, or a folder for all configs in it. `--workers N` sets how many documents are annotated at the same time (default 4). A document whose request times out or hits a server error is skipped and annotated when you start the config again; a rejected request, or 3 failed documents in a row, stops that config and the script moves on to the next. Each run of a config gets its own folder, `res/pred/<config name>/run-<i>/`, containing:
 
-- `end-to-end/pet.jsonl`: the predicted documents
+- `end-to-end/pet.jsonl` (or `md/pet.jsonl` for `task: md`): the predicted documents
 - `calls.jsonl`: one line per LLM call, with token usage (including reasoning tokens where the provider reports them), duration, finish reason, the raw response, the reasoning text, and the lines the parser had to drop or fix
 - `run.json`: the settings, the exact prompts, and per session the start and end time, git commit, Python and package versions, and a hash of the gold file, plus totals over all calls
-- `metrics.json`: precision, recall and F1 for mentions (`md`) and relations (`re`), as the mean ± SD over documents (macro), micro-averaged, and per type
+- `metrics.json`: precision, recall and F1 for mentions (`md`) and, for end-to-end runs, relations (`re`), as the mean ± SD over documents (macro), micro-averaged, and per type
 
 After every invocation, two tables are rebuilt from all run folders:
 
