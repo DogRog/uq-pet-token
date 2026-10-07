@@ -53,13 +53,16 @@ ReasoningEffort = typing.Optional[typing.Literal["none", "minimal", "low", "medi
 class BaseAnnotator(abc.ABC):
     def __init__(self, client: openai.OpenAI, language_model: str,
                  reasoning_effort: ReasoningEffort,
-                 instruction_role: typing.Literal["developer", "system"] = "developer"):
+                 instruction_role: typing.Literal["developer", "system"] = "developer",
+                 extra_body: typing.Optional[typing.Dict[str, typing.Any]] = None):
         self.client = client
         self.language_model = language_model
         self.parser = self.get_parser()
         # None omits the parameter, for models / providers that do not support it
         self.reasoning_effort = reasoning_effort
         self.instruction_role = instruction_role
+        # provider specific fields added to the request body, see Provider.extra_body
+        self.extra_body = extra_body
 
     @abc.abstractmethod
     def get_messages(
@@ -83,16 +86,20 @@ class BaseAnnotator(abc.ABC):
         }
         if self.reasoning_effort is not None:
             params["reasoning_effort"] = self.reasoning_effort
+        if self.extra_body is not None:
+            params["extra_body"] = self.extra_body
         return params
 
     def batch_line(self, document: data.Document, task_id: str) -> typing.Dict:
         params = self.get_params(document)
+        extra_body = params.pop("extra_body", {})
         return {
             "custom_id": task_id,
             "method": "POST",
             "url": "/v1/chat/completions",
             "body": {
-                **params
+                **params,
+                **extra_body,
             }
         }
 
@@ -105,8 +112,10 @@ class BaseAnnotator(abc.ABC):
         choice = resp.choices[0]
         # None if e.g. a reasoning model used up all tokens before answering
         answer = choice.message.content or ""
-        self.parser.issues = []
-        doc = self.parser.parse(document, answer)
+        # a parser per call, as it collects the issues of one response and documents may be
+        # annotated in parallel
+        parser = self.get_parser()
+        doc = parser.parse(document, answer)
         # OpenAI-compatible servers return reasoning under a non-standard field, if at all
         extra = choice.message.model_extra or {}
         details = resp.usage.completion_tokens_details
@@ -120,5 +129,5 @@ class BaseAnnotator(abc.ABC):
             finish_reason=choice.finish_reason,
             response_model=resp.model,
             duration_s=duration_s,
-            issues=list(self.parser.issues),
+            issues=parser.issues,
         )

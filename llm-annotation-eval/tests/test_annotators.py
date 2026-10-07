@@ -150,3 +150,20 @@ def test_issues_are_reset_for_every_document(fake_client, make_doc):
 def test_instruction_is_the_first_message(fake_client, make_doc, make_annotator):
     annotator = make_annotator(fake_client(""))
     assert annotator.get_messages(make_doc(["a"]))[0]["content"][0]["text"] == annotator.get_instruction()
+
+
+def test_extra_body_is_sent_only_when_set(fake_client, make_doc):
+    params = mention_annotator(fake_client(""), extra_body={"cache": {"no-cache": True}}).get_params(make_doc(["a"]))
+    assert params["extra_body"] == {"cache": {"no-cache": True}}
+    assert "extra_body" not in mention_annotator(fake_client("")).get_params(make_doc(["a"]))
+
+
+def test_batch_line_puts_extra_body_into_the_body(fake_client, make_doc):
+    line = mention_annotator(fake_client(""), extra_body={"cache": {"no-cache": True}}).batch_line(make_doc(["a"]), "t1")
+    assert line["body"]["cache"] == {"no-cache": True}
+    assert "extra_body" not in line["body"]
+
+
+@pytest.mark.parametrize("name, extra_body", [("openai", None), ("nhr", {"cache": {"no-cache": True}})])
+def test_only_the_nhr_gateway_bypasses_its_response_cache(name, extra_body):
+    assert autoannotate.get_provider(name).extra_body == extra_body

@@ -13,6 +13,8 @@ class Provider:
     # role of the instruction message: OpenAI prefers "developer", while chat templates
     # of open-weight models (e.g., served via vLLM) usually only know "system"
     instruction_role: typing.Literal["developer", "system"]
+    # added to the body of every request
+    extra_body: typing.Optional[typing.Dict[str, typing.Any]] = None
 
     def client(self) -> openai.OpenAI:
         api_key = os.environ.get(self.api_key_env)
@@ -34,6 +36,9 @@ PROVIDERS: typing.Dict[str, Provider] = {
         base_url="https://hub.nhr.fau.de/api/llmgw/v1",
         api_key_env="NHR_API_KEY",
         instruction_role="system",
+        # the gateway (LiteLLM) caches responses, an identical request would return the same
+        # answer again within milliseconds, which makes repeated runs copies of the first
+        extra_body={"cache": {"no-cache": True}},
     ),
 }
 

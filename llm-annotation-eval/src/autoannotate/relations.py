@@ -59,8 +59,9 @@ class LLMRelationsAnnotator(base.BaseAnnotator):
                  type_definitions: typing.List[definitions.RelationDefinition],
                  example: typing.Optional[str],
                  reasoning_effort: base.ReasoningEffort,
-                 instruction_role: typing.Literal["developer", "system"] = "developer"):
-        super().__init__(client, language_model, reasoning_effort, instruction_role)
+                 instruction_role: typing.Literal["developer", "system"] = "developer",
+                 extra_body: typing.Optional[typing.Dict[str, typing.Any]] = None):
+        super().__init__(client, language_model, reasoning_effort, instruction_role, extra_body)
         prompt_folder = pathlib.Path(__file__).parent.resolve() / "resources" / "prompts"
         self._prompt_template = prompts.Prompt(prompt_folder / "annotate-relations.txt")
         self._example = example
