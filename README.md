@@ -77,6 +77,7 @@ at the project root (see [Weights & Biases](#weights--biases)).
 | Sample hyperparameters and compare UQ against random | `scripts/bert_token_uq_search.py` |
 | Inspect tuning completeness and winners | `notebooks/random_baseline_analysis.py` |
 | Compare best-config UQ results and learning curves | `notebooks/best_uq_analysis.py` |
+| Compare Gumbel noise and word form caps with top-K selection | `notebooks/acquisition_variants_analysis.py` |
 | Compare UQ against the test-tuned random oracle (appendix) | `notebooks/oracle_random_analysis.py` |
 | Inspect random-search test curves and selections | `notebooks/random_search_analysis.py` |
 
@@ -339,6 +340,10 @@ noise, caps of 1 and 2, and Gumbel noise with a cap of 1 for every saved winner,
 bash scripts/run_stochastic_uq_all_models.sh --dry-run
 bash scripts/run_stochastic_uq_all_models.sh
 ```
+
+`notebooks/acquisition_variants_analysis.py` pairs each variant run under `results/` with
+a top-K run of identical settings and compares their learning curves, selection
+redundancy, and round-to-round stability.
 
 ### 3. Supervised upper bound
 
@@ -732,6 +737,7 @@ recorded in [docs/adr/](docs/adr/).
 | `notebooks/bert_token_uq.py` | controls, experiment run, tables, and plots |
 | `notebooks/random_baseline_analysis.py` | trial completeness and best saved validation configurations |
 | `notebooks/best_uq_analysis.py` | best-config UQ comparisons against random and the supervised bound |
+| `notebooks/acquisition_variants_analysis.py` | Gumbel noise and word form caps against matched top-K runs |
 | `notebooks/random_search_analysis.py` | random-sweep summaries and per-configuration drill-downs |
 | `notebooks/oracle_random_analysis.py` | appendix: UQ against the test-tuned random oracle |
 | `notebooks/fixed_all_metrics_analysis.py` | read-only analysis of one historical sweep |
