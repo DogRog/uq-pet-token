@@ -23,6 +23,14 @@ def main(argv: list[str] | None = None) -> int:
         default=list(UQ_METRICS),
         help="Metrics to compare (default: all three); overrides config uq_metric.",
     )
+    parser.add_argument(
+        "--gumbel-noise", action="store_true", help="Sample uncertain words (Gumbel-top-K)."
+    )
+    parser.add_argument(
+        "--max-per-word-form",
+        type=int,
+        help="Cap the uncertainty arm's words per lowercased form and round.",
+    )
     parser.add_argument("--seed-workers", type=int, help="Concurrent seeds (default: config or 2).")
     parser.add_argument("--sweep-name", help="Result group name (default: checkpoint-best-uq).")
     parser.add_argument("--sweeps-dir", type=Path, default=PROJECT_ROOT / "results" / "best_uq")
@@ -36,11 +44,19 @@ def main(argv: list[str] | None = None) -> int:
         settings["seed_workers"] = (
             args.seed_workers if args.seed_workers is not None else settings.get("seed_workers", 2)
         )
+        if args.gumbel_noise:
+            settings["gumbel_noise"] = True
+        if args.max_per_word_form is not None:
+            settings["max_per_word_form"] = args.max_per_word_form
         config = ExperimentConfig.model_validate(settings)
     except (OSError, ValueError) as error:
         parser.error(str(error))
 
     name = config.checkpoint.rsplit("/", maxsplit=1)[-1] + "-best-uq"
+    if config.gumbel_noise:
+        name += "-gumbel"
+    if config.max_per_word_form is not None:
+        name += f"-cap{config.max_per_word_form}"
     search_args = argparse.Namespace(
         config=None,
         config_json=json.dumps(

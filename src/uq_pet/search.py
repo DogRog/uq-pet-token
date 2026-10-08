@@ -35,7 +35,7 @@ from uq_pet.config import (
     FixedComparisonConfig,
     RandomBaselineSearchConfig,
     RandomSearchConfig,
-    omit_default_dataset,
+    omit_implicit_defaults,
 )
 from uq_pet.pet_data import PROJECT_ROOT, load_splits, split_tuning_pool
 from uq_pet.token_model import UQ_METRICS, get_device, resolve_precision
@@ -138,7 +138,7 @@ def sample_plan(config: RandomSearchConfig) -> dict:
             "evaluation_split": "test",
             "sampling": "none",
             "num_configs": 1,
-            "fixed_config": omit_default_dataset(
+            "fixed_config": omit_implicit_defaults(
                 {
                     key: value
                     for key, value in experiment.items()
@@ -169,7 +169,7 @@ def sample_plan(config: RandomSearchConfig) -> dict:
         parameters["learning_rate"] = sample_learning_rate(rng)
         sampled.append(parameters)
     # Worker scheduling can change on resume; scientific settings cannot.
-    fixed = omit_default_dataset(
+    fixed = omit_implicit_defaults(
         config.experiment_config().model_dump(
             exclude={"seed_workers", "uq_metric", "learning_rate", *SEARCH_SPACE, *WANDB_FIELDS}
         )
@@ -761,7 +761,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 raise ValueError("All tuning configurations must finish before selecting a winner")
             best = min(trials, key=lambda row: (-row["score"], row["config_id"]))
             frozen = {
-                **omit_default_dataset(
+                **omit_implicit_defaults(
                     config.experiment_config().model_dump(
                         exclude={"seed_workers", "uq_metric", *WANDB_FIELDS}
                     )

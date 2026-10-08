@@ -128,6 +128,7 @@ def _(ExperimentConfig, acquisition_schedule):
                 "label": "B-Activity" if idx % 2 == 0 else "O",
                 "uq_metric": config["uq_metric"] if arm == "uncertainty" else None,
                 "uq_score": 0.8 if arm == "uncertainty" else None,
+                "acquisition_score": 0.8 if arm == "uncertainty" else None,
             }
             for model_seed in config["model_seeds"]
             for arm in ("uncertainty", "random")
@@ -191,6 +192,8 @@ def _(DEFAULT_CHECKPOINTS, UQ_METRICS, default_config, mo):
 
         {uq_metric} {k} {max_pool_percent}
 
+        {gumbel_noise} {max_per_word_form}
+
         {bootstrap_epochs} {update_passes} {replay_ratio}
 
         {learning_rate} {weight_decay} {batch_size}
@@ -237,6 +240,16 @@ def _(DEFAULT_CHECKPOINTS, UQ_METRICS, default_config, mo):
             k=numeric_control("k", "Maximum new tokens per round", start=1, stop=1000),
             max_pool_percent=numeric_control(
                 "max_pool_percent", "Maximum scoreable pool (%)", start=0.1, stop=100, step=0.1
+            ),
+            gumbel_noise=mo.ui.checkbox(
+                value=default_config["gumbel_noise"],
+                label="Gumbel noise on uncertainty scores",
+            ),
+            max_per_word_form=mo.ui.number(
+                start=0,
+                step=1,
+                value=0,
+                label="Word form cap per round (0: unlimited)",
             ),
             bootstrap_epochs=numeric_control(
                 "bootstrap_epochs", "Bootstrap epochs", start=0, stop=100
@@ -304,7 +317,12 @@ def _(
     elif is_script_mode:
         experiment_config = ExperimentConfig()
     else:
-        experiment_config = ExperimentConfig(**params_form.value)
+        experiment_config = ExperimentConfig(
+            **{
+                **params_form.value,
+                "max_per_word_form": params_form.value["max_per_word_form"] or None,
+            }
+        )
     return (experiment_config,)
 
 
@@ -437,6 +455,14 @@ def _(
 def _(config, dataset_summary, mo, run_dir):
     output_location = "Script-mode demo: no files written" if run_dir is None else str(run_dir)
     seed_description = ", ".join(str(seed) for seed in config["model_seeds"])
+    selection_description = "".join(
+        [
+            ", sampled with Gumbel noise" if config["gumbel_noise"] else "",
+            f", at most {config['max_per_word_form']} per word form and round"
+            if config["max_per_word_form"]
+            else "",
+        ]
+    )
     mo.vstack(
         [
             mo.md(f"""
@@ -452,7 +478,7 @@ def _(config, dataset_summary, mo, run_dir):
             **{config["update_passes"]} pass(es)**, and replayed
             up to **{config["replay_ratio"]:g} older labels per new token**, including
             in the smaller final round when needed. The uncertainty arm used
-            **{config["uq_metric"].replace("_", " ")}** scoring.
+            **{config["uq_metric"].replace("_", " ")}** scoring{selection_description}.
             """),
             mo.ui.table([dataset_summary], selection=None),
             mo.md(f"**Output:** `{output_location}`"),

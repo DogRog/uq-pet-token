@@ -269,3 +269,31 @@ def test_random_only_matches_paired_random_and_never_scores_pool(
     assert random_selections == [row for row in paired_selections if row["arm"] == "random"]
     assert [len(snapshot) for snapshot in snapshots] == list(range(1, len(random_rows) + 1))
     assert all(row["arm"] == "random" for snapshot in snapshots for row in snapshot)
+
+
+def test_stochastic_capped_uncertainty_leaves_random_unchanged(tiny_experiment):
+    args, kwargs = tiny_experiment
+    kwargs = {key: value for key, value in kwargs.items() if key != "uq_metric"}
+    stochastic = {**kwargs, "gumbel_noise": True, "max_per_word_form": 1}
+    old_threads = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        plain = active_learning.run_metric_comparisons(*args, **kwargs, uq_metrics=["entropy"])
+        sequential = active_learning.run_metric_comparisons(
+            *args, **stochastic, uq_metrics=["entropy"]
+        )
+        concurrent = active_learning.run_metric_comparisons(
+            *args, **{**stochastic, "seed_workers": 2}, uq_metrics=["entropy"]
+        )
+    finally:
+        torch.set_num_threads(old_threads)
+    assert concurrent == sequential
+    (plain_rows, plain_selections), (rows, selections) = plain["entropy"], sequential["entropy"]
+
+    def random_arm(records):
+        return [record for record in records if record["arm"] == "random"]
+
+    assert random_arm(rows) == random_arm(plain_rows)
+    assert random_arm(selections) == random_arm(plain_selections)
+    uncertain = [row for row in selections if row["arm"] == "uncertainty"]
+    assert all(row["acquisition_score"] != row["uq_score"] for row in uncertain)

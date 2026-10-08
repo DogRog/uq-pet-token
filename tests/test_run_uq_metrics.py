@@ -98,3 +98,14 @@ def test_invalid_settings_never_launch(monkeypatch, args):
 def test_fixed_mode_rejects_multiple_configurations():
     with pytest.raises(ValueError):
         runner.search.FixedComparisonConfig(num_configs=2)
+
+
+def test_acquisition_flags_enter_the_plan_and_defaults_stay_implicit(capsys):
+    config = str(runner.PROJECT_ROOT / "configs" / "best_uq" / "distilbert.json")
+    assert runner.main(["--config", config, "--dry-run"]) == 0
+    plain = json.loads(capsys.readouterr().out)["fixed_config"]
+    assert "gumbel_noise" not in plain and "max_per_word_form" not in plain
+    args = ["--config", config, "--gumbel-noise", "--max-per-word-form", "1", "--dry-run"]
+    assert runner.main(args) == 0
+    fixed = json.loads(capsys.readouterr().out)["fixed_config"]
+    assert fixed == {**plain, "gumbel_noise": True, "max_per_word_form": 1}

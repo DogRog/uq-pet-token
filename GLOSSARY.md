@@ -64,6 +64,14 @@ _Avoid_: Branch, condition
 One acquisition step in which each arm selects up to K new candidates, learns their labels, and updates; round 0 is the evaluation before any acquisition.
 _Avoid_: Iteration, epoch, step
 
+**Gumbel noise**:
+Random noise added to the uncertainty arm's log scores before taking the top K, so a round samples candidates in proportion to their scores instead of always taking the largest.
+_Avoid_: Stochastic acquisition (bare), temperature, softmax sampling
+
+**Word form cap**:
+The most candidates with one lowercased word that the uncertainty arm may select in a round; any shortfall is filled from the skipped candidates.
+_Avoid_: Deduplication (bare), diversity filter
+
 **Replay**:
 Previously labelled words mixed into a round's update alongside the newly acquired ones.
 _Avoid_: Rehearsal, memory

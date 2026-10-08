@@ -21,15 +21,20 @@ DEFAULT_MODEL_SEEDS = (0, 1, 2, 3, 4)
 Dataset = Literal["pet", "conll2003", "quishpi", "medical"]
 
 
-DATASET_DEFAULTS = {"dataset": "pet", "dataset_percent": 100.0}
+IMPLICIT_DEFAULTS = {
+    "dataset": "pet",
+    "dataset_percent": 100.0,
+    "gumbel_noise": False,
+    "max_per_word_form": None,
+}
 
 
-def omit_default_dataset(settings: dict) -> dict:
-    """Leave the full PET pool implicit so plans saved before these fields still resume."""
+def omit_implicit_defaults(settings: dict) -> dict:
+    """Leave later-added defaults implicit so plans saved before those fields still resume."""
     return {
         key: value
         for key, value in settings.items()
-        if key not in DATASET_DEFAULTS or value != DATASET_DEFAULTS[key]
+        if key not in IMPLICIT_DEFAULTS or value != IMPLICIT_DEFAULTS[key]
     }
 
 
@@ -80,6 +85,17 @@ class ExperimentConfig(BaseModel):
         gt=0,
         le=100,
         description="Maximum percentage of scoreable pool tokens to acquire.",
+    )
+    gumbel_noise: bool = Field(
+        default=False,
+        description="Sample the uncertainty arm's K words in proportion to their scores "
+        "(Gumbel-top-K, beta fixed at 1) instead of taking the top K.",
+    )
+    max_per_word_form: int | None = Field(
+        default=None,
+        ge=1,
+        description="Most words with one lowercased form that the uncertainty arm may "
+        "acquire per round; unlimited when empty.",
     )
     bootstrap_epochs: int = Field(
         default=20,
@@ -173,7 +189,7 @@ class ExperimentConfig(BaseModel):
             checkpoint_name = f"{checkpoint_name}-{self.dataset}"
         if self.dataset_percent != 100:
             checkpoint_name = f"{checkpoint_name}-{self.dataset_percent:g}pct"
-        payload = omit_default_dataset(self.model_dump(exclude={"wandb_run_name"}))
+        payload = omit_implicit_defaults(self.model_dump(exclude={"wandb_run_name"}))
         digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:8]
         seeds = "-".join(str(seed) for seed in self.model_seeds)
         return f"{checkpoint_name}-seeds{seeds}-{digest}"
@@ -256,6 +272,8 @@ class RandomBaselineSearchConfig(RandomSearchConfig):
 
     @model_validator(mode="after")
     def validate_objective_split(self) -> Self:
+        if self.gumbel_noise or self.max_per_word_form is not None:
+            raise ValueError("gumbel_noise and max_per_word_form only change the uncertainty arm")
         if not self.objective.startswith(f"random_{self.tuning_split}_"):
             raise ValueError(
                 f"objective {self.objective} does not score the {self.tuning_split} split"

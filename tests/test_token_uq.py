@@ -14,7 +14,7 @@ from uq_pet.active_learning import (
     run_active_learning,
     sample_replay,
     select_random,
-    select_top_k,
+    select_uncertain,
     write_run,
 )
 from uq_pet.pet_data import NER_TAGS
@@ -217,14 +217,49 @@ def test_roberta_loader_requests_fast_pretokenized_compatible_tokenizer(monkeypa
     assert tokenizer_calls == [("roberta-base", {"use_fast": True, "add_prefix_space": True})]
 
 
+def pool_of(*sentences: str) -> list[dict]:
+    return [{"tokens": sentence.split()} for sentence in sentences]
+
+
 def test_selection_is_exact_reproducible_and_without_replacement():
     scores = {(0, 0): 0.2, (0, 1): 0.9, (1, 0): 0.5}
-    assert select_top_k(scores, 2) == [(0, 1), (1, 0)]
+    chosen, ranking = select_uncertain(scores, 2, pool_of("a b", "c"))
+    assert chosen == [(0, 1), (1, 0)]
+    assert ranking == scores
 
     available = set(scores)
     first = select_random(available, 2, seed=7)
     assert first == select_random(available, 2, seed=7)
     assert len(first) == len(set(first)) == 2
+
+
+def test_gumbel_selection_is_seeded_and_samples_in_proportion_to_score():
+    pool = pool_of("a b c")
+    scores = {(0, 0): 0.9, (0, 1): 0.1, (0, 2): 0.0}
+    first = select_uncertain(scores, 2, pool, noise_seed=[3, 1])
+    assert first == select_uncertain(scores, 2, pool, noise_seed=[3, 1])
+    # A zero score has log score -inf, so it is never preferred over a positive one.
+    assert first[0] == [(0, 0), (0, 1)]
+    assert first[1][(0, 2)] == float("-inf")
+
+    picks = [select_uncertain(scores, 1, pool, noise_seed=[seed, 1])[0][0] for seed in range(4000)]
+    assert picks.count((0, 0)) / len(picks) == pytest.approx(0.9, abs=0.02)
+
+
+def test_word_form_cap_skips_repeats_then_fills_the_round_in_rank_order():
+    pool = pool_of("the The cat", "the dog")
+    scores = {(0, 0): 0.9, (0, 1): 0.8, (0, 2): 0.3, (1, 0): 0.7, (1, 1): 0.1}
+    assert select_uncertain(scores, 3, pool, max_per_word_form=1)[0] == [(0, 0), (0, 2), (1, 1)]
+    assert select_uncertain(scores, 3, pool, max_per_word_form=2)[0] == [(0, 0), (0, 1), (0, 2)]
+    # Only two forms remain uncapped, so the best skipped repeats fill the rest.
+    assert select_uncertain(scores, 4, pool, max_per_word_form=1)[0] == [
+        (0, 0),
+        (0, 2),
+        (1, 1),
+        (0, 1),
+    ]
+    with pytest.raises(ValueError, match="max_per_word_form"):
+        select_uncertain(scores, 1, pool, max_per_word_form=0)
 
 
 def test_replay_is_limited_and_seeded():

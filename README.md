@@ -68,8 +68,10 @@ at the project root (see [Weights & Biases](#weights--biases)).
 | Task | Entry point |
 | --- | --- |
 | Run one UQ metric against random | `notebooks/bert_token_uq.py` |
-| Tune random acquisition on a validation holdout | `scripts/tune_random_all_models.sh` |
+| Tune random acquisition on a validation holdout | `scripts/run_stochastic_uq_all_models.sh` | Gumbel noise and word form cap comparisons for all five saved winners |
+| `scripts/tune_random_all_models.sh` |
 | Compare all UQ metrics with saved validation winners | `scripts/run_best_uq_all_models.sh` |
+| Compare Gumbel noise and word form caps with the winners | `scripts/run_stochastic_uq_all_models.sh` |
 | Run the appendix's test-tuned random oracle sweeps | `scripts/run_oracle_random_all_models.sh` |
 | Tune and train the fully supervised upper bound | `scripts/run_supervised.py` |
 | Sample hyperparameters and compare UQ against random | `scripts/bert_token_uq_search.py` |
@@ -112,7 +114,7 @@ than a new domain.
 
 Setting `"dataset": "medical"` uses MedicalProcessInstruks from the Hugging Face Hub at a
 pinned revision. It is gated: accept its conditions on the dataset page and run
-`hf auth login` once before the first load. Its released train and test files are joined
+`uv run hf auth login` once before the first load. Its released train and test files are joined
 and split exactly like PET, because the released test file is one guideline of 28
 sentences: **5 bootstrap, 255 pool, and 65 test sentences**. The release names no tags,
 so each type is named by its begin id (`B-T03`/`I-T03` … `B-T43`/`I-T43`; 39 BIO tags).
@@ -132,7 +134,8 @@ For every model seed:
 3. Evaluate both arms before acquisition (round 0).
 4. At each round, acquire `K` previously unseen pool words, or the remaining budget
    in the final round:
-   - uncertainty selects the largest score from the configured UQ metric;
+   - uncertainty selects the largest score from the configured UQ metric, optionally
+     after Gumbel noise and a word form cap (see below);
    - random draws uniformly from its remaining candidates.
 5. Reveal only the selected labels.
 6. Continue each arm from its current weights and optimizer state using the new
@@ -155,6 +158,21 @@ more uncertain:
 - `least_confidence`: one minus the largest class probability.
 - `margin`: one minus the gap between the two largest class probabilities.
 
+### Gumbel noise and the word form cap
+
+Two optional settings change only the uncertainty arm; random's draws stay identical.
+
+- `gumbel_noise: true` adds Gumbel(0, 1) noise to `log(score)` and takes the top K,
+  sampling K words without replacement in proportion to their scores. The exponent on
+  the score is fixed at 1 and is not tuned.
+- `max_per_word_form: N` selects at most N words with the same lowercased form per
+  round. When too few forms remain, the round is filled from the skipped words in rank
+  order.
+
+With noise, the per-round ranking uses the noisy log score, saved as `acquisition_score`
+beside `uq_score`. `docs/adr/0009-stochastic-and-capped-uncertainty-acquisition.md`
+records why.
+
 ### Invariants
 
 - The test split is evaluation-only.
@@ -167,7 +185,7 @@ more uncertain:
 - A word is truncated if any of its subwords are missing, including at the left boundary.
 - Both arms begin from the same fitted state and receive the same update budget.
 - The uncertainty and random arms keep separate weights and optimizer histories.
-- Selection and replay use deterministic local random generators.
+- Selection, Gumbel noise, and replay use deterministic local random generators.
 - Training derives an RNG seed for each arm and round, used for dropout as well as
   shuffling, and restores the surrounding RNG states even if an update fails.
 
@@ -310,6 +328,17 @@ Results are grouped under `results/best_uq/<checkpoint>-best-uq/`, with `plan.js
 `runs/config_0000/<metric>/`. Each metric keeps its settings, evaluation rows, and
 selected words. Re-running skips completed comparisons; an interrupted comparison
 restarts. Changed scientific settings require a new `--sweep-name`.
+
+To compare Gumbel noise and the word form cap against the same winners, pass
+`--gumbel-noise` and/or `--max-per-word-form N`; the default result group gains a
+`-gumbel` and/or `-capN` suffix. `scripts/run_stochastic_uq_all_models.sh` runs Gumbel
+noise, caps of 1 and 2, and Gumbel noise with a cap of 1 for every saved winner, under
+`results/best_uq_stochastic/`:
+
+```bash
+bash scripts/run_stochastic_uq_all_models.sh --dry-run
+bash scripts/run_stochastic_uq_all_models.sh
+```
 
 ### 3. Supervised upper bound
 
@@ -668,6 +697,7 @@ uv run notebooks/bert_token_uq.py
 uv run scripts/bert_token_uq_search.py --help
 uv run scripts/run_uq_metrics.py --help
 bash scripts/run_best_uq_all_models.sh --dry-run
+bash scripts/run_stochastic_uq_all_models.sh --dry-run
 bash scripts/tune_random_all_models.sh --dry-run
 bash scripts/run_supervised_all_models.sh --dry-run
 bash scripts/run_oracle_random_all_models.sh --dry-run
@@ -695,6 +725,7 @@ recorded in [docs/adr/](docs/adr/).
 | `scripts/run_uq_metrics.py` | fixed multi-metric comparisons from one experiment configuration |
 | `scripts/run_supervised.py` | CLI entry point for the supervised baseline |
 | `scripts/run_best_uq_all_models.sh` | fixed comparisons for all five saved winners |
+| `scripts/run_stochastic_uq_all_models.sh` | Gumbel noise and word form cap comparisons for all five saved winners |
 | `scripts/tune_random_all_models.sh` | random-only tuning for all five checkpoints |
 | `scripts/run_supervised_all_models.sh` | supervised baseline for all five checkpoints |
 | `scripts/run_oracle_random_all_models.sh` | appendix test-tuned random oracle sweeps for all five checkpoints |

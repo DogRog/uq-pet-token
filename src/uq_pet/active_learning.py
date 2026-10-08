@@ -6,11 +6,13 @@ import json
 import multiprocessing
 import random
 import traceback
+from collections import Counter
 from collections.abc import Callable
 from datetime import datetime
 from multiprocessing.connection import wait
 from pathlib import Path
 
+import numpy as np
 import torch
 from rich.console import Console
 from rich.table import Table
@@ -30,6 +32,8 @@ from uq_pet.token_model import (
 )
 
 CONSOLE = Console()
+# Fixed before any stochastic run so the test split never chooses it (ADR 0009).
+GUMBEL_BETA = 1.0
 
 
 def _round_progress_table(round_results: dict[str, dict], uq_metric: str) -> Table:
@@ -99,10 +103,49 @@ def reveal_pool_items(
     ]
 
 
-def select_top_k(scores: dict[TokenKey, float], k: int) -> list[TokenKey]:
+def select_uncertain(
+    scores: dict[TokenKey, float],
+    k: int,
+    pool_inputs: list[dict],
+    *,
+    noise_seed: list[int] | None = None,
+    max_per_word_form: int | None = None,
+) -> tuple[list[TokenKey], dict[TokenKey, float]]:
+    """Rank candidates by score, optionally perturbed and capped per word form.
+
+    With a noise seed, Gumbel noise on log scores samples without replacement in
+    proportion to ``score ** GUMBEL_BETA``. The cap admits at most that many
+    candidates per lowercased word this round, then fills any shortfall from the
+    skipped candidates in rank order. Returns the selection and its ranking scores.
+    """
     if k < 1 or k > len(scores):
         raise ValueError(f"cannot select k={k} from {len(scores)} scored tokens")
-    return sorted(scores, key=lambda key: (-scores[key], key))[:k]
+    if max_per_word_form is not None and max_per_word_form < 1:
+        raise ValueError(f"max_per_word_form must be positive, got {max_per_word_form}")
+    ranking = scores
+    if noise_seed is not None:
+        keys = sorted(scores)
+        noise = np.random.default_rng(noise_seed).gumbel(size=len(keys))
+        with np.errstate(divide="ignore"):
+            log_scores = np.log(np.array([scores[key] for key in keys], dtype=np.float64))
+        ranking = dict(zip(keys, (GUMBEL_BETA * log_scores + noise).tolist(), strict=True))
+    ranked = sorted(ranking, key=lambda key: (-ranking[key], key))
+    if max_per_word_form is None:
+        return ranked[:k], ranking
+
+    chosen, skipped, counts = [], [], Counter()
+    for key in ranked:
+        pool_idx, word_idx = key
+        form = pool_inputs[pool_idx]["tokens"][word_idx].lower()
+        if counts[form] < max_per_word_form:
+            counts[form] += 1
+            chosen.append(key)
+            if len(chosen) == k:
+                break
+        else:
+            skipped.append(key)
+    chosen.extend(skipped[: k - len(chosen)])
+    return chosen, ranking
 
 
 def select_random(available: set[TokenKey], k: int, *, seed: int) -> list[TokenKey]:
@@ -219,6 +262,8 @@ def run_metric_comparisons(
     seed_workers: int = 1,
     precision: str = "auto",
     random_only: bool = False,
+    gumbel_noise: bool = False,
+    max_per_word_form: int | None = None,
     progress_callback: Callable[[str, list[dict]], None] | None = None,
 ) -> dict[str, tuple[list[dict], list[dict]]]:
     """Share one bootstrap and random trajectory per seed across the requested metrics.
@@ -264,6 +309,8 @@ def run_metric_comparisons(
         "batch_size": batch_size,
         "score_batch_size": score_batch_size,
         "max_length": max_length,
+        "gumbel_noise": gumbel_noise,
+        "max_per_word_form": max_per_word_form,
     }
     if seed_workers > 1 and len(model_seeds) > 1:
         return _run_concurrent_seeds(
@@ -407,7 +454,14 @@ def run_metric_comparisons(
                         prepared_batches=pool_batches,
                         precision=precision,
                     )
-                    chosen["uncertainty"] = select_top_k(uq_scores, round_k)
+                    chosen["uncertainty"], ranking = select_uncertain(
+                        uq_scores,
+                        round_k,
+                        pool_inputs,
+                        # NumPy's generator keeps this stream apart from random's draws.
+                        noise_seed=[model_seed, round_idx] if gumbel_noise else None,
+                        max_per_word_form=max_per_word_form,
+                    )
                 if metric_index == 0:
                     chosen["random"] = select_random(
                         scoreable - acquired["random"],
@@ -484,6 +538,9 @@ def run_metric_comparisons(
                                 "label": labels[pool_gold[(pool_idx, word_idx)]],
                                 "uq_metric": uq_metric if arm == "uncertainty" else None,
                                 "uq_score": uq_scores[(pool_idx, word_idx)]
+                                if arm == "uncertainty"
+                                else None,
+                                "acquisition_score": ranking[(pool_idx, word_idx)]
                                 if arm == "uncertainty"
                                 else None,
                             }
