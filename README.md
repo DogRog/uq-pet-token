@@ -10,7 +10,11 @@ LLM uncertainty and fine-tunes on them.
 Experiments run on [PET](https://github.com/patriziobellan86/PETv1.1) by default, a
 corpus of business-process descriptions annotated with 7 process entity types (actors,
 activities, gateways, and others; 15 BIO tags). [CoNLL-2003](https://huggingface.co/datasets/eriktks/conll2003)
-is available as a second dataset. The supplied configurations cover DistilBERT, BERT,
+is available as a second dataset, and two more process corpora as third and fourth:
+[Quishpi](https://github.com/PADS-UPC/atdp-extractor/tree/bpm2020/input) (process texts
+with Action, Entity, and Condition spans) and
+[MedicalProcessInstruks](https://huggingface.co/datasets/dagrat/MedicalProcessInstruks)
+(English clinical guidelines with 19 unnamed process entity types). The supplied configurations cover DistilBERT, BERT,
 RoBERTa, DeBERTa-v3, and ModernBERT.
 
 The project includes:
@@ -98,7 +102,23 @@ same protocol on CoNLL-2003, loaded from `eriktks/conll2003` at a pinned revisio
 5 bootstrap sentences and pool (14,036 sentences) come from the CoNLL train split, and evaluation uses
 the full CoNLL test split (3,453 sentences).
 
-The pool size (`dataset_percent`) keeps that percentage of either dataset's pool. Smaller
+Setting `"dataset": "quishpi"` uses Quishpi et al.'s judge annotations from
+`PADS-UPC/atdp-extractor` at a pinned commit: 18 process descriptions whose brat spans
+become 7 BIO tags (Action, Entity, Condition). The texts are cut into words and
+sentences in `pet_data.brat_sentences` and then split exactly like PET:
+**5 bootstrap, 155 pool, and 41 test sentences**. 13 of the 18 texts are also PET
+documents, so Quishpi is a coarser, sparser labelling of largely the same text rather
+than a new domain.
+
+Setting `"dataset": "medical"` uses MedicalProcessInstruks from the Hugging Face Hub at a
+pinned revision. It is gated: accept its conditions on the dataset page and run
+`hf auth login` once before the first load. Its released train and test files are joined
+and split exactly like PET, because the released test file is one guideline of 28
+sentences: **5 bootstrap, 255 pool, and 65 test sentences**. The release names no tags,
+so each type is named by its begin id (`B-T03`/`I-T03` … `B-T43`/`I-T43`; 39 BIO tags).
+`docs/adr/0008-new-datasets-are-split-like-pet.md` records both choices.
+
+The pool size (`dataset_percent`) keeps that percentage of the dataset's pool. Smaller
 pools are nested prefixes of one seeded shuffle, and the bootstrap and test sentences do
 not change.
 
@@ -106,7 +126,7 @@ not change.
 
 For every model seed:
 
-1. Fine-tune a fresh token classifier (15 PET tags, 9 CoNLL tags) on the five bootstrap
+1. Fine-tune a fresh token classifier (15 PET tags, 9 CoNLL tags, 7 Quishpi tags, 39 Medical tags) on the five bootstrap
    sentences.
 2. Clone the exact fitted weights and optimizer state into uncertainty and random arms.
 3. Evaluate both arms before acquisition (round 0).
@@ -656,7 +676,7 @@ recorded in [docs/adr/](docs/adr/).
 
 | Path | Purpose |
 | --- | --- |
-| `src/uq_pet/pet_data.py` | PET and CoNLL-2003 identity, download, stable splits, and private label lookup |
+| `src/uq_pet/pet_data.py` | dataset identity (PET, CoNLL-2003, Quishpi, MedicalProcessInstruks), download, stable splits, and private label lookup |
 | `src/uq_pet/token_model.py` | masking, training, UQ metrics, inference, and evaluation |
 | `src/uq_pet/active_learning.py` | acquisition rounds, replay, orchestration, and outputs |
 | `src/uq_pet/config.py` | shared validated experiment and search configuration |

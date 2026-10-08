@@ -209,7 +209,12 @@ def _(DEFAULT_CHECKPOINTS, UQ_METRICS, default_config, mo):
                 full_width=True,
             ),
             dataset=mo.ui.dropdown(
-                options={"PET": "pet", "CoNLL-2003": "conll2003"},
+                options={
+                    "PET": "pet",
+                    "CoNLL-2003": "conll2003",
+                    "Quishpi": "quishpi",
+                    "MedicalProcessInstruks": "medical",
+                },
                 value="PET",
                 label="Dataset",
             ),

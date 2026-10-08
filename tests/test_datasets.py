@@ -2,14 +2,23 @@
 
 import json
 
+import httpx
 import polars as pl
 import pytest
 import torch
 from datasets import ClassLabel, Dataset, DatasetDict, Features, Sequence, Value
+from huggingface_hub.errors import GatedRepoError
 
 from uq_pet import active_learning, pet_data, search, supervised
 from uq_pet.config import ExperimentConfig, RandomSearchConfig, SupervisedConfig
-from uq_pet.pet_data import CONLL_TAGS, load_conll_splits, load_splits
+from uq_pet.pet_data import (
+    CONLL_TAGS,
+    MEDICAL_TAGS,
+    QUISHPI_TAGS,
+    brat_sentences,
+    load_conll_splits,
+    load_splits,
+)
 
 
 def fake_conll(n_train, n_test, names=CONLL_TAGS):
@@ -88,6 +97,200 @@ def test_conll_rejects_changed_label_order(monkeypatch):
         load_conll_splits()
 
 
+def brat_span(text, surface):
+    """Byte offsets of a surface's first occurrence, as the Quishpi annotations count them."""
+    start = text.encode().index(surface.encode())
+    return f"{start} {start + len(surface.encode())}\t{surface}"
+
+
+def test_brat_sentences_tag_spans_and_split_sentences():
+    text = "The clerk’s team checks the order, i.e. the form.\nIf it is late, reject it..\nDone\nNext step."
+    annotations = "\n".join(
+        [
+            f"T1\tEntity {brat_span(text, 'order')}",
+            f"T2\tAction {brat_span(text, 'checks')}",
+            f"T3\tCondition {brat_span(text, 'it is late')}",
+            f"T4\tEntity {brat_span(text, 'it')}",
+            f"T5\tEntity {brat_span(text, 'order')}",
+            "A1\tEvent T2",
+            "R1\tSequence Arg1:T2 Arg2:T3",
+        ]
+    )
+
+    sentences = brat_sentences("doc", text, annotations, QUISHPI_TAGS)
+
+    tagged = [
+        [
+            (word, QUISHPI_TAGS[tag])
+            for word, tag in zip(row["tokens"], row["ner_tags"], strict=True)
+        ]
+        for row in sentences
+    ]
+    assert tagged == [
+        [
+            ("The", "O"),
+            ("clerk’s", "O"),
+            ("team", "O"),
+            ("checks", "B-Action"),
+            ("the", "O"),
+            ("order", "B-Entity"),
+            (",", "O"),
+            ("i.e.", "O"),
+            ("the", "O"),
+            ("form", "O"),
+            (".", "O"),
+        ],
+        [
+            ("If", "O"),
+            ("it", "B-Condition"),
+            ("is", "I-Condition"),
+            ("late", "I-Condition"),
+            (",", "O"),
+            ("reject", "O"),
+            ("it", "O"),
+            (".", "O"),
+            (".", "O"),
+        ],
+        [("Done", "O")],
+        [("Next", "O"), ("step", "O"), (".", "O")],
+    ]
+    assert [row["sentence_id"] for row in sentences] == [0, 1, 2, 3]
+    assert {row["document_name"] for row in sentences} == {"doc"}
+
+
+def test_brat_sentences_reject_spans_that_miss_their_text():
+    with pytest.raises(ValueError, match="does not match"):
+        brat_sentences("doc", "Check the order.", "T1\tEntity 0 5\torder", QUISHPI_TAGS)
+
+
+def test_quishpi_is_split_like_pet(tmp_path, monkeypatch):
+    names = tuple(f"doc-{idx}" for idx in range(50))
+    monkeypatch.setattr(pet_data, "QUISHPI_DOCUMENTS", names)
+    for name in names:
+        text = f"{name} acts."
+        (tmp_path / "texts").mkdir(exist_ok=True)
+        (tmp_path / "judgeannotations").mkdir(exist_ok=True)
+        (tmp_path / "texts" / f"{name}.txt").write_text(text)
+        (tmp_path / "judgeannotations" / f"{name}.ann").write_text(
+            f"T1\tAction {brat_span(text, 'acts')}"
+        )
+    pet_path = tmp_path / "pet.jsonl"
+    pet_path.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "document name": name,
+                    "sentence-ID": 0,
+                    "tokens": [name, "acts", "."],
+                    "ner-tags": ["O", "O", "O"],
+                }
+            )
+            for name in names
+        )
+    )
+
+    seed, pool, gold, test = pet_data.load_quishpi_splits(tmp_path)
+    pet_seed, pet_pool, _, pet_test = pet_data.load_pet_splits(pet_path)
+    quarter = pet_data.load_quishpi_splits(tmp_path, pool_percent=25)
+
+    assert (seed, pool, test) == (
+        [{**row, "ner_tags": [0, 1, 0]} for row in pet_seed],
+        pet_pool,
+        [{**row, "ner_tags": [0, 1, 0]} for row in pet_test],
+    )
+    assert all("ner_tags" not in example for example in pool)
+    assert {QUISHPI_TAGS[tag] for key, tag in gold.items() if key[1] == 1} == {"B-Action"}
+    assert (quarter[0], quarter[1], quarter[3]) == (seed, pool[:9], test)
+
+
+@pytest.mark.parametrize(
+    ("dataset", "download", "loader", "repo", "revision"),
+    [
+        (
+            "quishpi",
+            "download_quishpi",
+            "load_quishpi_splits",
+            pet_data.QUISHPI_REPO,
+            pet_data.QUISHPI_REVISION,
+        ),
+        (
+            "medical",
+            "download_medical",
+            "load_medical_splits",
+            pet_data.MEDICAL_REPO,
+            pet_data.MEDICAL_REVISION,
+        ),
+    ],
+)
+def test_new_datasets_record_their_pinned_revision(
+    monkeypatch, dataset, download, loader, repo, revision
+):
+    monkeypatch.setattr(pet_data, download, lambda: "files")
+    monkeypatch.setattr(pet_data, loader, lambda files, pool_percent: (files,))
+    assert load_splits(dataset, 50) == (
+        ("files",),
+        {"dataset": repo, "dataset_revision": revision, "dataset_percent": 50},
+    )
+
+
+def test_medical_tags_are_named_by_their_begin_id():
+    assert MEDICAL_TAGS[:5] == ["O", "B-T03", "I-T03", "B-T05", "I-T05"]
+    assert len(MEDICAL_TAGS) == 39
+    named = [MEDICAL_TAGS[pet_data._medical_tag(raw)] for raw in (0, 3, 4, 43, 44)]
+    assert named == ["O", "B-T03", "I-T03", "B-T43", "I-T43"]
+    with pytest.raises(ValueError, match="tag 7"):
+        pet_data._medical_tag(7)
+
+
+def test_medical_joins_both_files_and_is_split_like_pet(tmp_path):
+    names = [f"doc-{idx}" for idx in range(50)]
+    rows = [
+        {
+            "document_unique_id": name,
+            "sentence_id": 0,
+            "tokens": [name, "scan"],
+            "ner_tags": [0, 43],
+        }
+        for name in names
+    ]
+    train, test_file = tmp_path / "train.json", tmp_path / "test.json"
+    train.write_text("\n".join(json.dumps(row) for row in rows[:40]))
+    test_file.write_text("\n".join(json.dumps(row) for row in rows[40:]))
+    pet_path = tmp_path / "pet.jsonl"
+    pet_path.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "document name": name,
+                    "sentence-ID": 0,
+                    "tokens": [name, "scan"],
+                    "ner-tags": ["O", "O"],
+                }
+            )
+            for name in names
+        )
+    )
+
+    seed, pool, gold, test = pet_data.load_medical_splits([train, test_file])
+    pet_seed, pet_pool, _, pet_test = pet_data.load_pet_splits(pet_path)
+
+    object_tag = MEDICAL_TAGS.index("B-T43")
+    assert seed == [{**row, "ner_tags": [0, object_tag]} for row in pet_seed]
+    assert pool == pet_pool
+    assert test == [{**row, "ner_tags": [0, object_tag]} for row in pet_test]
+    assert {tag for key, tag in gold.items() if key[1] == 1} == {object_tag}
+
+
+def test_medical_explains_gated_access(monkeypatch):
+    def gated(*args, **kwargs):
+        request = httpx.Request("GET", "https://huggingface.co")
+        raise GatedRepoError("401", response=httpx.Response(401, request=request))
+
+    monkeypatch.setattr(pet_data, "hf_hub_download", gated)
+    with pytest.raises(RuntimeError, match="accept its conditions"):
+        pet_data.download_medical()
+
+
 def test_load_splits_rejects_unknown_dataset():
     with pytest.raises(ValueError, match="unknown dataset"):
         load_splits("ontonotes")
@@ -112,6 +315,7 @@ def test_full_pet_plans_stay_unchanged_and_other_pools_are_recorded():
         ExperimentConfig(dataset="conll2003", dataset_percent=50).resolved_wandb_run_name()
     )
     assert "conll2003" not in ExperimentConfig().resolved_wandb_run_name()
+    assert "quishpi" in ExperimentConfig(dataset="quishpi").resolved_wandb_run_name()
     assert "dataset_percent" not in ExperimentConfig().active_learning_kwargs()
 
 
