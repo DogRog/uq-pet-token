@@ -150,3 +150,94 @@ def oracle_table(
     for row, adjusted in zip(rows, _holm([row["oracle_p"] for row in rows]), strict=True):
         row["oracle_p_holm"] = adjusted
     return pl.DataFrame(rows)
+
+
+def find_oracle_comparison(
+    uq_root: Path, checkpoint: str, dataset: str, uq_metric: str
+) -> dict | None:
+    """Return the completed stage 2 comparison for one checkpoint and UQ metric, or None.
+
+    The returned ``run_dir`` is the absolute run directory and ``sweep`` names its sweep.
+    """
+    for summary_path in sorted(uq_root.glob("*/summary.json")):
+        summary = json.loads(summary_path.read_text())
+        search = json.loads((summary_path.parent / "search_config.json").read_text())
+        if (
+            summary.get("evaluation_split") != "test"
+            or search["checkpoint"] != checkpoint
+            or search.get("dataset", "pet") != dataset
+        ):
+            continue
+        for comparison in summary["comparisons"]:
+            run_dir = summary_path.parent / comparison.get("run_dir", "")
+            if (
+                comparison["uq_metric"] == uq_metric
+                and comparison["status"] == "complete"
+                and (run_dir / "results.csv").is_file()
+            ):
+                return {**comparison, "sweep": summary_path.parent.name, "run_dir": run_dir}
+    return None
+
+
+def search_winner(search_root: Path, checkpoint: str, dataset: str) -> str | None:
+    """Return the winning config_id of one checkpoint's random-only tuning search, or None."""
+    for config_path in sorted(search_root.glob("*/search_config.json")):
+        selection_path = config_path.parent / "selection.json"
+        search = json.loads(config_path.read_text())
+        if (
+            search["checkpoint"] == checkpoint
+            and search.get("dataset", "pet") == dataset
+            and selection_path.is_file()
+        ):
+            return json.loads(selection_path.read_text())["config_id"]
+    return None
+
+
+def arm_summary(results: pl.DataFrame) -> dict[str, dict[str, float]]:
+    """Seed-mean test AUC, its seed SD, and seed-mean final entity F1 per arm, in pp."""
+    aucs = pl.DataFrame(
+        [{"seed": seed, "arm": arm, "auc": auc} for (seed, arm), auc in curve_auc(results).items()]
+    )
+    finals = results.filter(pl.col("round") == pl.col("round").max().over("seed", "arm"))
+    return (
+        aucs.group_by("arm")
+        .agg((100 * pl.col("auc").mean()).alias("auc"), (100 * pl.col("auc").std()).alias("sd"))
+        .join(
+            finals.group_by("arm").agg((100 * pl.col("entity_f1").mean()).alias("final")),
+            on="arm",
+        )
+        .rows_by_key("arm", named=True, unique=True)
+    )
+
+
+def validation_against_oracle(
+    validation: tuple[pl.DataFrame, dict, str | None],
+    oracle: tuple[pl.DataFrame, dict, str | None],
+) -> pl.DataFrame:
+    """Compare one UQ metric's runs at the validation winner and at the oracle.
+
+    Each argument is ``(results, hyperparameters, search_config_id)``. The search
+    config_id comes from the shared 100-configuration search, because each rerun holds
+    one configuration and its own config_id is always config_0000. Hyperparameter
+    columns follow the oracle's keys.
+    """
+    rows = []
+    for configuration, (results, hyperparameters, search_config_id) in (
+        ("Validation winner (headline)", validation),
+        ("Test-tuned random oracle", oracle),
+    ):
+        arms = arm_summary(results)
+        rows.append(
+            {
+                "configuration": configuration,
+                "random_auc_pp": arms["random"]["auc"],
+                "random_auc_seed_sd_pp": arms["random"]["sd"],
+                "final_random_f1_pp": arms["random"]["final"],
+                "uq_auc_pp": arms["uncertainty"]["auc"],
+                "gap_auc_pp": arms["uncertainty"]["auc"] - arms["random"]["auc"],
+                "final_uq_f1_pp": arms["uncertainty"]["final"],
+                "search_config_id": search_config_id,
+            }
+            | {name: hyperparameters.get(name) for name in oracle[1]}
+        )
+    return pl.DataFrame(rows)

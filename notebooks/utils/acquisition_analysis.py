@@ -1,6 +1,8 @@
 """Descriptive diagnostics from saved acquisition logs; no model or dataset loading."""
 
+import json
 from collections import Counter, defaultdict
+from pathlib import Path
 
 import polars as pl
 
@@ -223,3 +225,135 @@ def threshold_efficiency(results: pl.DataFrame, threshold: float) -> pl.DataFram
             "labels_saved": pl.Int64,
         },
     )
+
+
+def tag_selections(
+    selections: list[dict], results: pl.DataFrame, run_id: str
+) -> tuple[pl.DataFrame, list[str]]:
+    """Join selections to their round's progress; order labels by distinct pool tokens."""
+    frame = (
+        pl.DataFrame(selections)
+        .with_columns(pl.lit(run_id).alias("run_id"))
+        .join(
+            results.select("seed", "arm", "round", "percent_acquired", "scoreable_pool_tokens"),
+            on=["seed", "arm", "round"],
+            how="left",
+            validate="m:1",
+        )
+    )
+    label_order = (
+        frame.select("pool_idx", "word_idx", "label")
+        .unique()
+        .group_by("label")
+        .len()
+        .sort(["len", "label"], descending=[True, False])["label"]
+        .to_list()
+    )
+    return frame, label_order
+
+
+def enrichment_at_budget(composition: pl.DataFrame, n_acquired: int) -> pl.DataFrame:
+    """UQ-minus-random share of each category at one budget, paired within seed."""
+    at_budget = composition.filter(pl.col("n_acquired") == n_acquired)
+    pairs = (
+        at_budget.filter(pl.col("arm") == "uncertainty")
+        .join(
+            at_budget.filter(pl.col("arm") == "random"),
+            on=["seed", "category"],
+            suffix="_random",
+            validate="1:1",
+        )
+        .with_columns(
+            (pl.col("share_percent") - pl.col("share_percent_random")).alias("enrichment_pp")
+        )
+    )
+    return (
+        pairs.group_by("n_acquired", "category")
+        .agg(
+            pl.col("share_percent_random").mean().alias("random_share_percent"),
+            pl.col("share_percent").mean().alias("uq_share_percent"),
+            pl.col("enrichment_pp").mean(),
+            (pl.col("enrichment_pp") > 0).sum().alias("seeds_enriched"),
+            pl.len().alias("seeds"),
+        )
+        .sort("enrichment_pp", descending=True)
+    )
+
+
+def timing_by_group(timing: pl.DataFrame, group: str) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Seed-mean timing advantage per group, then a summary that weights seeds equally.
+
+    ``group`` is ``entity_type``, ``BIO``, or ``entity_status`` (Entity or O).
+    """
+    seed_means = (
+        timing.with_columns(
+            pl.when(pl.col("label") == "O")
+            .then(pl.lit("O"))
+            .otherwise(pl.lit("Entity"))
+            .alias("entity_status")
+        )
+        .group_by("seed", group)
+        .agg(pl.col("advance_pp").mean(), pl.len().alias("matched_tokens"))
+    )
+    summary = (
+        seed_means.group_by(group)
+        .agg(
+            pl.col("advance_pp").mean().alias("mean_advance_pp"),
+            pl.col("advance_pp").min().alias("min_seed_advance_pp"),
+            pl.col("advance_pp").max().alias("max_seed_advance_pp"),
+            (pl.col("advance_pp") > 0).sum().alias("seeds_earlier"),
+            pl.len().alias("seeds"),
+        )
+        .sort("mean_advance_pp", descending=True)
+    )
+    return seed_means, summary
+
+
+def token_timing(timing: pl.DataFrame, sentences: dict[tuple[str, int], list[str]]) -> pl.DataFrame:
+    """Per-token timing across paired seeds, with the token bolded in its sentence.
+
+    ``sentences`` maps (document name, sentence ID) to the sentence's words; a missing
+    sentence or a word that does not match the logged token gets a placeholder context.
+    """
+    tokens = (
+        timing.group_by("pool_idx", "word_idx", "document_name", "sentence_id", "token", "label")
+        .agg(
+            pl.col("uq_score").mean().alias("mean_uncertainty_score"),
+            pl.col("advance_pp").mean().alias("mean_advance_pp"),
+            pl.col("advance_pp").min().alias("min_advance_pp"),
+            (pl.col("advance_pp") > 0).sum().alias("seeds_earlier"),
+            pl.len().alias("paired_seeds"),
+        )
+        .sort("mean_advance_pp", descending=True)
+    )
+    rows = []
+    for token in tokens.to_dicts():
+        words = sentences.get((token["document_name"], token["sentence_id"]))
+        matches = (
+            words is not None
+            and token["word_idx"] < len(words)
+            and words[token["word_idx"]] == token["token"]
+        )
+        rows.append(
+            {
+                **token,
+                "sentence_context": " ".join(
+                    f"**{word}**" if index == token["word_idx"] else word
+                    for index, word in enumerate(words)
+                )
+                if matches
+                else "Local sentence context unavailable or token mismatch",
+            }
+        )
+    return pl.DataFrame(rows)
+
+
+def pet_sentences(path: Path) -> dict[tuple[str, int], list[str]]:
+    """Map (document name, sentence ID) to words from a local PET JSONL file, if present."""
+    if not path.is_file():
+        return {}
+    sentences = {}
+    for line in path.read_text().splitlines():
+        record = json.loads(line)
+        sentences[record["document name"], record["sentence-ID"]] = record["tokens"]
+    return sentences

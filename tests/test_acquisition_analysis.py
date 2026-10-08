@@ -1,10 +1,17 @@
+import json
+
 import polars as pl
 import pytest
 
 from utils.acquisition_analysis import (
     acquisition_diagnostics,
+    enrichment_at_budget,
     paired_performance,
+    pet_sentences,
+    tag_selections,
     threshold_efficiency,
+    timing_by_group,
+    token_timing,
 )
 
 
@@ -91,3 +98,62 @@ def test_pairing_and_first_crossing_preserve_unreached_targets():
     assert one_reached["uncertainty_labels"].to_list() == [3, 3]
     with pytest.raises(ValueError, match="same budgets"):
         paired_performance(results.slice(1))
+
+
+def test_tag_selections_join_progress_and_order_labels_by_pool_tokens():
+    selections, results = saved_logs()
+    results = results.with_columns((100 * pl.col("n_acquired") / 3).alias("percent_acquired"))
+
+    frame, label_order = tag_selections(selections, results, "run-a")
+
+    assert label_order == ["O", "B-Activity"]
+    assert frame.height == len(selections)
+    assert frame["run_id"].unique().to_list() == ["run-a"]
+    assert frame.filter(pl.col("round") == 2)["percent_acquired"].unique().to_list() == [100.0]
+
+
+def test_enrichment_pairs_shares_within_seed_at_one_budget():
+    selections, results = saved_logs()
+    composition = acquisition_diagnostics(selections, results)["composition"].filter(
+        pl.col("grouping") == "Entity / O"
+    )
+
+    enrichment = enrichment_at_budget(composition, 2).rows_by_key("category", named=True)
+
+    # At 2 tokens, random has two O tokens and UQ has one entity and one O, in both seeds.
+    assert enrichment["Entity"][0]["enrichment_pp"] == pytest.approx(50.0)
+    assert enrichment["Entity"][0]["seeds_enriched"] == 2
+    assert enrichment["O"][0]["enrichment_pp"] == pytest.approx(-50.0)
+    assert enrichment["O"][0]["seeds"] == 2
+
+
+def test_timing_groups_tokens_into_entity_and_o_before_weighting_seeds():
+    selections, results = saved_logs()
+    timing = acquisition_diagnostics(selections, results)["timing"]
+
+    seed_means, summary = timing_by_group(timing, "entity_status")
+
+    assert set(seed_means["entity_status"]) == {"Entity", "O"}
+    by_status = summary.rows_by_key("entity_status", named=True)
+    assert by_status["Entity"][0]["mean_advance_pp"] > 0
+    assert by_status["Entity"][0]["seeds_earlier"] == 2
+    assert summary["entity_status"][0] == "Entity"
+
+
+def test_token_timing_bolds_the_token_in_matching_context_only(tmp_path):
+    selections, results = saved_logs()
+    timing = acquisition_diagnostics(selections, results)["timing"]
+    path = tmp_path / "pet.jsonl"
+    path.write_text(
+        json.dumps({"document name": "doc", "sentence-ID": 0, "tokens": ["A", "a", "run"]}) + "\n"
+    )
+
+    tokens = token_timing(timing, pet_sentences(path)).rows_by_key("word_idx", named=True)
+
+    assert tokens[2][0]["sentence_context"] == "A a **run**"
+    assert tokens[2][0]["paired_seeds"] == 2
+    mismatched = token_timing(timing, {("doc", 0): ["B", "b", "walk"]})
+    assert set(mismatched["sentence_context"]) == {
+        "Local sentence context unavailable or token mismatch"
+    }
+    assert pet_sentences(tmp_path / "missing.jsonl") == {}
