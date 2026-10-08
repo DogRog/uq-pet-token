@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.24.0"
+__generated_with = "0.24.2"
 app = marimo.App(width="full")
 
 
@@ -403,12 +403,6 @@ def _(mo, pl, selected_selections, sentence_lookup):
     )
     chosen_sentences_dataframe = mo.ui.dataframe(chosen_sentence_rows, page_size=30)
     chosen_sentences_dataframe
-
-    return
-
-
-@app.cell
-def _():
     return
 
 
