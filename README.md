@@ -238,6 +238,11 @@ Each `configs/tune_random/*_tune_random_100.json` samples 100 configurations wit
 model seeds, two seed workers, the same validation holdout and objective, and its own
 output folder. A dry run prints the plan without loading data or models.
 
+To tune DistilBERT on Quishpi and then MedicalProcessInstruks, run
+`bash scripts/tune_random_quishpi_medical.sh`; add `--dry-run` to preview, or
+`--seed-workers 5` on a large GPU. Their configs hold out the same share of the pool as
+PET (31 and 51 validation sentences) and write to their own folders and W&B projects.
+
 1. Keep the original bootstrap and test sentences. Hold out 66 pool sentences as the
    validation holdout with a fixed local RNG (on PET, a tuning pool of 262 sentences
    remains). Validation holdout sentences cannot be acquired or replayed.
