@@ -26,6 +26,8 @@ def _(mo):
       whether either beats random at these settings.
     - The interval and p-value come from a one-sample t-test over seeds. With five
       seeds, treat them as descriptive.
+    - Variants paired with the same top-K run share its noise: if that run ends low by
+      chance, every variant's final gap looks positive. Prefer gap AUC to the final gap.
     - Runs pair only when every scientific setting, the UQ metric, and the precision
       used agree. The random-arm check confirms the pair shares its random trajectory.
     - Nothing is downloaded or trained.
