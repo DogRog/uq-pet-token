@@ -4,12 +4,14 @@ import logging
 import math
 import random
 import warnings
+from collections import Counter
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 
 import numpy as np
 import torch
 from seqeval.metrics import f1_score, precision_score, recall_score
+from seqeval.metrics.sequence_labeling import get_entities
 from torch.utils.data import DataLoader
 from transformers import AutoConfig, AutoModelForTokenClassification, AutoTokenizer
 from transformers.utils import logging as transformers_logging
@@ -404,7 +406,8 @@ def evaluate_model(
     device: torch.device,
     prepared_batches: list[InferenceBatch] | None = None,
     precision: str = "fp32",
-) -> dict[str, float]:
+) -> tuple[dict[str, float], list[list[str]]]:
+    """Return the metrics and the predicted tags they were computed from."""
     predictions = predict_tags(
         model,
         tokenizer,
@@ -416,12 +419,56 @@ def evaluate_model(
         prepared_batches=prepared_batches,
         precision=precision,
     )
-    return evaluate_predictions(examples, predictions, labels)
+    return evaluate_predictions(gold_tags(examples, labels), predictions), predictions
 
 
-def evaluate_predictions(examples, predictions, labels: list[str]):
-    """Compute word and entity metrics from model predictions."""
-    gold = [[labels[tag] for tag in example["ner_tags"]] for example in examples]
+def gold_tags(examples: list[dict], labels: list[str]) -> list[list[str]]:
+    return [[labels[tag] for tag in example["ner_tags"]] for example in examples]
+
+
+def _f1(precision: float, recall: float) -> float:
+    return 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+
+
+def partial_entity_scores(gold: list[list[str]], predictions: list[list[str]]) -> dict[str, float]:
+    """Score entities that match a gold entity of the same type by any overlapping word.
+
+    Entities are chunked like seqeval's default mode. Each sentence matches greedily in
+    predicted order, and each gold entity matches at most once.
+    """
+    n_gold, n_predicted, n_matched = Counter(), Counter(), Counter()
+    for gold_sequence, predicted_sequence in zip(gold, predictions, strict=True):
+        unmatched = get_entities(gold_sequence)
+        n_gold.update(entity_type for entity_type, _, _ in unmatched)
+        for entity_type, start, end in get_entities(predicted_sequence):
+            n_predicted[entity_type] += 1
+            for entity in unmatched:
+                if entity[0] == entity_type and entity[1] <= end and start <= entity[2]:
+                    unmatched.remove(entity)
+                    n_matched[entity_type] += 1
+                    break
+    predicted, matched = n_predicted.total(), n_matched.total()
+    precision = matched / predicted if predicted else 0.0
+    recall = matched / n_gold.total() if n_gold.total() else 0.0
+    # Like seqeval, macro F1 averages over every type in gold or predictions.
+    types = n_gold.keys() | n_predicted.keys()
+    type_f1 = [
+        _f1(
+            n_matched[t] / n_predicted[t] if n_predicted[t] else 0.0,
+            n_matched[t] / n_gold[t] if n_gold[t] else 0.0,
+        )
+        for t in types
+    ]
+    return {
+        "entity_partial_f1": _f1(precision, recall),
+        "entity_partial_macro_f1": sum(type_f1) / len(type_f1) if type_f1 else 0.0,
+        "entity_partial_precision": precision,
+        "entity_partial_recall": recall,
+    }
+
+
+def evaluate_predictions(gold: list[list[str]], predictions: list[list[str]]) -> dict[str, float]:
+    """Score predicted tags with exact (seqeval) and partial entity matching, and per word."""
     total = sum(len(tags) for tags in gold)
     correct = sum(
         predicted == expected
@@ -435,5 +482,6 @@ def evaluate_predictions(examples, predictions, labels: list[str]):
             precision_score(gold, predictions, average="micro", zero_division=0)
         ),
         "entity_recall": float(recall_score(gold, predictions, average="micro", zero_division=0)),
+        **partial_entity_scores(gold, predictions),
         "token_accuracy": correct / total if total else 0.0,
     }

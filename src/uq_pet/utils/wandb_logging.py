@@ -22,6 +22,10 @@ _WANDB_TRACKED_ARM_FIELDS = (
     "entity_macro_f1",
     "entity_precision",
     "entity_recall",
+    "entity_partial_f1",
+    "entity_partial_macro_f1",
+    "entity_partial_precision",
+    "entity_partial_recall",
     "token_accuracy",
     "train_loss",
 )

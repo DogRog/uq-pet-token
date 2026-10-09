@@ -37,6 +37,7 @@ from uq_pet.search import (
 from uq_pet.token_model import (
     evaluate_model,
     get_device,
+    gold_tags,
     load_token_classifier,
     resolve_precision,
     scoreable_token_keys,
@@ -153,8 +154,11 @@ def train_and_evaluate(
     max_length: int,
     device: torch.device,
     precision: str,
-) -> dict:
-    """Train a fresh model on seed plus selected pool sentences, then evaluate once."""
+) -> tuple[dict, list[list[str]]]:
+    """Train a fresh model on seed plus selected pool sentences, then evaluate once.
+
+    Returns the evaluation row and the predicted tags it was scored from.
+    """
     set_seed(seed)
     model, tokenizer = load_token_classifier(checkpoint, device, labels=labels)
     scoreable = scoreable_token_keys(
@@ -178,7 +182,7 @@ def train_and_evaluate(
         tokenization_cache={},
         precision=precision,
     )
-    metrics = evaluate_model(
+    metrics, predictions = evaluate_model(
         model,
         tokenizer,
         eval_examples,
@@ -195,7 +199,7 @@ def train_and_evaluate(
         torch.mps.empty_cache()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    return {
+    row = {
         "n_sentences": len(pool_indices),
         "n_acquired": n_acquired,
         "percent_acquired": 100 * n_acquired / len(scoreable),
@@ -203,6 +207,7 @@ def train_and_evaluate(
         **metrics,
         "train_loss": loss,
     }
+    return row, predictions
 
 
 def _init_seed_worker(cpu_threads: int) -> None:
@@ -224,8 +229,8 @@ def seed_executor(seed_workers: int) -> ProcessPoolExecutor | None:
 
 def train_seeds(
     jobs: dict[int, tuple[tuple, dict]], executor: Executor | None
-) -> Iterator[tuple[int, dict]]:
-    """Yield each seed's metrics as it finishes; without an executor, train in seed order."""
+) -> Iterator[tuple[int, tuple[dict, list[list[str]]]]]:
+    """Yield each seed's row and predictions as it finishes; without an executor, in seed order."""
     if executor is None:
         for seed, (args, kwargs) in jobs.items():
             yield seed, train_and_evaluate(*args, **kwargs)
@@ -244,13 +249,13 @@ def train_seeds(
 
 def train_logged_seeds(
     jobs: dict[int, tuple[tuple, dict]], executor: Executor | None, log, label: str
-) -> dict[int, dict]:
-    """Train every seed, logging each as it finishes behind one transient status line."""
+) -> dict[int, tuple[dict, list[list[str]]]]:
+    """Train every seed, logging each row as it finishes behind one transient status line."""
     finished = {}
     with CONSOLE.status(f"{label} · 0/{len(jobs)} seeds") as status:
-        for seed, metrics in train_seeds(jobs, executor):
-            finished[seed] = metrics
-            log({"seed": seed, **metrics})
+        for seed, (row, predictions) in train_seeds(jobs, executor):
+            finished[seed] = row, predictions
+            log({"seed": seed, **row})
             status.update(f"{label} · {len(finished)}/{len(jobs)} seeds")
     return finished
 
@@ -394,12 +399,19 @@ def tune(
                 }
                 finished = train_logged_seeds(jobs, executor, log, f"tune {label}")
                 rows = [
-                    {"seed": seed, "arm": SUPERVISED_ARM, **finished[seed]}
+                    {"seed": seed, "arm": SUPERVISED_ARM, **finished[seed][0]}
                     for seed in config.model_seeds
                 ]
                 stats = seed_statistics(rows)
                 log(stats)
-            run_dir = write_run(metadata, rows, [], results_dir=slot)
+            run_dir = write_run(
+                metadata,
+                rows,
+                [],
+                results_dir=slot,
+                gold=gold_tags(validation_examples, training["labels"]),
+                predictions=[finished[seed][1] for seed in config.model_seeds],
+            )
             write_json(
                 slot / "completed.json",
                 {
@@ -505,7 +517,7 @@ def run_test(
                         "seed": seed,
                         "arm": SUPERVISED_ARM,
                         "sentence_percent": percent,
-                        **finished[seed],
+                        **finished[seed][0],
                     }
                     for seed in config.model_seeds
                 ]
@@ -523,7 +535,14 @@ def run_test(
                 ]
                 stats = seed_statistics(rows)
                 log(stats)
-            run_dir = write_run(metadata, rows, selections, results_dir=slot)
+            run_dir = write_run(
+                metadata,
+                rows,
+                selections,
+                results_dir=slot,
+                gold=gold_tags(test_examples, training["labels"]),
+                predictions=[finished[seed][1] for seed in config.model_seeds],
+            )
             write_json(
                 slot / "completed.json", {"run_dir": str(run_dir.relative_to(root)), **stats}
             )

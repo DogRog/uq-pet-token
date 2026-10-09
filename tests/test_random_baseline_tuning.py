@@ -161,7 +161,8 @@ def fake_search(tmp_path, monkeypatch):
         metric = kwargs["uq_metrics"][0]
         for end in range(width, len(output) + 1, width):
             kwargs["progress_callback"](metric, output[:end])
-        return {metric: (output, selections)}
+        predictions = [[["O"] * len(row["tokens"]) for row in args[3]]] * len(output)
+        return {metric: (output, selections, predictions)}
 
     monkeypatch.setattr(tune, "run_metric_comparisons", run_comparisons)
     return config, root, calls

@@ -80,6 +80,16 @@ _Avoid_: Rehearsal, memory
 The share of the pool's candidates that will be labelled by the end of the final round.
 _Avoid_: Pool percent (bare), max pool percent
 
+### Evaluation
+
+**Exact match**:
+A predicted entity that has the type and both boundaries of a gold entity.
+_Avoid_: Strict match, span match
+
+**Partial match**:
+A predicted entity that shares at least one word with a gold entity of the same type; each gold entity is matched at most once.
+_Avoid_: Overlap match, lenient match, relaxed match
+
 ### Runs
 
 **Model seed**:

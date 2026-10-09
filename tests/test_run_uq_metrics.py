@@ -24,7 +24,8 @@ def test_fixed_plan_preserves_every_winner(monkeypatch, capsys):
 def test_shared_execution_saves_grouped_results_and_resumes(monkeypatch, tmp_path):
     search = runner.search
     monkeypatch.setattr(search, "get_device", lambda: "cpu")
-    monkeypatch.setattr(search, "load_splits", lambda *_: (([{}], [{}], {}, [{}]), {}))
+    test = [{"tokens": ["test"], "ner_tags": [0]}]
+    monkeypatch.setattr(search, "load_splits", lambda *_: (([{}], [{}], {}, test), {}))
     calls = []
 
     def run(*args, **kwargs):
@@ -39,13 +40,14 @@ def test_shared_execution_saves_grouped_results_and_resumes(monkeypatch, tmp_pat
                     percent_acquired=r * 100,
                     arm=arm,
                     entity_f1=0.5,
+                    entity_partial_f1=0.5,
                 )
                 for seed in kwargs["model_seeds"]
                 for r in range(2)
                 for arm in ("uncertainty", "random")
             ]
             kwargs["progress_callback"](metric, rows)
-            output[metric] = (rows, [{"token": "selected"}])
+            output[metric] = (rows, [{"token": "selected"}], [[["O"]]] * len(rows))
         return output
 
     monkeypatch.setattr(search, "run_metric_comparisons", run)

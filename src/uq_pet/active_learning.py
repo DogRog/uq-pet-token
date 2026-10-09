@@ -22,6 +22,7 @@ from uq_pet.data_prep import DATASET_TAGS, RESULTS_DIR, TokenKey
 from uq_pet.token_model import (
     UQ_METRICS,
     evaluate_model,
+    evaluate_predictions,
     load_token_classifier,
     prepare_inference_batches,
     resolve_precision,
@@ -215,7 +216,7 @@ def run_active_learning(
     uq_metric: str,
     progress_callback: Callable[[list[dict]], None] | None = None,
     **settings,
-) -> tuple[list[dict], list[dict]]:
+) -> tuple[list[dict], list[dict], list[list[list[str]]]]:
     """Run one paired comparison using the same engine as all-metric sweeps."""
     comparisons = run_metric_comparisons(
         seed_examples,
@@ -233,7 +234,7 @@ def run_active_learning(
     return comparisons[uq_metric]
 
 
-def run_random_selection(*args, **settings) -> tuple[list[dict], list[dict]]:
+def run_random_selection(*args, **settings) -> tuple[list[dict], list[dict], list[list[list[str]]]]:
     """Train only random acquisition, with the paired engine's random RNG stream."""
     return run_active_learning(*args, **settings, random_only=True)
 
@@ -265,11 +266,12 @@ def run_metric_comparisons(
     gumbel_noise: bool = False,
     max_per_word_form: int | None = None,
     progress_callback: Callable[[str, list[dict]], None] | None = None,
-) -> dict[str, tuple[list[dict], list[dict]]]:
+) -> dict[str, tuple[list[dict], list[dict], list[list[list[str]]]]]:
     """Share one bootstrap and random trajectory per seed across the requested metrics.
 
-    Learners execute sequentially. CPU bootstrap state and random records live only
-    within this call.
+    Each metric gets its evaluation rows, selections, and the predicted test tags behind
+    each row. Learners execute sequentially. CPU bootstrap state and random records live
+    only within this call.
     """
     if not uq_metrics or len(set(uq_metrics)) != len(uq_metrics):
         raise ValueError("uq_metrics must be nonempty and unique")
@@ -321,7 +323,7 @@ def run_metric_comparisons(
             progress_callback=progress_callback,
         )
 
-    comparisons = {metric: ([], []) for metric in uq_metrics}
+    comparisons = {metric: ([], [], []) for metric in uq_metrics}
 
     for model_seed in model_seeds:
         CONSOLE.rule(f"[bold cyan]Seed {model_seed} · bootstrap[/]")
@@ -375,7 +377,7 @@ def run_metric_comparisons(
             tokenization_cache=tokenization_cache,
             precision=precision,
         )
-        baseline = evaluate_model(
+        baseline, baseline_predictions = evaluate_model(
             base_model,
             tokenizer,
             test_examples,
@@ -405,10 +407,12 @@ def run_metric_comparisons(
         del bootstrap_optimizer
         random_results = {}
         random_selections = {}
+        random_predictions = {}
 
         for metric_index, uq_metric in enumerate(uq_metrics):
-            results, selections = comparisons[uq_metric]
+            results, selections, predictions = comparisons[uq_metric]
             for arm in ("random",) if random_only else ("uncertainty", "random"):
+                predictions.append(baseline_predictions)
                 results.append(
                     _result_row(
                         model_seed,
@@ -494,7 +498,7 @@ def run_metric_comparisons(
                     )
                     acquired[arm].update(chosen[arm])
                     replay_banks[arm].extend(new_items)
-                    metrics = evaluate_model(
+                    metrics, predicted = evaluate_model(
                         models[arm],
                         tokenizer,
                         test_examples,
@@ -521,6 +525,7 @@ def run_metric_comparisons(
                         total_rounds=rounds,
                     )
                     results.append(result)
+                    predictions.append(predicted)
                     round_results[arm] = result
                     selected_rows = []
                     for pool_idx, word_idx in chosen[arm]:
@@ -549,10 +554,12 @@ def run_metric_comparisons(
                     if arm == "random":
                         random_results[round_idx] = result
                         random_selections[round_idx] = selected_rows
+                        random_predictions[round_idx] = predicted
                 if metric_index > 0:
                     # Preserve the ordinary paired export and complete-round snapshots.
                     result = dict(random_results[round_idx])
                     results.append(result)
+                    predictions.append(random_predictions[round_idx])
                     round_results["random"] = result
                     selections.extend(dict(row) for row in random_selections[round_idx])
                 if progress_callback is not None:
@@ -596,7 +603,7 @@ def _run_concurrent_seeds(
     model_seeds: list[int],
     seed_workers: int,
     progress_callback: Callable[[str, list[dict]], None] | None,
-) -> dict[str, tuple[list[dict], list[dict]]]:
+) -> dict[str, tuple[list[dict], list[dict], list[list[list[str]]]]]:
     """Schedule isolated seeds and append paired progress in arrival order."""
     context = multiprocessing.get_context("spawn")
     pending = iter(model_seeds)
@@ -669,9 +676,9 @@ def _run_concurrent_seeds(
 
     # Persist deterministic seed/round/arm order even when workers finish out of order.
     return {
-        metric: (
-            [row for seed in model_seeds for row in completed[seed][metric][0]],
-            [row for seed in model_seeds for row in completed[seed][metric][1]],
+        metric: tuple(
+            [row for seed in model_seeds for row in completed[seed][metric][part]]
+            for part in range(3)
         )
         for metric in kwargs["uq_metrics"]
     }
@@ -682,8 +689,19 @@ def write_run(
     results: list[dict],
     selections: list[dict],
     results_dir: Path = RESULTS_DIR,
+    *,
+    gold: list[list[str]] | None = None,
+    predictions: list[list[list[str]]] | None = None,
 ) -> Path:
-    """Write one compact, timestamped experiment record."""
+    """Write one compact, timestamped experiment record.
+
+    ``predictions`` holds the predicted tags behind each results row, scored against
+    ``gold``; both are saved to predictions.npz so the metrics can be recomputed.
+    """
+    if (gold is None) != (predictions is None):
+        raise ValueError("gold and predictions must be given together")
+    if predictions is not None and len(predictions) != len(results):
+        raise ValueError("predictions must have one entry per results row")
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     run_dir = results_dir / f"bert_token_uq_{stamp}"
     run_dir.mkdir(parents=True)
@@ -694,4 +712,52 @@ def write_run(
             writer = csv.DictWriter(file, fieldnames=list(results[0]))
             writer.writeheader()
             writer.writerows(results)
+    if predictions is not None:
+        _write_predictions(run_dir / "predictions.npz", gold, predictions)
     return run_dir
+
+
+def _write_predictions(
+    path: Path, gold: list[list[str]], predictions: list[list[list[str]]]
+) -> None:
+    lengths = [len(tags) for tags in gold]
+    for row in predictions:
+        if [len(tags) for tags in row] != lengths:
+            raise ValueError("every prediction must tag the same sentences as gold")
+    labels = sorted({tag for rows in (gold, *predictions) for tags in rows for tag in tags})
+    if len(labels) > 256:
+        raise ValueError("predictions.npz stores tag ids as uint8")
+    ids = {label: idx for idx, label in enumerate(labels)}
+
+    def encode(rows: list[list[str]]) -> np.ndarray:
+        return np.fromiter((ids[tag] for tags in rows for tag in tags), dtype=np.uint8)
+
+    np.savez_compressed(
+        path,
+        labels=np.array(labels),
+        sentence_lengths=np.array(lengths, dtype=np.int32),
+        gold=encode(gold),
+        predicted=np.stack([encode(row) for row in predictions])
+        if predictions
+        else np.zeros((0, sum(lengths)), dtype=np.uint8),
+    )
+
+
+def read_predictions(run_dir: Path) -> tuple[list[list[str]], list[list[list[str]]]]:
+    """Return the gold tags and each results row's predicted tags from predictions.npz."""
+    with np.load(run_dir / "predictions.npz") as saved:
+        labels = saved["labels"]
+        lengths = saved["sentence_lengths"]
+
+        def decode(ids: np.ndarray) -> list[list[str]]:
+            if not len(lengths):
+                return []
+            return [part.tolist() for part in np.split(labels[ids], np.cumsum(lengths)[:-1])]
+
+        return decode(saved["gold"]), [decode(row) for row in saved["predicted"]]
+
+
+def rescore_run(run_dir: Path) -> list[dict[str, float]]:
+    """Recompute every results row's metrics from its saved predictions, in row order."""
+    gold, predictions = read_predictions(run_dir)
+    return [evaluate_predictions(gold, predicted) for predicted in predictions]

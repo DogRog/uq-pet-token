@@ -156,7 +156,7 @@ def fake_experiment(monkeypatch, tmp_path):
         [{"tokens": ["seed"]}],
         [{"tokens": ["pool"]}],
         {(0, 0): 0},
-        [{"tokens": ["test"]}],
+        [{"tokens": ["test"], "ner_tags": [0]}],
     )
     monkeypatch.setattr(search, "load_splits", lambda *_: ((seed, pool, gold, test), {}))
     monkeypatch.setattr(search, "get_device", lambda: "cpu")
@@ -189,10 +189,15 @@ def fake_experiment(monkeypatch, tmp_path):
                                 "token_budget": 1,
                                 "entity_f1": 0.5
                                 + (gap if arm == "uncertainty" and round_id else 0),
+                                "entity_partial_f1": 0.6,
                             }
                         )
                     kwargs["progress_callback"](metric, list(results))
-            comparisons[metric] = (results, [{"seed": 0, "arm": "random", "token": "pool"}])
+            comparisons[metric] = (
+                results,
+                [{"seed": 0, "arm": "random", "token": "pool"}],
+                [[["O"]]] * len(results),
+            )
         return comparisons
 
     monkeypatch.setattr(search, "run_metric_comparisons", fake_run)
@@ -219,6 +224,8 @@ def test_sweep_evaluates_original_test_and_saves_every_pair(tmp_path, fake_exper
         assert (run_dir / "selections.json").is_file()
         assert len(search.pl.read_csv(run_dir / "results.csv")) == 8
         assert len(search.pl.read_csv(run_dir.parent / "progress.csv")) == 8
+        assert search.active_learning.read_predictions(run_dir) == ([["O"]], [[["O"]]] * 8)
+        assert comparison["mean_test_entity_partial_f1_gap_auc"] == 0.0
     assert not (root / "best_config.json").exists()
 
 

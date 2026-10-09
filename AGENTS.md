@@ -31,7 +31,10 @@ only with a validated `--config-json`.
 - Every UQ metric returns larger values for more uncertainty; keep the notebook's metric
   selector and the saved `uq_metric` in sync.
 - Publish progress after round 0 and after both arms finish a round, never mid-round.
-- Outputs record the settings, every evaluation row, and every selected candidate.
+- Outputs record the settings, every evaluation row with its predicted tags, and every
+  selected candidate.
+- Exact-match entity F1 is the tuning objective and headline gap; partial match is
+  reported only (ADR 0010).
 
 ## Module boundaries
 

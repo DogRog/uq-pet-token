@@ -7,8 +7,8 @@ import polars as pl
 
 from uq_pet.active_learning import run_active_learning, write_run
 from uq_pet.config import ExperimentConfig
-from uq_pet.data_prep import RESULTS_DIR, load_splits
-from uq_pet.token_model import get_device, resolve_precision
+from uq_pet.data_prep import DATASET_TAGS, RESULTS_DIR, load_splits
+from uq_pet.token_model import get_device, gold_tags, resolve_precision
 
 
 def execute_experiment(
@@ -23,7 +23,7 @@ def execute_experiment(
     (seed_examples, pool_inputs, pool_gold, test_examples), _ = load_splits(
         config.dataset, config.dataset_percent
     )
-    results, selections = run_active_learning(
+    results, selections, predictions = run_active_learning(
         seed_examples,
         pool_inputs,
         pool_gold,
@@ -58,7 +58,14 @@ def execute_experiment(
         "test_sentences": len(test_examples),
         "device": str(device),
     }
-    run_dir = write_run(run_config, results, selections, results_dir=results_dir)
+    run_dir = write_run(
+        run_config,
+        results,
+        selections,
+        results_dir=results_dir,
+        gold=gold_tags(test_examples, DATASET_TAGS[config.dataset]),
+        predictions=predictions,
+    )
     return run_config, dataset_summary, results, selections, run_dir
 
 

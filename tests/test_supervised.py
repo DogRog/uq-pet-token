@@ -106,12 +106,14 @@ def test_train_and_evaluate_uses_seed_and_selected_sentences(monkeypatch):
 
     monkeypatch.setattr(supervised, "train_items", fake_train)
     monkeypatch.setattr(
-        supervised, "evaluate_model", lambda *a, **kw: {"entity_f1": 0.5, "token_accuracy": 0.9}
+        supervised,
+        "evaluate_model",
+        lambda *a, **kw: ({"entity_f1": 0.5, "token_accuracy": 0.9}, [["O"]]),
     )
     seed_examples = [{"tokens": ["s"], "ner_tags": [0]}]
     pool = [{"tokens": ["a"]}, {"tokens": ["b", "c"]}, {"tokens": ["d"]}]
     gold = {(0, 0): 1, (1, 0): 2, (1, 1): 3, (2, 0): 4}
-    metrics = supervised.train_and_evaluate(
+    metrics, predictions = supervised.train_and_evaluate(
         seed_examples,
         pool,
         gold,
@@ -140,6 +142,7 @@ def test_train_and_evaluate_uses_seed_and_selected_sentences(monkeypatch):
     assert metrics["n_acquired"] == 2 and metrics["scoreable_pool_tokens"] == 4
     assert metrics["percent_acquired"] == 50
     assert metrics["train_loss"] == 0.25
+    assert predictions == [["O"]]
 
 
 @pytest.fixture
@@ -173,7 +176,7 @@ def fake_supervised(tmp_path, monkeypatch):
         calls.append((stage, kwargs["learning_rate"], kwargs["seed"], list(indices)))
         # The larger learning rate wins validation, whichever trial sampled it.
         score = 0.3 + 1000 * kwargs["learning_rate"]
-        return {
+        row = {
             "n_sentences": len(indices),
             "n_acquired": len(indices),
             "percent_acquired": 100 * len(indices) / len(pool_inputs),
@@ -182,6 +185,7 @@ def fake_supervised(tmp_path, monkeypatch):
             "token_accuracy": 0.9,
             "train_loss": 0.1,
         }
+        return row, [["O"] * len(example["tokens"]) for example in evaluation]
 
     monkeypatch.setattr(supervised, "train_and_evaluate", fake_train)
     return config, tmp_path / "example", calls

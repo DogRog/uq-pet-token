@@ -13,7 +13,7 @@ from transformers import BertConfig, BertForTokenClassification, PreTrainedToken
 import uq_pet.active_learning as active_learning
 from uq_pet.config import ExperimentConfig
 from uq_pet.data_prep import NER_TAGS
-from uq_pet.token_model import set_seed
+from uq_pet.token_model import gold_tags, set_seed
 from uq_pet.utils.wandb_logging import make_wandb_evaluation_log
 
 
@@ -251,14 +251,16 @@ def test_random_only_matches_paired_random_and_never_scores_pool(
     previous = torch.get_num_threads()
     torch.set_num_threads(1)
     try:
-        paired_rows, paired_selections = active_learning.run_active_learning(*args, **kwargs)
+        paired_rows, paired_selections, paired_predictions = active_learning.run_active_learning(
+            *args, **kwargs
+        )
         monkeypatch.setattr(
             active_learning,
             "score_token_uncertainty",
             lambda *a, **kw: pytest.fail("random-only scored uncertainty"),
         )
         snapshots = []
-        random_rows, random_selections = active_learning.run_random_selection(
+        random_rows, random_selections, random_predictions = active_learning.run_random_selection(
             *args,
             **kwargs,
             progress_callback=snapshots.append,
@@ -267,6 +269,11 @@ def test_random_only_matches_paired_random_and_never_scores_pool(
         torch.set_num_threads(previous)
     assert random_rows == [row for row in paired_rows if row["arm"] == "random"]
     assert random_selections == [row for row in paired_selections if row["arm"] == "random"]
+    assert random_predictions == [
+        predicted
+        for row, predicted in zip(paired_rows, paired_predictions, strict=True)
+        if row["arm"] == "random"
+    ]
     assert [len(snapshot) for snapshot in snapshots] == list(range(1, len(random_rows) + 1))
     assert all(row["arm"] == "random" for snapshot in snapshots for row in snapshot)
 
@@ -288,7 +295,10 @@ def test_stochastic_capped_uncertainty_leaves_random_unchanged(tiny_experiment):
     finally:
         torch.set_num_threads(old_threads)
     assert concurrent == sequential
-    (plain_rows, plain_selections), (rows, selections) = plain["entropy"], sequential["entropy"]
+    (plain_rows, plain_selections, _), (rows, selections, _) = (
+        plain["entropy"],
+        sequential["entropy"],
+    )
 
     def random_arm(records):
         return [record for record in records if record["arm"] == "random"]
@@ -297,3 +307,20 @@ def test_stochastic_capped_uncertainty_leaves_random_unchanged(tiny_experiment):
     assert random_arm(selections) == random_arm(plain_selections)
     uncertain = [row for row in selections if row["arm"] == "uncertainty"]
     assert all(row["acquisition_score"] != row["uq_score"] for row in uncertain)
+
+
+def test_saved_predictions_reproduce_every_recorded_metric(tiny_experiment, tmp_path):
+    (seed_examples, pool, gold, test), kwargs = tiny_experiment
+    results, selections, predictions = active_learning.run_active_learning(
+        seed_examples, pool, gold, test, **kwargs
+    )
+    run_dir = active_learning.write_run(
+        {},
+        results,
+        selections,
+        tmp_path,
+        gold=gold_tags(test, NER_TAGS),
+        predictions=predictions,
+    )
+    for row, metrics in zip(results, active_learning.rescore_run(run_dir), strict=True):
+        assert metrics == {key: row[key] for key in metrics}

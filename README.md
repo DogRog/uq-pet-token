@@ -150,6 +150,31 @@ words from the bootstrap sentences. Replay scales down with a smaller final roun
 acquisition budget acquires every scoreable word; lower budgets round down only to a
 whole number of words.
 
+### Evaluation
+
+Every evaluation scores entities two ways:
+
+- **Exact match** (`entity_f1`, `entity_macro_f1`, `entity_precision`,
+  `entity_recall`): seqeval's default mode, so an entity counts only if its type and
+  both boundaries match a gold entity.
+- **Partial match** (`entity_partial_f1`, `entity_partial_macro_f1`,
+  `entity_partial_precision`, `entity_partial_recall`): an entity counts if a gold entity
+  of the same type shares at least one word with it. Within each sentence, predicted
+  entities match in order and each gold entity matches at most once, as in
+  `llm-annotation-eval`.
+
+Exact entity F1 stays the tuning objective and the headline gap; partial match is
+reported beside it (`docs/adr/0010-partial-entity-match-is-reported-not-tuned.md`).
+Every run also saves the predicted tags behind each `results.csv` row, with the gold
+tags, in `predictions.npz`, so its metrics can be recomputed without retraining:
+
+```python
+from uq_pet.active_learning import read_predictions, rescore_run
+
+gold, predictions = read_predictions(run_dir)  # predictions[i] is results.csv row i
+metrics = rescore_run(run_dir)  # evaluate_predictions for every row, in order
+```
+
 ### UQ metrics
 
 All three metrics use the first subword's class probabilities, and larger values mean
@@ -217,6 +242,7 @@ per-word selection log. A completed run writes:
 ```text
 results/bert_token_uq_<timestamp>/
 ├── config.json
+├── predictions.npz
 ├── results.csv
 └── selections.json
 ```
@@ -555,11 +581,13 @@ Outputs under `results/random_search/<sweep-name>/`:
 - `search_config.json`: settings of the latest accepted invocation.
 - `runs/<config-id>/<metric>/progress.csv`: atomically updated test rows after each
   completed round pair, including round 0.
-- Each completed comparison saves `config.json`, `results.csv`, and `selections.json`
-  in a timestamped run directory, referenced by `completed.json`.
+- Each completed comparison saves `config.json`, `results.csv`, `selections.json`, and
+  `predictions.npz` in a timestamped run directory, referenced by `completed.json`.
 - `summary.json`: every planned comparison, its pending/failed/complete status, and
   per-metric mean test F1 gap AUC, mean final F1 gap, wins, ties, losses, and win fraction.
-  Failed comparisons keep their error and are retried on resume.
+  Each comparison also has its partial-match gaps (`mean_test_entity_partial_f1_gap_auc`,
+  `mean_final_test_entity_partial_f1_gap`). Failed comparisons keep their error and are
+  retried on resume.
 
 The AUC integrates UQ minus random entity F1 against acquired-pool percentage,
 normalizes by the observed acquisition interval, and averages across seeds. Each

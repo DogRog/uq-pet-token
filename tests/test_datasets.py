@@ -353,7 +353,7 @@ def test_engine_uses_the_chosen_dataset_labels(monkeypatch):
 
     def fake_evaluate(*args, labels, **kwargs):
         seen_labels.append(labels)
-        return {"entity_f1": 0.2, "token_accuracy": 0.8}
+        return {"entity_f1": 0.2, "token_accuracy": 0.8}, []
 
     pool = [
         {"pool_idx": idx, "document_name": "train", "sentence_id": idx, "tokens": ["w"]}
@@ -372,7 +372,7 @@ def test_engine_uses_the_chosen_dataset_labels(monkeypatch):
         lambda *a, excluded, **kw: {key: 1.0 for key in gold if key not in excluded},
     )
 
-    _, selections = active_learning.run_active_learning(
+    _, selections, _ = active_learning.run_active_learning(
         [{"tokens": ["seed"], "ner_tags": [0]}],
         pool,
         gold,

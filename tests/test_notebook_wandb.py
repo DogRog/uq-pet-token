@@ -125,9 +125,10 @@ def test_execute_experiment_uses_shared_config_and_persists_derived_settings(mon
 
     def run_active_learning(*args, **kwargs):
         captured["active_learning_kwargs"] = kwargs
-        return rows, [{"token": "pool"}]
+        return rows, [{"token": "pool"}], [[], []]
 
-    def write_run(run_config, results, selections, *, results_dir):
+    def write_run(run_config, results, selections, *, results_dir, gold, predictions):
+        assert gold == [] and predictions == [[], []]
         captured["run_config"] = run_config
         captured["results_dir"] = results_dir
         return results_dir / "run"

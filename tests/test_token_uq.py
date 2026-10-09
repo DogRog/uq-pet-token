@@ -10,6 +10,8 @@ import uq_pet.token_model as token_model
 from uq_pet.active_learning import (
     _round_progress_table,
     acquisition_schedule,
+    read_predictions,
+    rescore_run,
     reveal_pool_items,
     run_active_learning,
     sample_replay,
@@ -21,6 +23,7 @@ from uq_pet.data_prep import NER_TAGS
 from uq_pet.token_model import (
     encode_targets,
     evaluate_model,
+    evaluate_predictions,
     load_token_classifier,
     score_token_uncertainty,
     token_uncertainty,
@@ -175,7 +178,7 @@ def test_evaluate_model_reports_macro_entity_f1(monkeypatch):
         {"tokens": ["c"], "ner_tags": [3]},
     ]
 
-    metrics = evaluate_model(
+    metrics, predicted = evaluate_model(
         object(),
         object(),
         examples,
@@ -187,6 +190,55 @@ def test_evaluate_model_reports_macro_entity_f1(monkeypatch):
 
     assert metrics["entity_f1"] == pytest.approx(0.4)
     assert metrics["entity_macro_f1"] == pytest.approx(0.25)
+    assert predicted == predictions
+
+
+def test_partial_matching_counts_overlap_of_the_same_type_once():
+    gold = [["B-A", "I-A", "I-A", "O", "B-B", "B-A"]]
+    # The first A overlaps gold A; the second A overlaps the same, already matched gold A;
+    # the first B only touches gold B's neighbour; the last B lies on a gold A.
+    predicted = [["O", "B-A", "B-A", "B-B", "O", "B-B"]]
+    metrics = evaluate_predictions(gold, predicted)
+    assert metrics["entity_f1"] == 0.0
+    assert metrics["entity_partial_precision"] == pytest.approx(1 / 4)
+    assert metrics["entity_partial_recall"] == pytest.approx(1 / 3)
+    assert metrics["entity_partial_f1"] == pytest.approx(2 / 7)
+    # A: P 1/2, R 1/2; B: P 0, R 0.
+    assert metrics["entity_partial_macro_f1"] == pytest.approx(0.25)
+
+
+def test_partial_matching_equals_exact_when_spans_match_exactly():
+    gold = [["B-A", "I-A", "O", "B-B"], ["B-B", "O"]]
+    predicted = [["B-A", "I-A", "O", "O"], ["B-A", "O"]]
+    metrics = evaluate_predictions(gold, predicted)
+    for field in ("f1", "macro_f1", "precision", "recall"):
+        assert metrics[f"entity_partial_{field}"] == pytest.approx(metrics[f"entity_{field}"])
+
+
+def test_saved_predictions_rescore_to_the_recorded_metrics(tmp_path):
+    gold = [["B-A", "I-A", "O"], [], ["O", "B-B"]]
+    predictions = [
+        [["B-A", "O", "O"], [], ["O", "B-B"]],
+        [["O", "B-A", "I-A"], [], ["B-B", "I-B"]],
+    ]
+    results = [
+        {"round": idx, **evaluate_predictions(gold, row)} for idx, row in enumerate(predictions)
+    ]
+    run_dir = write_run({}, results, [], tmp_path, gold=gold, predictions=predictions)
+    assert read_predictions(run_dir) == (gold, predictions)
+    assert rescore_run(run_dir) == [
+        {key: value for key, value in row.items() if key != "round"} for row in results
+    ]
+
+
+def test_write_run_rejects_predictions_that_do_not_match_rows_or_gold(tmp_path):
+    gold = [["O", "O"]]
+    with pytest.raises(ValueError, match="one entry per results row"):
+        write_run({}, [{"round": 0}], [], tmp_path, gold=gold, predictions=[])
+    with pytest.raises(ValueError, match="same sentences as gold"):
+        write_run({}, [{"round": 0}], [], tmp_path, gold=gold, predictions=[[["O"]]])
+    with pytest.raises(ValueError, match="together"):
+        write_run({}, [{"round": 0}], [], tmp_path, gold=gold)
 
 
 def test_roberta_loader_requests_fast_pretokenized_compatible_tokenizer(monkeypatch):
@@ -367,12 +419,15 @@ def test_run_reports_progress_after_baseline_and_each_complete_round(
     monkeypatch.setattr(
         active_learning,
         "evaluate_model",
-        lambda *args, **kwargs: {
-            "entity_f1": 0.2,
-            "entity_precision": 0.2,
-            "entity_recall": 0.2,
-            "token_accuracy": 0.8,
-        },
+        lambda *args, **kwargs: (
+            {
+                "entity_f1": 0.2,
+                "entity_precision": 0.2,
+                "entity_recall": 0.2,
+                "token_accuracy": 0.8,
+            },
+            [],
+        ),
     )
 
     def fake_scores(*args, excluded, **kwargs):
@@ -380,7 +435,7 @@ def test_run_reports_progress_after_baseline_and_each_complete_round(
 
     monkeypatch.setattr(active_learning, "score_token_uncertainty", fake_scores)
     snapshots = []
-    results, selections = run_active_learning(
+    results, selections, predictions = run_active_learning(
         [{"tokens": ["seed"] * 10, "ner_tags": [0] * 10}],
         pool_inputs,
         pool_gold,
@@ -410,6 +465,7 @@ def test_run_reports_progress_after_baseline_and_each_complete_round(
     )
     assert {row["token_budget"] for row in results} == {sum(round_sizes)}
     assert snapshots[-1] == results
+    assert len(predictions) == len(results)
     for arm_idx, arm in enumerate(("uncertainty", "random")):
         rows = [row for row in results if row["arm"] == arm]
         assert [row["n_new"] for row in rows] == [0, *round_sizes]

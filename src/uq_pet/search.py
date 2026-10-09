@@ -37,8 +37,8 @@ from uq_pet.config import (
     RandomSearchConfig,
     omit_implicit_defaults,
 )
-from uq_pet.data_prep import PROJECT_ROOT, load_splits, split_tuning_pool
-from uq_pet.token_model import UQ_METRICS, get_device, resolve_precision
+from uq_pet.data_prep import DATASET_TAGS, PROJECT_ROOT, load_splits, split_tuning_pool
+from uq_pet.token_model import UQ_METRICS, get_device, gold_tags, resolve_precision
 from uq_pet.utils.wandb_logging import (
     login_quietly,
     require_wandb_credentials,
@@ -83,7 +83,9 @@ def _quiet_search_output():
             datasets_logging.enable_progress_bar()
 
 
-def mean_entity_f1_gap_auc(results: Sequence[Mapping[str, object]]) -> float:
+def mean_entity_f1_gap_auc(
+    results: Sequence[Mapping[str, object]], field: str = "entity_f1"
+) -> float:
     """Return mean normalized AUC of uncertainty-minus-random entity F1 across seeds."""
     rows_by_seed_round: dict[tuple[int, int], dict[str, Mapping[str, object]]] = {}
     for row in results:
@@ -109,7 +111,7 @@ def mean_entity_f1_gap_auc(results: Sequence[Mapping[str, object]]) -> float:
         points_by_seed.setdefault(seed, []).append(
             (
                 float(uncertainty["percent_acquired"]),
-                float(uncertainty["entity_f1"]) - float(random_row["entity_f1"]),
+                float(uncertainty[field]) - float(random_row[field]),
             )
         )
 
@@ -317,19 +319,19 @@ def scientific_plan(plan: dict) -> dict:
 
 
 def paired_summary(results: list[dict]) -> dict:
-    """Describe a paired run without selecting or ranking configurations."""
-    auc = mean_entity_f1_gap_auc(results)
+    """Describe a paired run, by exact and partial entity F1, without ranking it."""
     seeds = sorted({row["seed"] for row in results})
-    final_gaps = []
-    for seed in seeds:
-        rows = [row for row in results if row["seed"] == seed]
-        last_round = max(row["round"] for row in rows)
-        final = {row["arm"]: row["entity_f1"] for row in rows if row["round"] == last_round}
-        final_gaps.append(final["uncertainty"] - final["random"])
-    return {
-        "mean_test_entity_f1_gap_auc": auc,
-        "mean_final_test_entity_f1_gap": sum(final_gaps) / len(seeds),
-    }
+    summary = {}
+    for field in ("entity_f1", "entity_partial_f1"):
+        final_gaps = []
+        for seed in seeds:
+            rows = [row for row in results if row["seed"] == seed]
+            last_round = max(row["round"] for row in rows)
+            final = {row["arm"]: row[field] for row in rows if row["round"] == last_round}
+            final_gaps.append(final["uncertainty"] - final["random"])
+        summary[f"mean_test_{field}_gap_auc"] = mean_entity_f1_gap_auc(results, field)
+        summary[f"mean_final_test_{field}_gap"] = sum(final_gaps) / len(seeds)
+    return summary
 
 
 def run_status(root: Path, slot: Path) -> dict:
@@ -683,7 +685,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                     )
                     progress.update(overall_task, description=f"{description} · saving")
                     for metric in pending_metrics:
-                        results, selections = comparisons[metric]
+                        results, selections, predictions = comparisons[metric]
                         slot = slots[metric]
                         run_config = experiment.model_copy(update={"uq_metric": metric})
                         stats = (
@@ -710,7 +712,14 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                         if tuning:
                             metadata.pop("uq_metric", None)
                             metadata["objective"] = config.objective
-                        run_dir = write_run(metadata, results, selections, results_dir=slot)
+                        run_dir = write_run(
+                            metadata,
+                            results,
+                            selections,
+                            results_dir=slot,
+                            gold=gold_tags(evaluation, DATASET_TAGS[config.dataset]),
+                            predictions=predictions,
+                        )
                         write_json(
                             slot / "completed.json",
                             {"run_dir": str(run_dir.relative_to(root)), **stats},
