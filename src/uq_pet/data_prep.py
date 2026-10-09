@@ -341,7 +341,7 @@ def download_medical() -> list[Path]:
     except GatedRepoError as error:
         raise RuntimeError(
             f"{MEDICAL_REPO} is gated: accept its conditions at "
-            f"https://huggingface.co/datasets/{MEDICAL_REPO} and run `hf auth login`"
+            f"https://huggingface.co/datasets/{MEDICAL_REPO} and run `uv run hf auth login`"
         ) from error
 
 
