@@ -194,20 +194,25 @@ def make_variance_chart(
     uq_metric: str,
     acquisition_percent: float | None = None,
     supervised: pl.DataFrame | None = None,
+    entity_field: str = "entity_f1",
 ):
     """Plot seed means and clipped ±1 SD bands, including available precision and recall metrics.
 
-    Optional supervised rows add a horizontal reference at their largest pool budget
-    (the fully supervised upper bound) and, with several budgets, a sentence-level curve.
+    ``entity_field`` picks exact (``entity_f1``) or partial (``entity_partial_f1``)
+    entity matching for the F1, macro F1, precision, and recall panels. Optional
+    supervised rows add a horizontal reference at their largest pool budget (the fully
+    supervised upper bound) and, with several budgets, a sentence-level curve.
     """
+    prefix = entity_field.removesuffix("_f1")
+    entity = "Partial entity" if prefix == "entity_partial" else "Entity"
     metrics = [
         (field, title, y_title)
         for field, title, y_title in (
-            ("entity_f1", "Entity F1", "F1"),
-            ("entity_macro_f1", "Macro entity F1", "Macro F1"),
+            (f"{prefix}_f1", f"{entity} F1", "F1"),
+            (f"{prefix}_macro_f1", f"Macro {entity.lower()} F1", "Macro F1"),
             ("token_accuracy", "Token accuracy", "Accuracy"),
-            ("entity_precision", "Entity precision", "Precision"),
-            ("entity_recall", "Entity recall", "Recall"),
+            (f"{prefix}_precision", f"{entity} precision", "Precision"),
+            (f"{prefix}_recall", f"{entity} recall", "Recall"),
         )
         if field in results_frame.columns
     ]

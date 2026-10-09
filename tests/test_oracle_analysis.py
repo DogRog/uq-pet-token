@@ -288,3 +288,19 @@ def test_validation_against_oracle_reports_both_arms_and_oracle_hyperparameters(
     assert (validation["search_config_id"], oracle["search_config_id"]) == ("c1", "c2")
     assert (validation["k"], oracle["k"]) == (64, 32)
     assert "checkpoint" not in table.columns
+
+
+def test_validation_against_oracle_scores_the_chosen_entity_field():
+    def partial(results):
+        return results.with_columns(
+            pl.col("entity_f1").alias("entity_partial_f1"), pl.lit(0.0).alias("entity_f1")
+        )
+
+    table = validation_against_oracle(
+        (partial(two_seed_results(0.5, 0.7)), {"k": 64}, "c1"),
+        (partial(two_seed_results(0.6, 0.7)), {"k": 32}, "c2"),
+        "entity_partial_f1",
+    )
+
+    assert table["gap_auc_pp"].to_list() == pytest.approx([10.0, 5.0])
+    assert table["final_random_f1_pp"][0] == pytest.approx(60.0)

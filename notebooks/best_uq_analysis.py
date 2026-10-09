@@ -20,6 +20,11 @@ def _(mo):
     - **Gap AUC** is the UQ-minus-random entity-F1 AUC, normalized over acquired-pool
       percentage and averaged across seeds. **Final gap** compares the last evaluation.
     - Final random and UQ scores are absolute entity F1, averaged across seeds.
+    - **Entity matching** switches every entity-F1 figure and table between exact match
+      (type and both boundaries; the tuning objective and headline) and partial match
+      (type and any shared word; reported only, ADR 0010). Runs saved before partial
+      match was scored have exact scores only: with partial selected, the overview and
+      t-tests leave them out and per-run sections say so.
     - These are descriptive test results, not tuning scores. Models may use different
       training settings, so compare UQ metrics within a model, not across models.
     - Nothing is downloaded or trained.
@@ -92,23 +97,34 @@ def _():
 @app.cell
 def _(mo):
     refresh = mo.ui.run_button(label="Refresh saved results")
-    refresh
-    return (refresh,)
+    entity_matching = mo.ui.dropdown(
+        {"exact": "entity_f1", "partial": "entity_partial_f1"},
+        value="exact",
+        label="Entity matching",
+    )
+    unscored_note = mo.md(
+        "This run was saved before partial match was scored, so it has exact-match scores only."
+    )
+    mo.hstack([refresh, entity_matching], justify="start", gap=2)
+    return entity_matching, refresh, unscored_note
 
 
 @app.cell
 def _(load_test_comparisons, mo, pl, refresh, repo_root):
     refresh.value
-    overview = load_test_comparisons(repo_root / "results" / "best_uq")
-    mo.stop(overview.is_empty(), mo.md("No saved test comparisons found in `results/best_uq/`."))
-    completed = overview.filter(pl.col("status") == "complete")
-    return completed, overview
+    _saved = load_test_comparisons(repo_root / "results" / "best_uq")
+    mo.stop(_saved.is_empty(), mo.md("No saved test comparisons found in `results/best_uq/`."))
+    # Selectors read this matching-independent frame so switching matching keeps them.
+    completed = _saved.filter(pl.col("status") == "complete")
+    return (completed,)
 
 
 @app.cell
-def _(alt, completed, mo, overview):
+def _(alt, completed, entity_matching, load_test_comparisons, mo, pl, repo_root):
     mo.stop(completed.is_empty(), mo.md("No completed comparisons to plot yet."))
-    gap_data = completed.unpivot(
+    overview = load_test_comparisons(repo_root / "results" / "best_uq", entity_matching.value)
+    scored = overview.filter((pl.col("status") == "complete") & pl.col("gap_auc").is_not_null())
+    gap_data = scored.unpivot(
         on=["gap_auc", "final_gap"],
         index=["model_run", "config_id", "uq_metric"],
         variable_name="measure",
@@ -118,7 +134,11 @@ def _(alt, completed, mo, overview):
         alt.Chart(gap_data)
         .mark_circle(size=100)
         .encode(
-            x=alt.X("gap:Q", title="Entity F1 gap (UQ − random)"),
+            x=alt.X(
+                "gap:Q",
+                title=f"{entity_matching.selected_key.capitalize()}-match entity F1 gap "
+                "(UQ − random)",
+            ),
             y=alt.Y("model_run:N", title=None),
             color=alt.Color("uq_metric:N", title="UQ metric"),
             yOffset="uq_metric:N",
@@ -146,6 +166,12 @@ def _(alt, completed, mo, overview):
             mo.md(
                 f"## Overview\n**{completed.height}/{overview.height} comparisons complete.** "
                 "The chart includes completed comparisons only."
+                + (
+                    f" **{completed.height - scored.height} were saved before partial match "
+                    "was scored and are left out.**"
+                    if scored.height < completed.height
+                    else ""
+                )
             ),
             mo.ui.altair_chart(gap_chart),
             mo.accordion(
@@ -157,7 +183,7 @@ def _(alt, completed, mo, overview):
             ),
         ]
     )
-    return
+    return (overview,)
 
 
 @app.cell
@@ -209,6 +235,7 @@ def _(repo_root, settings):
 
 @app.cell
 def _(
+    entity_matching,
     make_variance_chart,
     mo,
     results,
@@ -217,17 +244,30 @@ def _(
     supervised_results,
     supervised_sweep,
     tag_coverage_percent,
+    unscored_note,
 ):
+    _field = entity_matching.value
+    mo.stop(
+        _field not in results.columns, mo.vstack([mo.md("## Test learning curves"), unscored_note])
+    )
+    _supervised = (
+        supervised_results
+        if supervised_results is not None and _field in supervised_results.columns
+        else None
+    )
     final_rows = results.sort("round").group_by("seed", "arm", maintain_order=True).last()
     mo.vstack(
         [
             mo.md(
                 "## Test learning curves\nLines are seed means with ±1 SD bands. "
                 + (
-                    f"The green dashed line is the fully supervised upper bound "
+                    "No supervised baseline is saved for this checkpoint."
+                    if supervised_sweep is None
+                    else f"The supervised baseline (`results/supervised/{supervised_sweep}/`) "
+                    "was saved before partial match was scored."
+                    if _supervised is None
+                    else f"The green dashed line is the fully supervised upper bound "
                     f"(`results/supervised/{supervised_sweep}/`)."
-                    if supervised_sweep is not None
-                    else "No supervised baseline is saved for this checkpoint."
                 )
             ),
             mo.ui.altair_chart(
@@ -235,7 +275,8 @@ def _(
                     results,
                     selected_run["uq_metric"],
                     tag_coverage_percent.value,
-                    supervised=supervised_results,
+                    supervised=_supervised,
+                    entity_field=_field,
                 )
             ),
             mo.accordion(
@@ -257,7 +298,11 @@ def _(
                             "n_acquired",
                             *[
                                 field
-                                for field in ["entity_f1", "entity_macro_f1", "token_accuracy"]
+                                for field in [
+                                    _field,
+                                    _field.replace("_f1", "_macro_f1"),
+                                    "token_accuracy",
+                                ]
                                 if field in results.columns
                             ],
                         ).sort("seed", "arm"),
@@ -274,17 +319,22 @@ def _(
 
 @app.cell
 def _(
+    entity_matching,
     find_oracle_comparison,
     json,
     make_variance_chart,
     mo,
+    overview,
     pl,
     repo_root,
+    results,
     selected_run,
     settings,
     supervised_results,
     tag_coverage_percent,
+    unscored_note,
 ):
+    _field = entity_matching.value
     oracle_comparison = find_oracle_comparison(
         repo_root / "results" / "oracle_random" / "uq",
         settings["checkpoint"],
@@ -299,22 +349,35 @@ def _(
         ),
     )
     oracle_results = pl.read_csv(oracle_comparison["run_dir"] / "results.csv")
+    mo.stop(
+        _field not in results.columns or _field not in oracle_results.columns,
+        mo.vstack(
+            [mo.md("## Appendix: test curves at the test-tuned random oracle"), unscored_note]
+        ),
+    )
+    _validation_gap = overview.filter(pl.col("run_path") == selected_run["run_path"])["gap_auc"][0]
     mo.vstack(
         [
             mo.md(
                 "## Appendix: test curves at the test-tuned random oracle\n"
                 "The same model and UQ metric, rerun at random's best test configuration "
                 "(ADR 0007). Tuning on the test split favours random, so this is an appendix "
-                f"check. Gap AUC: **{100 * selected_run['gap_auc']:.2f} pp** at the validation "
-                f"winner, **{100 * oracle_comparison['mean_test_entity_f1_gap_auc']:.2f} pp** "
-                "at the oracle."
+                f"check. {entity_matching.selected_key.capitalize()}-match gap AUC: "
+                f"**{100 * _validation_gap:.2f} pp** at the validation winner, "
+                f"**{100 * oracle_comparison[f'mean_test_{_field}_gap_auc']:.2f} pp** at the "
+                "oracle."
             ),
             mo.ui.altair_chart(
                 make_variance_chart(
                     oracle_results,
                     selected_run["uq_metric"],
                     tag_coverage_percent.value,
-                    supervised=supervised_results,
+                    supervised=(
+                        supervised_results
+                        if supervised_results is not None and _field in supervised_results.columns
+                        else None
+                    ),
+                    entity_field=_field,
                 )
             ),
             mo.accordion(
@@ -331,6 +394,7 @@ def _(
 
 @app.cell
 def _(
+    entity_matching,
     mo,
     oracle_comparison,
     oracle_results,
@@ -356,6 +420,7 @@ def _(
                 repo_root / "results" / "oracle_random", settings["checkpoint"], _dataset
             ),
         ),
+        entity_matching.value,
     )
     validation_row, oracle_row = tuned.to_dicts()
     same_winner = all(
@@ -388,8 +453,8 @@ def _(
             mo.accordion(
                 {
                     "How to read this": mo.md("""
-    - AUC is normalized test entity-F1 AUC over acquired-pool percentage, averaged across
-      model seeds. UQ runs at each row's configuration with the selected UQ metric.
+    - AUC is normalized test entity-F1 AUC, with the selected entity matching, over
+      acquired-pool percentage, averaged across model seeds. UQ runs at each row's configuration with the selected UQ metric.
     - The oracle's random gain includes the winner's curse of picking the best of the
       sampled configurations on the test split.
     - `search_config_id` is the configuration's ID in the shared 100-configuration
@@ -693,10 +758,14 @@ def _(mo):
 
 
 @app.cell
-def _(f1_target, mo, results, threshold_efficiency):
+def _(entity_matching, f1_target, mo, results, threshold_efficiency, unscored_note):
+    mo.stop(entity_matching.value not in results.columns, unscored_note)
     mo.vstack(
         [
-            mo.ui.table(threshold_efficiency(results, f1_target.value), selection=None),
+            mo.ui.table(
+                threshold_efficiency(results, f1_target.value, entity_matching.value),
+                selection=None,
+            ),
             mo.accordion(
                 {
                     "How to read this": mo.md("""
@@ -817,7 +886,8 @@ def _(mo, pet_sentences, repo_root, timing_data, token_timing):
 
 
 @app.cell
-def _(mo, repo_root, uq_gap_ttests):
+def _(entity_matching, mo, repo_root, uq_gap_ttests):
+    _ttests = uq_gap_ttests(repo_root / "results" / "random_search", entity_matching.value)
     mo.vstack(
         [
             mo.md(
@@ -827,8 +897,9 @@ def _(mo, repo_root, uq_gap_ttests):
                 "metrics within each model."
             ),
             mo.ui.table(
-                uq_gap_ttests(repo_root / "results" / "random_search"),
-                label="UQ versus random — normalized learning-curve AUC",
+                _ttests,
+                label=f"UQ versus random — normalized {entity_matching.selected_key}-match "
+                "entity-F1 AUC",
                 selection=None,
                 page_size=20,
                 format_mapping={
@@ -839,6 +910,11 @@ def _(mo, repo_root, uq_gap_ttests):
                     "Adjusted p-value (Holm)": "{:.3g}",
                     "Adjusted p-value (Bonferroni)": "{:.3g}",
                 },
+            )
+            if _ttests
+            else mo.md(
+                f"No completed configurations with {entity_matching.selected_key}-match gaps "
+                "in `results/random_search/`."
             ),
         ]
     )

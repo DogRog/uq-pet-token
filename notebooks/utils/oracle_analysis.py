@@ -24,13 +24,13 @@ COMPARISON_SCHEMA = {
 }
 
 
-def curve_auc(results: pl.DataFrame) -> dict[tuple[int, str], float]:
-    """Return normalized entity-F1 AUC over acquired-pool percentage per (seed, arm)."""
+def curve_auc(results: pl.DataFrame, field: str = "entity_f1") -> dict[tuple[int, str], float]:
+    """Return normalized ``field`` AUC over acquired-pool percentage per (seed, arm)."""
     aucs = {}
     for (seed, arm), rows in results.group_by("seed", "arm"):
         rows = rows.sort("round")
         x = rows["percent_acquired"].to_list()
-        y = rows["entity_f1"].to_list()
+        y = rows[field].to_list()
         if len(x) < 2 or any(right <= left for left, right in zip(x, x[1:], strict=False)):
             raise ValueError(f"seed={seed}, arm={arm} needs increasing acquisition points")
         area = sum((x[i + 1] - x[i]) * (y[i] + y[i + 1]) / 2 for i in range(len(x) - 1))
@@ -193,17 +193,20 @@ def search_winner(search_root: Path, checkpoint: str, dataset: str) -> str | Non
     return None
 
 
-def arm_summary(results: pl.DataFrame) -> dict[str, dict[str, float]]:
-    """Seed-mean test AUC, its seed SD, and seed-mean final entity F1 per arm, in pp."""
+def arm_summary(results: pl.DataFrame, field: str = "entity_f1") -> dict[str, dict[str, float]]:
+    """Seed-mean test ``field`` AUC, its seed SD, and seed-mean final ``field`` per arm, in pp."""
     aucs = pl.DataFrame(
-        [{"seed": seed, "arm": arm, "auc": auc} for (seed, arm), auc in curve_auc(results).items()]
+        [
+            {"seed": seed, "arm": arm, "auc": auc}
+            for (seed, arm), auc in curve_auc(results, field).items()
+        ]
     )
     finals = results.filter(pl.col("round") == pl.col("round").max().over("seed", "arm"))
     return (
         aucs.group_by("arm")
         .agg((100 * pl.col("auc").mean()).alias("auc"), (100 * pl.col("auc").std()).alias("sd"))
         .join(
-            finals.group_by("arm").agg((100 * pl.col("entity_f1").mean()).alias("final")),
+            finals.group_by("arm").agg((100 * pl.col(field).mean()).alias("final")),
             on="arm",
         )
         .rows_by_key("arm", named=True, unique=True)
@@ -213,8 +216,9 @@ def arm_summary(results: pl.DataFrame) -> dict[str, dict[str, float]]:
 def validation_against_oracle(
     validation: tuple[pl.DataFrame, dict, str | None],
     oracle: tuple[pl.DataFrame, dict, str | None],
+    field: str = "entity_f1",
 ) -> pl.DataFrame:
-    """Compare one UQ metric's runs at the validation winner and at the oracle.
+    """Compare one UQ metric's runs at the validation winner and at the oracle on ``field``.
 
     Each argument is ``(results, hyperparameters, search_config_id)``. The search
     config_id comes from the shared 100-configuration search, because each rerun holds
@@ -226,7 +230,7 @@ def validation_against_oracle(
         ("Validation winner (headline)", validation),
         ("Test-tuned random oracle", oracle),
     ):
-        arms = arm_summary(results)
+        arms = arm_summary(results, field)
         rows.append(
             {
                 "configuration": configuration,

@@ -465,7 +465,12 @@ These notebooks read saved files and do not train models.
   the supervised test rows for the selected checkpoint as a dashed reference line with a
   ±1 SD band, plus the sentence-level curve when several percentages were run. The AL
   arms use their own online recipe, so this line marks the value of labelling
-  everything rather than a matched-hyperparameter arm.
+  everything rather than a matched-hyperparameter arm. Its **Entity matching** dropdown
+  switches every entity-F1 chart and table, including gaps, label efficiency, the oracle
+  appendix, and the random-search t-tests, between exact match (the headline) and
+  partial match (reported only,
+  [ADR 0010](docs/adr/0010-partial-entity-match-is-reported-not-tuned.md)). Runs saved
+  before partial match was scored are left out or marked when partial is selected.
 - `random_search_analysis.py` reads test sweep summaries under `results/random_search/`,
   with aggregate metric results, pending or failed comparisons, and a per-configuration
   drill-down. It plots seed means and standard-deviation bands for entity F1, macro

@@ -193,16 +193,19 @@ def paired_performance(results: pl.DataFrame) -> pl.DataFrame:
     ).unpivot(index=keys, variable_name="metric", value_name="gap_pp")
 
 
-def threshold_efficiency(results: pl.DataFrame, threshold: float) -> pl.DataFrame:
-    """Keep unreached thresholds null; report first observed crossings, without interpolation."""
+def threshold_efficiency(
+    results: pl.DataFrame, threshold: float, field: str = "entity_f1"
+) -> pl.DataFrame:
+    """First observed crossing of ``threshold`` by ``field`` per seed and arm.
+
+    Unreached thresholds stay null; crossings are not interpolated.
+    """
     rows = []
     for seed in sorted(results["seed"].unique().to_list()):
         row = {"seed": seed, "target_f1": threshold}
         for arm in ("random", "uncertainty"):
             hits = results.filter(
-                (pl.col("seed") == seed)
-                & (pl.col("arm") == arm)
-                & (pl.col("entity_f1") >= threshold)
+                (pl.col("seed") == seed) & (pl.col("arm") == arm) & (pl.col(field) >= threshold)
             )
             row[f"{arm}_labels"] = hits["n_acquired"].min() if hits.height else None
         reached = row["random_labels"] is not None and row["uncertainty_labels"] is not None

@@ -7,7 +7,7 @@ from utils.comparison_summaries import load_test_comparisons, uq_gap_ttests
 
 
 def write_summary(root, name, comparisons, split="test"):
-    (root / name).mkdir(parents=True)
+    (root / name).mkdir(parents=True, exist_ok=True)
     (root / name / "summary.json").write_text(
         json.dumps({"evaluation_split": split, "comparisons": comparisons})
     )
@@ -85,3 +85,49 @@ def test_uq_gap_ttests_adjusts_across_the_three_planned_metrics(tmp_path):
     )
     assert entropy["Adjusted p-value (Holm)"] == pytest.approx(3 * entropy["p-value"])
     assert rows["least_confidence"]["Adjusted p-value (Holm)"] == pytest.approx(1.0)
+
+
+def test_partial_match_reads_partial_scores_and_leaves_older_runs_null(tmp_path):
+    for name, partial in (("new", True), ("old", False)):
+        run = tmp_path / f"bert/runs/{name}"
+        run.mkdir(parents=True)
+        scores = {"entity_f1": [0.5, 0.7]} | ({"entity_partial_f1": [0.6, 0.9]} if partial else {})
+        pl.DataFrame(
+            {"seed": [0, 0], "arm": ["random", "uncertainty"], "round": [1, 1]} | scores
+        ).write_csv(run / "results.csv")
+    gaps = {"mean_test_entity_f1_gap_auc": 0.04, "mean_test_entity_partial_f1_gap_auc": 0.05}
+    write_summary(
+        tmp_path,
+        "bert",
+        [
+            {"config_id": "c", "uq_metric": "entropy", "status": "complete", "run_dir": "runs/new"}
+            | gaps,
+            {"config_id": "c", "uq_metric": "margin", "status": "complete", "run_dir": "runs/old"},
+        ],
+    )
+
+    new, old = load_test_comparisons(tmp_path, "entity_partial_f1").to_dicts()
+
+    assert (new["final_random_f1"], new["final_uq_f1"], new["gap_auc"]) == (0.6, 0.9, 0.05)
+    assert (old["final_random_f1"], old["gap_auc"]) == (None, None)
+
+
+def test_uq_gap_ttests_leaves_out_comparisons_without_the_chosen_gap(tmp_path):
+    write_summary(
+        tmp_path,
+        "bert-random-5-seeds",
+        [
+            {
+                "uq_metric": "entropy",
+                "status": "complete",
+                "mean_test_entity_partial_f1_gap_auc": gap,
+            }
+            for gap in (0.01, 0.03)
+        ]
+        + [{"uq_metric": "entropy", "status": "complete", "mean_test_entity_f1_gap_auc": 0.5}],
+    )
+
+    (row,) = uq_gap_ttests(tmp_path, "entity_partial_f1")
+
+    assert row["Configurations"] == 2
+    assert row["Mean improvement (pp)"] == pytest.approx(2.0)

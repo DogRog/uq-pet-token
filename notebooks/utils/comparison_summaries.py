@@ -21,11 +21,13 @@ COMPARISON_SCHEMA = {
 }
 
 
-def load_test_comparisons(results_root: Path) -> pl.DataFrame:
+def load_test_comparisons(results_root: Path, field: str = "entity_f1") -> pl.DataFrame:
     """One row per comparison in every test-split sweep under ``results_root``.
 
-    Final random and UQ scores are seed-mean entity F1 at each seed's last round, read
-    from the run's results.csv when the comparison completed.
+    ``field`` is the entity F1 to read: ``entity_f1`` (exact match) or
+    ``entity_partial_f1`` (partial match). Final random and UQ scores are its seed means
+    at each seed's last round, read from the run's results.csv when the comparison
+    completed. Runs saved before partial-match scoring have null partial scores and gaps.
     """
     rows = []
     for summary_path in sorted(results_root.glob("*/summary.json")):
@@ -42,13 +44,14 @@ def load_test_comparisons(results_root: Path) -> pl.DataFrame:
                 and run_path is not None
                 and (run_path / "results.csv").is_file()
             ):
-                final_scores = dict(
-                    pl.read_csv(run_path / "results.csv")
-                    .filter(pl.col("round") == pl.col("round").max().over("seed"))
-                    .group_by("arm")
-                    .agg(pl.col("entity_f1").mean())
-                    .iter_rows()
-                )
+                results = pl.read_csv(run_path / "results.csv")
+                if field in results.columns:
+                    final_scores = dict(
+                        results.filter(pl.col("round") == pl.col("round").max().over("seed"))
+                        .group_by("arm")
+                        .agg(pl.col(field).mean())
+                        .iter_rows()
+                    )
             rows.append(
                 {
                     "model_run": summary_path.parent.name,
@@ -57,8 +60,8 @@ def load_test_comparisons(results_root: Path) -> pl.DataFrame:
                     "status": comparison["status"],
                     "final_random_f1": final_scores.get("random"),
                     "final_uq_f1": final_scores.get("uncertainty"),
-                    "gap_auc": comparison.get("mean_test_entity_f1_gap_auc"),
-                    "final_gap": comparison.get("mean_final_test_entity_f1_gap"),
+                    "gap_auc": comparison.get(f"mean_test_{field}_gap_auc"),
+                    "final_gap": comparison.get(f"mean_final_test_{field}_gap"),
                     "error": comparison.get("error", ""),
                     "run_path": str(run_path) if run_path is not None else "",
                 }
@@ -66,10 +69,11 @@ def load_test_comparisons(results_root: Path) -> pl.DataFrame:
     return pl.DataFrame(rows, schema=COMPARISON_SCHEMA)
 
 
-def uq_gap_ttests(search_root: Path) -> list[dict]:
-    """Test each model's mean gap AUC across sampled configurations against zero.
+def uq_gap_ttests(search_root: Path, field: str = "entity_f1") -> list[dict]:
+    """Test each model's mean ``field`` gap AUC across sampled configurations against zero.
 
-    One row per model and UQ metric with at least two completed configurations: the mean
+    Comparisons without that gap, such as partial match before it was scored, are left
+    out. One row per model and UQ metric with at least two such configurations: the mean
     gap and its 95% CI in pp, the two-sided one-sample t-test p-value, and Holm and
     Bonferroni adjustments across the three planned UQ metrics within each model.
     """
@@ -79,9 +83,11 @@ def uq_gap_ttests(search_root: Path) -> list[dict]:
         model = path.parent.name.removesuffix("-random-5-seeds")
         for metric in UQ_METRICS:
             gaps = [
-                row["mean_test_entity_f1_gap_auc"]
+                row[f"mean_test_{field}_gap_auc"]
                 for row in summary["comparisons"]
-                if row["uq_metric"] == metric and row["status"] == "complete"
+                if row["uq_metric"] == metric
+                and row["status"] == "complete"
+                and row.get(f"mean_test_{field}_gap_auc") is not None
             ]
             if len(gaps) < 2:
                 continue

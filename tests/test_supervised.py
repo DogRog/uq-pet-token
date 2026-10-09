@@ -513,3 +513,23 @@ def test_variance_chart_draws_supervised_reference():
     assert "supervised" in json.dumps(
         make_variance_chart(results, "entropy", supervised=curve).to_dict()
     )
+
+
+def test_variance_chart_plots_the_chosen_entity_matching():
+    results = pl.DataFrame(
+        {
+            "seed": [0, 0],
+            "arm": ["random", "uncertainty"],
+            "n_acquired": [0, 0],
+            "percent_acquired": [0.0, 0.0],
+            "entity_f1": [0.2, 0.3],
+            "entity_partial_f1": [0.4, 0.5],
+        }
+    )
+
+    chart = json.dumps(
+        make_variance_chart(results, "entropy", entity_field="entity_partial_f1").to_dict()
+    )
+
+    assert "Partial entity F1" in chart
+    assert '"Entity F1"' not in chart

@@ -157,3 +157,16 @@ def test_token_timing_bolds_the_token_in_matching_context_only(tmp_path):
         "Local sentence context unavailable or token mismatch"
     }
     assert pet_sentences(tmp_path / "missing.jsonl") == {}
+
+
+def test_threshold_efficiency_reads_the_chosen_entity_field():
+    _, results = saved_logs()
+    partial = results.with_columns(pl.col("entity_f1").alias("entity_partial_f1")).with_columns(
+        pl.lit(0.0).alias("entity_f1")
+    )
+
+    assert threshold_efficiency(partial, 0.6)["labels_saved"].null_count() == 2
+    assert threshold_efficiency(partial, 0.6, "entity_partial_f1")["labels_saved"].to_list() == [
+        -1,
+        -1,
+    ]
