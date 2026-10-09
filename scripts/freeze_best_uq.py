@@ -1,4 +1,4 @@
-"""Freeze a completed random-baseline tuning winner into configs/best_uq/.
+"""Freeze a random-baseline tuning winner from configs/<dataset>/tune_random/ into best_uq/.
 
 Prints the frozen config path, or nothing when the tuning sweep has no winner yet. The
 tuning output is the source of truth, so a changed winner overwrites the saved config;
@@ -15,8 +15,10 @@ from uq_pet.config import ExperimentConfig, RandomBaselineSearchConfig
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def freeze(tune_config: Path, out_dir: Path) -> Path | None:
-    """Write the validation winner with W&B and concurrency settings for best-UQ runs."""
+def freeze(tune_config: Path) -> Path | None:
+    """Write the validation winner beside its dataset's tuning configs, for best-UQ runs."""
+    if tune_config.parent.name != "tune_random":
+        raise ValueError("expected a configs/<dataset>/tune_random/<model>.json file")
     tuning = RandomBaselineSearchConfig.model_validate_json(tune_config.read_text())
     if tuning.tuning_split != "validation":
         raise ValueError("only validation winners become best-UQ configs (ADR 0007)")
@@ -34,7 +36,8 @@ def freeze(tune_config: Path, out_dir: Path) -> Path | None:
         "seed_workers": 5,
     }
     ExperimentConfig.model_validate(frozen)
-    path = out_dir / (tune_config.stem.removesuffix(f"_tune_random_{tuning.num_configs}") + ".json")
+    path = tune_config.parent.parent / "best_uq" / tune_config.name
+    path.parent.mkdir(exist_ok=True)
     if not path.is_file() or json.loads(path.read_text()) != frozen:
         path.write_text(json.dumps(frozen, indent=2) + "\n")
     return path
@@ -42,11 +45,12 @@ def freeze(tune_config: Path, out_dir: Path) -> Path | None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("tune_config", type=Path, help="configs/tune_random/*.json file.")
-    parser.add_argument("--out-dir", type=Path, default=PROJECT_ROOT / "configs" / "best_uq")
+    parser.add_argument(
+        "tune_config", type=Path, help="configs/<dataset>/tune_random/<model>.json file."
+    )
     args = parser.parse_args(argv)
     try:
-        path = freeze(args.tune_config, args.out_dir)
+        path = freeze(args.tune_config)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     if path is None:

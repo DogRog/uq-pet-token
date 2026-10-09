@@ -267,17 +267,17 @@ a subset, e.g. `DATASETS="quishpi medical" bash scripts/tune_random_all_models.s
 other launchers below take the same variable. To tune one model:
 
 ```bash
-uv run scripts/bert_token_uq_search.py --config configs/tune_random/distilbert_tune_random_100.json --dry-run
-uv run scripts/bert_token_uq_search.py --config configs/tune_random/distilbert_tune_random_100.json
+uv run scripts/bert_token_uq_search.py --config configs/pet/tune_random/distilbert.json --dry-run
+uv run scripts/bert_token_uq_search.py --config configs/pet/tune_random/distilbert.json
 ```
 
-Each `configs/tune_random/*_tune_random_100.json` samples 100 configurations with five
+Each `configs/<dataset>/tune_random/<model>.json` samples 100 configurations with five
 model seeds, two seed workers, the same validation holdout and objective, and its own
 output folder. A dry run prints the plan without loading data or models.
 
-The Quishpi and MedicalProcessInstruks configs (`*_quishpi_*` and `*_medical_*`) hold
-out the same share of the pool as PET (31 and 51 validation sentences) and write to
-their own folders and W&B projects. Add `--seed-workers 5` on a large GPU.
+The Quishpi and MedicalProcessInstruks configs (`configs/quishpi/` and
+`configs/medical/`) hold out the same share of the pool as PET (31 and 51 validation
+sentences) and write to their own folders and W&B projects. Add `--seed-workers 5` on a large GPU.
 
 1. Keep the original bootstrap and test sentences. Hold out 66 pool sentences as the
    validation holdout with a fixed local RNG (on PET, a tuning pool of 262 sentences
@@ -313,7 +313,7 @@ hyperparameters from test results.
 
 ### 2. Compare UQ metrics with the winners
 
-The launcher freezes each completed tuning winner into `configs/best_uq/` with
+The launcher freezes each completed tuning winner into `configs/<dataset>/best_uq/` with
 `scripts/freeze_best_uq.py`, then compares all three UQ metrics against random with it,
 once with top-K selection and once with Gumbel noise (five models × three metrics × five
 seeds per dataset, with matched random baselines):
@@ -326,14 +326,14 @@ bash scripts/run_best_uq_all_models.sh
 The tuning output is the source of truth: a frozen config is rewritten whenever its
 winner changes, and models whose tuning has no winner yet are skipped. Commit the
 frozen configs after tuning; see
-[configs/best_uq/README.md](configs/best_uq/README.md). Pass
+[configs/README.md](configs/README.md). Pass
 `--uq-metrics entropy margin` to run a subset. Models run sequentially, with parallel
 seeds within each model, and the script stops on the first failure.
 
 To run one configuration, including a newly tuned `best_config.json`:
 
 ```bash
-uv run scripts/run_uq_metrics.py --config configs/best_uq/bert_base.json
+uv run scripts/run_uq_metrics.py --config configs/pet/best_uq/bert_base.json
 uv run scripts/run_uq_metrics.py \
   --config results/random_baseline_search/distilbert-random-baseline-100/best_config.json
 ```
@@ -391,13 +391,13 @@ subwords are supervised, and truncated pool words are excluded as in acquisition
    model seed, for a sentence-level annotation curve.
 
 ```bash
-uv run scripts/run_supervised.py --config configs/supervised/distilbert.json --dry-run
-uv run scripts/run_supervised.py --config configs/supervised/distilbert.json
+uv run scripts/run_supervised.py --config configs/pet/supervised/distilbert.json --dry-run
+uv run scripts/run_supervised.py --config configs/pet/supervised/distilbert.json
 bash scripts/run_supervised_all_models.sh
 ```
 
-The launcher covers all five models on every dataset (`configs/supervised/<model>.json`
-for PET, `<model>_quishpi.json` and `<model>_medical.json` for the others).
+The launcher covers all five models on every dataset
+(`configs/<dataset>/supervised/<model>.json`).
 
 The supervised configs train all five seeds of each trial or test budget concurrently in
 spawned processes that share the device (`"seed_workers": 5`); use `--seed-workers N`
@@ -463,7 +463,7 @@ bash scripts/run_oracle_random_all_models.sh
 
 The launcher runs stage 1 for every checkpoint, then stage 2 for every checkpoint:
 
-1. **Test-split random tuning.** Each `configs/oracle_random/*_oracle_random_100.json` is
+1. **Test-split random tuning.** Each `configs/pet/oracle_random/<model>.json` is
    a `tune-random` sweep with `"tuning_split": "test"` and the same sampler seed and 100
    configurations as random-baseline tuning. It trains random only on the full pool,
    scores each configuration by seed-mean test entity-F1 AUC
@@ -477,7 +477,7 @@ The launcher runs stage 1 for every checkpoint, then stage 2 for every checkpoin
 All five checkpoints take roughly 28 hours. W&B logs each checkpoint to its own
 `<model>-oracle-random` project, with a tuning sweep chart that ranks the configurations
 (see [Weights & Biases](#weights--biases)). See
-[configs/oracle_random/README.md](configs/oracle_random/README.md).
+[configs/pet/oracle_random/README.md](configs/pet/oracle_random/README.md).
 
 `notebooks/oracle_random_analysis.py` reports, per checkpoint and UQ metric:
 
@@ -492,7 +492,7 @@ All five checkpoints take roughly 28 hours. W&B logs each checkpoint to its own
 The oracle is biased against UQ twice: the random arm's test score carries the winner's
 curse, and UQ runs at random's best settings rather than its own. Oracle numbers are
 labelled `oracle_`, stay under `results/oracle_random/`, and are never copied into
-`configs/best_uq/`.
+`configs/pet/best_uq/`.
 
 The validation holdout behind the headline has 66 labelled sentences, about 13 times
 the 5 bootstrap sentences, which a real low-resource annotation project would rarely
@@ -509,13 +509,13 @@ round. There is no validation holdout, optimization objective, pruning, or best-
 selection. Treat it as exploratory; the tuned workflow above is the main comparison.
 
 ```bash
-uv run scripts/bert_token_uq_search.py --config configs/random_search/distilbert_random_5_seeds.json
+uv run scripts/bert_token_uq_search.py --config configs/pet/random_search/distilbert.json
 bash scripts/run_random_search_all_models.sh --dry-run
 bash scripts/run_random_search_all_models.sh
 ```
 
 The launcher runs all five models on PET, Quishpi, and MedicalProcessInstruks. The files
-in `configs/random_search/*_random_5_seeds.json` each budget
+in `configs/<dataset>/random_search/<model>.json` each budget
 **30 hyperparameter configurations × 3 UQ metrics = 90 paired comparisons**, with five
 model seeds run concurrently and 100% pool acquisition.
 
@@ -680,7 +680,7 @@ Resuming reuses the sweep and publishes any completed configurations not yet upl
 A completed search can be published without loading data or training:
 
 ```bash
-uv run scripts/bert_token_uq_search.py --config configs/tune_random/distilbert_tune_random_100.json --publish-wandb-only
+uv run scripts/bert_token_uq_search.py --config configs/pet/tune_random/distilbert.json --publish-wandb-only
 ```
 
 This requires an existing local plan and online W&B credentials. Offline mode keeps
@@ -762,7 +762,7 @@ recorded in [docs/adr/](docs/adr/).
 | `scripts/run_uq_metrics.py` | fixed multi-metric comparisons from one experiment configuration |
 | `scripts/run_supervised.py` | CLI entry point for the supervised baseline |
 | `scripts/run_all_experiments.sh` | every paper experiment, one parallel chain per dataset |
-| `scripts/freeze_best_uq.py` | copies a validation winner into `configs/best_uq/` |
+| `scripts/freeze_best_uq.py` | copies a validation winner into `configs/<dataset>/best_uq/` |
 | `scripts/run_best_uq_all_models.sh` | top-K and Gumbel noise comparisons at every frozen winner |
 | `scripts/run_stochastic_uq_all_models.sh` | word form cap comparisons at every frozen winner |
 | `scripts/tune_random_all_models.sh` | random-only tuning for every dataset and checkpoint |
@@ -777,11 +777,11 @@ recorded in [docs/adr/](docs/adr/).
 | `notebooks/oracle_random_analysis.py` | appendix: UQ against the test-tuned random oracle |
 | `notebooks/fixed_all_metrics_analysis.py` | read-only analysis of one historical sweep |
 | `notebooks/utils/` | chart builders, acquisition diagnostics, oracle selection, and W&B comparison media |
-| `configs/best_uq/` | frozen validation winners for fixed UQ comparisons |
-| `configs/tune_random/` | random-baseline tuning settings |
-| `configs/random_search/` | sampled UQ-versus-random comparison settings |
-| `configs/oracle_random/` | appendix test-split random tuning for the test-tuned oracle |
-| `configs/supervised/` | supervised baseline settings |
+| `configs/<dataset>/tune_random/` | random-baseline tuning settings, one file per model |
+| `configs/<dataset>/best_uq/` | frozen validation winners for fixed UQ comparisons |
+| `configs/<dataset>/supervised/` | supervised baseline settings |
+| `configs/<dataset>/random_search/` | sampled UQ-versus-random comparison settings |
+| `configs/pet/oracle_random/` | appendix test-split random tuning for the test-tuned oracle |
 | `tests/` | offline protocol, model-boundary, CLI, concurrency, resume, and logging checks |
 | `GLOSSARY.md` | canonical project terms |
 | `docs/adr/` | design decisions and their reasons |

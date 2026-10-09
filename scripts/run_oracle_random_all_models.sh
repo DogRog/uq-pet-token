@@ -9,16 +9,16 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 configs=(
-  configs/oracle_random/distilbert_oracle_random_100.json
-  configs/oracle_random/bert_base_oracle_random_100.json
-  configs/oracle_random/roberta_base_oracle_random_100.json
-  configs/oracle_random/deberta_v3_base_oracle_random_100.json
-  configs/oracle_random/modernbert_base_oracle_random_100.json
+  configs/pet/oracle_random/distilbert.json
+  configs/pet/oracle_random/bert_base.json
+  configs/pet/oracle_random/roberta_base.json
+  configs/pet/oracle_random/deberta_v3_base.json
+  configs/pet/oracle_random/modernbert_base.json
 )
 
 header() {
   printf '\n=== [%d/%d] %s · %s ===\n' "$(($1 + 1))" "${#configs[@]}" \
-    "$(basename "${configs[$1]}" _oracle_random_100.json)" "$2"
+    "$(basename "${configs[$1]}" .json)" "$2"
 }
 
 for index in "${!configs[@]}"; do

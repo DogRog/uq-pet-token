@@ -9,7 +9,7 @@ import run_uq_metrics as runner
 
 def test_fixed_plan_preserves_every_winner(monkeypatch, capsys):
     monkeypatch.setattr(runner.search.random, "Random", lambda *_: pytest.fail("Must not sample"))
-    for path in sorted((runner.PROJECT_ROOT / "configs" / "best_uq").glob("*.json")):
+    for path in sorted((runner.PROJECT_ROOT / "configs").glob("*/best_uq/*.json")):
         assert runner.main(["--config", str(path), "--dry-run"]) == 0
         plan = json.loads(capsys.readouterr().out)
         assert plan["sampling"] == "none"
@@ -101,7 +101,7 @@ def test_fixed_mode_rejects_multiple_configurations():
 
 
 def test_acquisition_flags_enter_the_plan_and_defaults_stay_implicit(capsys):
-    config = str(runner.PROJECT_ROOT / "configs" / "best_uq" / "distilbert.json")
+    config = str(runner.PROJECT_ROOT / "configs" / "pet" / "best_uq" / "distilbert.json")
     assert runner.main(["--config", config, "--dry-run"]) == 0
     plain = json.loads(capsys.readouterr().out)["fixed_config"]
     assert "gumbel_noise" not in plain and "max_per_word_form" not in plain

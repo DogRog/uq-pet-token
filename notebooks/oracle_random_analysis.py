@@ -11,7 +11,7 @@ def _(mo):
 
     An appendix sensitivity check, never a headline result. The headline protocol tunes
     the random arm on the validation holdout and freezes each checkpoint's validation
-    winner (`configs/best_uq/`). Here, the random arm is tuned **on the test split**
+    winner (`configs/pet/best_uq/`). Here, the random arm is tuned **on the test split**
     instead (ADR 0007):
 
     1. **Stage 1** tunes random only, on the full pool, over the same 100 sampled

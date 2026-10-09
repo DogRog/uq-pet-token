@@ -1,6 +1,6 @@
 # Random is tuned on the validation holdout; a test-tuned random oracle is appendix-only
 
-Headline results tune the random arm's hyperparameters on the validation holdout, freeze each checkpoint's validation winner, and compare every UQ metric against random on the test split. To show that UQ's advantage does not come from an under-tuned random arm, an appendix also reports the test-tuned random oracle: random-only tuning over the same 100 sampled configurations, scored on the test split, with every UQ metric then compared against random at the winning configuration. Oracle results live under `results/oracle_random/`, their winner is saved as `oracle_config.json` rather than `best_config.json`, and it is never copied into `configs/best_uq/`.
+Headline results tune the random arm's hyperparameters on the validation holdout, freeze each checkpoint's validation winner, and compare every UQ metric against random on the test split. To show that UQ's advantage does not come from an under-tuned random arm, an appendix also reports the test-tuned random oracle: random-only tuning over the same 100 sampled configurations, scored on the test split, with every UQ metric then compared against random at the winning configuration. Oracle results live under `results/oracle_random/`, their winner is saved as `oracle_config.json` rather than `best_config.json`, and it is never copied into a `configs/<dataset>/best_uq/` folder.
 
 ## Considered Options
 

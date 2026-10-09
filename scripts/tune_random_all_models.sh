@@ -10,9 +10,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 models=(distilbert bert_base roberta_base deberta_v3_base modernbert_base)
 
 for dataset in ${DATASETS:-pet quishpi medical}; do
-  suffix=$([[ $dataset == pet ]] && echo "" || echo "_$dataset")
   for model in "${models[@]}"; do
-    config=configs/tune_random/${model}${suffix}_tune_random_100.json
+    config=configs/$dataset/tune_random/$model.json
     printf '\nRandom-only tuning: %s\n' "$config"
     uv run scripts/bert_token_uq_search.py --config "$config" "$@"
   done

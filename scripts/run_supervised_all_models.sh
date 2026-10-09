@@ -9,9 +9,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 models=(distilbert bert_base roberta_base deberta_v3_base modernbert_base)
 
 for dataset in ${DATASETS:-pet quishpi medical}; do
-  suffix=$([[ $dataset == pet ]] && echo "" || echo "_$dataset")
   for model in "${models[@]}"; do
-    config=configs/supervised/${model}${suffix}.json
+    config=configs/$dataset/supervised/$model.json
     printf '\nSupervised baseline: %s\n' "$config"
     uv run scripts/run_supervised.py --config "$config" "$@"
   done
