@@ -40,7 +40,7 @@ YAML configs, a CLI framework, registries, callbacks, checkpoint management, or 
 experiment abstractions only for a concrete need.
 
 - `config.py`: validated experiment and search settings; UI controls stay in the notebook
-- `pet_data.py`, `token_model.py`, `active_learning.py`: data, model operations, rounds
+- `data_prep.py`, `token_model.py`, `active_learning.py`: data, model operations, rounds
 - `search.py`: search planning, resume handling, and summaries
 - `supervised.py`: the supervised baseline's search, tuning, test runs, and resume
 - `utils/wandb_logging.py`: shared W&B logging

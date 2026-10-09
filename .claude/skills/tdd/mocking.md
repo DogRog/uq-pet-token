@@ -34,7 +34,7 @@ def select_random(available, k):
     return random.sample(sorted(available), k)
 ```
 
-When a boundary is a module-level import, `monkeypatch.setattr` on the importing module is the Python form of injection, and fine at a true boundary: `monkeypatch.setattr(pet_data, "load_dataset", fake_loader)`.
+When a boundary is a module-level import, `monkeypatch.setattr` on the importing module is the Python form of injection, and fine at a true boundary: `monkeypatch.setattr(data_prep, "load_dataset", fake_loader)`.
 
 **2. Keep the boundary narrow and specific**
 

@@ -7,7 +7,7 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from uq_pet.pet_data import RESULTS_DIR
+from uq_pet.data_prep import RESULTS_DIR
 from uq_pet.token_model import UQ_METRICS
 
 DEFAULT_CHECKPOINTS = (

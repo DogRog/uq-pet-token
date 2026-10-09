@@ -13,7 +13,7 @@ from tokenizers.pre_tokenizers import Whitespace
 from tokenizers.processors import TemplateProcessing
 from transformers import PreTrainedTokenizerFast
 
-from uq_pet.pet_data import NER_TAGS
+from uq_pet.data_prep import NER_TAGS
 from uq_pet.token_model import (
     encode_targets,
     predict_tags,

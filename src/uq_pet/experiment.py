@@ -7,7 +7,7 @@ import polars as pl
 
 from uq_pet.active_learning import run_active_learning, write_run
 from uq_pet.config import ExperimentConfig
-from uq_pet.pet_data import RESULTS_DIR, load_splits
+from uq_pet.data_prep import RESULTS_DIR, load_splits
 from uq_pet.token_model import get_device, resolve_precision
 
 

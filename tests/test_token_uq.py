@@ -17,7 +17,7 @@ from uq_pet.active_learning import (
     select_uncertain,
     write_run,
 )
-from uq_pet.pet_data import NER_TAGS
+from uq_pet.data_prep import NER_TAGS
 from uq_pet.token_model import (
     encode_targets,
     evaluate_model,

@@ -12,7 +12,7 @@ from transformers import BertConfig, BertForTokenClassification, PreTrainedToken
 
 import uq_pet.active_learning as active_learning
 from uq_pet.config import ExperimentConfig
-from uq_pet.pet_data import NER_TAGS
+from uq_pet.data_prep import NER_TAGS
 from uq_pet.token_model import set_seed
 from uq_pet.utils.wandb_logging import make_wandb_evaluation_log
 

@@ -21,8 +21,8 @@ def _():
 
     from uq_pet.active_learning import acquisition_schedule
     from uq_pet.config import DEFAULT_CHECKPOINTS, ExperimentConfig
+    from uq_pet.data_prep import RESULTS_DIR
     from uq_pet.experiment import execute_experiment
-    from uq_pet.pet_data import RESULTS_DIR
     from uq_pet.token_model import UQ_METRICS
     from uq_pet.utils.wandb_logging import (
         configure_wandb_metrics,

@@ -10,7 +10,7 @@ import pytest
 from test_random_search import fake_wandb as fake_wandb
 from uq_pet import search as tune
 from uq_pet.config import RandomBaselineSearchConfig
-from uq_pet.pet_data import split_tuning_pool
+from uq_pet.data_prep import split_tuning_pool
 
 
 def run_tuning(config, *, dry_run=False):

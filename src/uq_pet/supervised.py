@@ -26,7 +26,7 @@ from transformers.utils import logging as transformers_logging
 
 from uq_pet.active_learning import full_sentence_items, write_run
 from uq_pet.config import SupervisedConfig, omit_implicit_defaults
-from uq_pet.pet_data import DATASET_TAGS, PROJECT_ROOT, TokenKey, load_splits, split_tuning_pool
+from uq_pet.data_prep import DATASET_TAGS, PROJECT_ROOT, TokenKey, load_splits, split_tuning_pool
 from uq_pet.search import (
     LEARNING_RATE_BOUNDS,
     preserve_json,

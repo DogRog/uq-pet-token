@@ -37,7 +37,7 @@ from uq_pet.config import (
     RandomSearchConfig,
     omit_implicit_defaults,
 )
-from uq_pet.pet_data import PROJECT_ROOT, load_splits, split_tuning_pool
+from uq_pet.data_prep import PROJECT_ROOT, load_splits, split_tuning_pool
 from uq_pet.token_model import UQ_METRICS, get_device, resolve_precision
 from uq_pet.utils.wandb_logging import (
     login_quietly,

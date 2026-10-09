@@ -108,7 +108,7 @@ the full CoNLL test split (3,453 sentences).
 Setting `"dataset": "quishpi"` uses Quishpi et al.'s judge annotations from
 `PADS-UPC/atdp-extractor` at a pinned commit: 18 process descriptions whose brat spans
 become 7 BIO tags (Action, Entity, Condition). The texts are cut into words and
-sentences in `pet_data.brat_sentences` and then split exactly like PET:
+sentences in `data_prep.brat_sentences` and then split exactly like PET:
 **5 bootstrap, 155 pool, and 41 test sentences**. 13 of the 18 texts are also PET
 documents, so Quishpi is a coarser, sparser labelling of largely the same text rather
 than a new domain.
@@ -716,7 +716,7 @@ recorded in [docs/adr/](docs/adr/).
 
 | Path | Purpose |
 | --- | --- |
-| `src/uq_pet/pet_data.py` | dataset identity (PET, CoNLL-2003, Quishpi, MedicalProcessInstruks), download, stable splits, and private label lookup |
+| `src/uq_pet/data_prep.py` | dataset identity (PET, CoNLL-2003, Quishpi, MedicalProcessInstruks), download, stable splits, and private label lookup |
 | `src/uq_pet/token_model.py` | masking, training, UQ metrics, inference, and evaluation |
 | `src/uq_pet/active_learning.py` | acquisition rounds, replay, orchestration, and outputs |
 | `src/uq_pet/config.py` | shared validated experiment and search configuration |

@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoConfig, AutoModelForTokenClassification, AutoTokenizer
 from transformers.utils import logging as transformers_logging
 
-from uq_pet.pet_data import TokenKey
+from uq_pet.data_prep import TokenKey
 from uq_pet.utils.truncation import (
     complete_word_positions,
     evaluation_word_positions,

@@ -15,7 +15,7 @@ from test_concurrent_seeds import tiny_experiment as tiny_experiment
 from test_random_search import fake_wandb as fake_wandb
 from uq_pet import supervised
 from uq_pet.config import SupervisedConfig
-from uq_pet.pet_data import NER_TAGS
+from uq_pet.data_prep import NER_TAGS
 from uq_pet.search import LEARNING_RATE_BOUNDS
 from utils.charts import make_variance_chart
 

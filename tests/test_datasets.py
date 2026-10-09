@@ -9,9 +9,9 @@ import torch
 from datasets import ClassLabel, Dataset, DatasetDict, Features, Sequence, Value
 from huggingface_hub.errors import GatedRepoError
 
-from uq_pet import active_learning, pet_data, search, supervised
+from uq_pet import active_learning, data_prep, search, supervised
 from uq_pet.config import ExperimentConfig, RandomSearchConfig, SupervisedConfig
-from uq_pet.pet_data import (
+from uq_pet.data_prep import (
     CONLL_TAGS,
     MEDICAL_TAGS,
     QUISHPI_TAGS,
@@ -44,7 +44,7 @@ def fake_conll(n_train, n_test, names=CONLL_TAGS):
 
 
 def test_conll_uses_full_test_and_nested_pool_percentages(monkeypatch):
-    monkeypatch.setattr(pet_data, "load_dataset", lambda *args, **kwargs: fake_conll(405, 100))
+    monkeypatch.setattr(data_prep, "load_dataset", lambda *args, **kwargs: fake_conll(405, 100))
 
     seed, pool, gold, test = load_conll_splits()
 
@@ -79,19 +79,19 @@ def test_pet_pool_percent_keeps_seed_and_test(tmp_path):
             for idx in range(50)
         )
     )
-    seed, pool, gold, test = pet_data.load_pet_splits(path)
-    quarter = pet_data.load_pet_splits(path, pool_percent=25)
+    seed, pool, gold, test = data_prep.load_pet_splits(path)
+    quarter = data_prep.load_pet_splits(path, pool_percent=25)
 
     assert (len(seed), len(pool), len(test)) == (5, 35, 10)
     assert (quarter[0], quarter[1], quarter[3]) == (seed, pool[:9], test)
     with pytest.raises(ValueError, match="is empty"):
-        pet_data.load_pet_splits(path, pool_percent=1)
+        data_prep.load_pet_splits(path, pool_percent=1)
 
 
 def test_conll_rejects_changed_label_order(monkeypatch):
     reordered = [CONLL_TAGS[0], *reversed(CONLL_TAGS[1:])]
     monkeypatch.setattr(
-        pet_data, "load_dataset", lambda *args, **kwargs: fake_conll(400, 100, reordered)
+        data_prep, "load_dataset", lambda *args, **kwargs: fake_conll(400, 100, reordered)
     )
     with pytest.raises(ValueError, match="label order"):
         load_conll_splits()
@@ -165,7 +165,7 @@ def test_brat_sentences_reject_spans_that_miss_their_text():
 
 def test_quishpi_is_split_like_pet(tmp_path, monkeypatch):
     names = tuple(f"doc-{idx}" for idx in range(50))
-    monkeypatch.setattr(pet_data, "QUISHPI_DOCUMENTS", names)
+    monkeypatch.setattr(data_prep, "QUISHPI_DOCUMENTS", names)
     for name in names:
         text = f"{name} acts."
         (tmp_path / "texts").mkdir(exist_ok=True)
@@ -189,9 +189,9 @@ def test_quishpi_is_split_like_pet(tmp_path, monkeypatch):
         )
     )
 
-    seed, pool, gold, test = pet_data.load_quishpi_splits(tmp_path)
-    pet_seed, pet_pool, _, pet_test = pet_data.load_pet_splits(pet_path)
-    quarter = pet_data.load_quishpi_splits(tmp_path, pool_percent=25)
+    seed, pool, gold, test = data_prep.load_quishpi_splits(tmp_path)
+    pet_seed, pet_pool, _, pet_test = data_prep.load_pet_splits(pet_path)
+    quarter = data_prep.load_quishpi_splits(tmp_path, pool_percent=25)
 
     assert (seed, pool, test) == (
         [{**row, "ner_tags": [0, 1, 0]} for row in pet_seed],
@@ -210,23 +210,23 @@ def test_quishpi_is_split_like_pet(tmp_path, monkeypatch):
             "quishpi",
             "download_quishpi",
             "load_quishpi_splits",
-            pet_data.QUISHPI_REPO,
-            pet_data.QUISHPI_REVISION,
+            data_prep.QUISHPI_REPO,
+            data_prep.QUISHPI_REVISION,
         ),
         (
             "medical",
             "download_medical",
             "load_medical_splits",
-            pet_data.MEDICAL_REPO,
-            pet_data.MEDICAL_REVISION,
+            data_prep.MEDICAL_REPO,
+            data_prep.MEDICAL_REVISION,
         ),
     ],
 )
 def test_new_datasets_record_their_pinned_revision(
     monkeypatch, dataset, download, loader, repo, revision
 ):
-    monkeypatch.setattr(pet_data, download, lambda: "files")
-    monkeypatch.setattr(pet_data, loader, lambda files, pool_percent: (files,))
+    monkeypatch.setattr(data_prep, download, lambda: "files")
+    monkeypatch.setattr(data_prep, loader, lambda files, pool_percent: (files,))
     assert load_splits(dataset, 50) == (
         ("files",),
         {"dataset": repo, "dataset_revision": revision, "dataset_percent": 50},
@@ -236,10 +236,10 @@ def test_new_datasets_record_their_pinned_revision(
 def test_medical_tags_are_named_by_their_begin_id():
     assert MEDICAL_TAGS[:5] == ["O", "B-T03", "I-T03", "B-T05", "I-T05"]
     assert len(MEDICAL_TAGS) == 39
-    named = [MEDICAL_TAGS[pet_data._medical_tag(raw)] for raw in (0, 3, 4, 43, 44)]
+    named = [MEDICAL_TAGS[data_prep._medical_tag(raw)] for raw in (0, 3, 4, 43, 44)]
     assert named == ["O", "B-T03", "I-T03", "B-T43", "I-T43"]
     with pytest.raises(ValueError, match="tag 7"):
-        pet_data._medical_tag(7)
+        data_prep._medical_tag(7)
 
 
 def test_medical_joins_both_files_and_is_split_like_pet(tmp_path):
@@ -271,8 +271,8 @@ def test_medical_joins_both_files_and_is_split_like_pet(tmp_path):
         )
     )
 
-    seed, pool, gold, test = pet_data.load_medical_splits([train, test_file])
-    pet_seed, pet_pool, _, pet_test = pet_data.load_pet_splits(pet_path)
+    seed, pool, gold, test = data_prep.load_medical_splits([train, test_file])
+    pet_seed, pet_pool, _, pet_test = data_prep.load_pet_splits(pet_path)
 
     object_tag = MEDICAL_TAGS.index("B-T43")
     assert seed == [{**row, "ner_tags": [0, object_tag]} for row in pet_seed]
@@ -286,9 +286,9 @@ def test_medical_explains_gated_access(monkeypatch):
         request = httpx.Request("GET", "https://huggingface.co")
         raise GatedRepoError("401", response=httpx.Response(401, request=request))
 
-    monkeypatch.setattr(pet_data, "hf_hub_download", gated)
+    monkeypatch.setattr(data_prep, "hf_hub_download", gated)
     with pytest.raises(RuntimeError, match="accept its conditions"):
-        pet_data.download_medical()
+        data_prep.download_medical()
 
 
 def test_load_splits_rejects_unknown_dataset():
