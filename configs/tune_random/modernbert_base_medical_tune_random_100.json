@@ -1,0 +1,21 @@
+{
+  "checkpoint": "answerdotai/ModernBERT-base",
+  "dataset": "medical",
+  "sweep_name": "modernbert-base-medical-random-baseline-100",
+  "sweeps_dir": "results/random_baseline_search",
+  "wandb_enabled": true,
+  "wandb_project": "modernbert-base-medical-random-baseline",
+
+  "model_seeds": [0, 1, 2, 3, 4],
+  "precision": "auto",
+  "seed_workers": 2,
+
+  "mode": "tune-random",
+  "num_configs": 100,
+  "sampler_seed": 0,
+  "objective": "random_validation_entity_f1_auc",
+  "validation_sentences": 51,
+  "validation_seed": 1729,
+
+  "max_pool_percent": 100.0
+}

@@ -32,7 +32,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Cap the uncertainty arm's words per lowercased form and round.",
     )
     parser.add_argument("--seed-workers", type=int, help="Concurrent seeds (default: config or 2).")
-    parser.add_argument("--sweep-name", help="Result group name (default: checkpoint-best-uq).")
+    parser.add_argument(
+        "--sweep-name", help="Result group name (default: checkpoint[-dataset]-best-uq)."
+    )
     parser.add_argument("--sweeps-dir", type=Path, default=PROJECT_ROOT / "results" / "best_uq")
     parser.add_argument("--dry-run", action="store_true", help="Print the plan without training.")
     args = parser.parse_args(argv)
@@ -52,7 +54,12 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError) as error:
         parser.error(str(error))
 
-    name = config.checkpoint.rsplit("/", maxsplit=1)[-1] + "-best-uq"
+    name = config.checkpoint.rsplit("/", maxsplit=1)[-1]
+    if config.dataset != "pet":
+        name += f"-{config.dataset}"
+    if config.dataset_percent != 100:
+        name += f"-{config.dataset_percent:g}pct".replace(".", "p")
+    name += "-best-uq"
     if config.gumbel_noise:
         name += "-gumbel"
     if config.max_per_word_form is not None:

@@ -23,3 +23,4 @@ wheels/
 # Marimo
 __marimo__
 layouts/
+/logs/

@@ -109,3 +109,24 @@ def test_acquisition_flags_enter_the_plan_and_defaults_stay_implicit(capsys):
     assert runner.main(args) == 0
     fixed = json.loads(capsys.readouterr().out)["fixed_config"]
     assert fixed == {**plain, "gumbel_noise": True, "max_per_word_form": 1}
+
+
+@pytest.mark.parametrize(
+    ("settings", "name"),
+    [
+        ({}, "distilbert-base-cased-best-uq"),
+        ({"dataset": "medical"}, "distilbert-base-cased-medical-best-uq"),
+        (
+            {"dataset": "quishpi", "gumbel_noise": True},
+            "distilbert-base-cased-quishpi-best-uq-gumbel",
+        ),
+        ({"dataset_percent": 12.5}, "distilbert-base-cased-12p5pct-best-uq"),
+    ],
+)
+def test_default_result_group_names_the_dataset(monkeypatch, settings, name):
+    seen = {}
+    monkeypatch.setattr(
+        runner.search, "run", lambda args, _: seen.update(json.loads(args.config_json))
+    )
+    assert runner.main(["--config-json", json.dumps(settings), "--dry-run"]) == 0
+    assert seen["sweep_name"] == name

@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Tune and evaluate the fully supervised baseline sequentially. Pass --dry-run to print plans.
+# Tune and evaluate the fully supervised baseline for every dataset and checkpoint in
+# sequence. Set DATASETS to a subset, e.g. DATASETS="quishpi medical". Pass --dry-run to
+# print plans.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-configs=(
-  configs/supervised/distilbert.json
-  configs/supervised/bert_base.json
-  configs/supervised/roberta_base.json
-  configs/supervised/deberta_v3_base.json
-  configs/supervised/modernbert_base.json
-)
+models=(distilbert bert_base roberta_base deberta_v3_base modernbert_base)
 
-for config in "${configs[@]}"; do
-  printf '\nSupervised baseline: %s\n' "$config"
-  uv run scripts/run_supervised.py --config "$config" "$@"
+for dataset in ${DATASETS:-pet quishpi medical}; do
+  suffix=$([[ $dataset == pet ]] && echo "" || echo "_$dataset")
+  for model in "${models[@]}"; do
+    config=configs/supervised/${model}${suffix}.json
+    printf '\nSupervised baseline: %s\n' "$config"
+    uv run scripts/run_supervised.py --config "$config" "$@"
+  done
 done

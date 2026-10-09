@@ -56,7 +56,7 @@ SEARCH_SPACE = {
     "replay_ratio": (0, 1.0, 2.0),
     "weight_decay": (0.0, 0.01),
 }
-LEARNING_RATE_BOUNDS = (1e-6, 1e-4)
+LEARNING_RATE_BOUNDS = (1e-5, 5e-4)
 
 
 def sample_learning_rate(rng: random.Random) -> float:
