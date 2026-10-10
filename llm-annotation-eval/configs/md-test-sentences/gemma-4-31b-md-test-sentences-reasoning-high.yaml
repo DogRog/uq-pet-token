@@ -1,5 +1,0 @@
-task: md-test-sentences
-provider: nhr
-model: RedHatAI/gemma-4-31B-it-FP8-block
-reasoning_effort: high
-repeats: 5

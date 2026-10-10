@@ -1,12 +1,17 @@
-"""Scores predicted mentions on the PET test split of uq-pet-token, the way it scores its models.
+"""Scores predicted mentions on the test split of uq-pet-token, the way it scores its models.
 
 uq-pet-token trains token classifiers on PET v1.1 (PETv1.1-entities.jsonl, one sentence per
 line with BIO tags) and evaluates them on a fixed test split: the 417 sentences split 80/20 with
 the datasets library's ``train_test_split(test_size=0.2, seed=3407)``. ``res/gold/
 pet-v1.1-test.jsonl`` holds those 84 sentences, in the split's order and with their PET v1.1
 tags, generated with uq-pet-token's ``load_pet_splits`` at commit 1ea66af (datasets 2.19.2,
-PETv1.1-entities.jsonl with sha256 11c42b26...). PET v1.1 corrects some labels of the PET release
-in ``res/gold/pet.jsonl`` and has no overlapping mentions, so test scores use its tags.
+PETv1.1-entities.jsonl with sha256 11c42b26...). ``res/gold/pet-v1.1.jsonl`` is that file, all 417
+sentences; the functions here work on any list of its sentences, not only the test split. PET
+v1.1 corrects some labels of the PET release in ``res/gold/pet.jsonl`` and has no overlapping
+mentions, so test scores use its tags.
+
+uq-pet-token splits Quishpi and MedicalProcessInstruks the same way (41 and 65 test sentences);
+eval.datasets lists every dataset with its files and mention types.
 
 Predictions come either from annotating whole documents, of which only the mentions in test
 sentences are scored, or from annotating each test sentence on its own (the md-test-sentences
@@ -21,20 +26,6 @@ import typing
 from seqeval import metrics
 
 from autoannotate import data
-
-# the mention types as the parser stores them (lowercase) and as PET v1.1 tags spell them
-TAG_TYPES = {
-    t.lower(): t
-    for t in (
-        "Actor",
-        "Activity",
-        "Activity Data",
-        "Further Specification",
-        "XOR Gateway",
-        "Condition Specification",
-        "AND Gateway",
-    )
-}
 
 Row = typing.Dict[str, typing.Any]
 
@@ -71,11 +62,17 @@ def sentence_documents(test: typing.List[Row]) -> typing.List[data.Document]:
     return documents
 
 
-def sentence_tags(document: data.Document, sentence_id: int) -> typing.Tuple[typing.List[str], int]:
+def sentence_tags(
+    document: data.Document, sentence_id: int, types: typing.Sequence[str]
+) -> typing.Tuple[typing.List[str], int]:
     """Converts the predicted mentions of one sentence to BIO tags.
 
     BIO tags can't represent overlapping mentions; a mention overlapping one the LLM listed
-    earlier is dropped. A type outside PET's 7 types is kept as written, so it counts as wrong.
+    earlier is dropped. A type outside the dataset's types is kept as written, so it counts as
+    wrong.
+
+    Args:
+        types: the dataset's mention types as its tags spell them, see eval.datasets
 
     Returns:
         The tags, one per token of the sentence, and the number of dropped mentions.
@@ -83,6 +80,8 @@ def sentence_tags(document: data.Document, sentence_id: int) -> typing.Tuple[typ
     sentence = document.sentences[sentence_id]
     first = sentence[0].index_in_document
     tags = ["O"] * len(sentence)
+    # the parser stores types in lowercase
+    spelling = {t.lower(): t for t in types}
     dropped = 0
     for mention in document.mentions:
         indices = [i - first for i in mention.token_document_indices]
@@ -91,20 +90,21 @@ def sentence_tags(document: data.Document, sentence_id: int) -> typing.Tuple[typ
         if any(tags[i] != "O" for i in indices):
             dropped += 1
             continue
-        tag_type = TAG_TYPES.get(mention.type, mention.type)
+        tag_type = spelling.get(mention.type, mention.type)
         for position, i in enumerate(indices):
             tags[i] = ("B-" if position == 0 else "I-") + tag_type
     return tags, dropped
 
 
 def predict_test_split(
-    test: typing.List[Row], documents: typing.List[data.Document]
+    test: typing.List[Row], documents: typing.List[data.Document], types: typing.Sequence[str]
 ) -> typing.Tuple[typing.Optional[typing.List[Row]], int]:
     """Puts the predicted documents' mentions on the test sentences as BIO tags.
 
     Args:
         test: the test sentences
         documents: predicted whole documents, or test sentences annotated on their own
+        types: the dataset's mention types, see sentence_tags
 
     Returns:
         The test sentences with predicted instead of gold tags, in the test split's order, or
@@ -124,7 +124,7 @@ def predict_test_split(
         tokens = [t.text for t in document.sentences[index]]
         if tokens != row["tokens"]:
             raise ValueError(f"Tokens of {sentence_id(row)} differ from the test split.")
-        tags, sentence_dropped = sentence_tags(document, index)
+        tags, sentence_dropped = sentence_tags(document, index, types)
         dropped += sentence_dropped
         predicted.append({**row, "ner-tags": tags})
     return predicted, dropped
@@ -154,14 +154,19 @@ def evaluate(test: typing.List[Row], predicted: typing.List[Row]) -> typing.Dict
     }
 
 
-def export(predictions_file: pathlib.Path, test: typing.List[Row]) -> typing.Optional[pathlib.Path]:
+def export(
+    predictions_file: pathlib.Path, test: typing.List[Row], types: typing.Sequence[str]
+) -> typing.Optional[pathlib.Path]:
     """Writes test-predictions.jsonl next to a run's pet.jsonl, for uq-pet-token to score.
+
+    Args:
+        types: the dataset's mention types, see sentence_tags
 
     Returns:
         The written file, or None if the predictions don't cover the test split.
     """
     documents = data.JsonImporter(predictions_file).do_import()
-    predicted, _ = predict_test_split(test, documents)
+    predicted, _ = predict_test_split(test, documents, types)
     if predicted is None:
         return None
     out_file = predictions_file.with_name("test-predictions.jsonl")

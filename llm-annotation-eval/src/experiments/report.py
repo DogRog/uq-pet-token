@@ -17,7 +17,7 @@ from rich.console import Console
 from rich.table import Table
 
 import autoannotate
-from eval import scoring, test_split
+from eval import datasets, scoring, test_split
 from experiments import runner
 
 TASKS = ("md", "re")
@@ -39,24 +39,26 @@ RUN_VALUES = (
 
 
 def score_run(
-    directory: pathlib.Path, gold_file: pathlib.Path, task: str, test: typing.List[test_split.Row]
+    directory: pathlib.Path, gold_file: pathlib.Path, task: str, test: typing.List[test_split.Row],
+    types: typing.Sequence[str],
 ) -> typing.Dict[str, typing.Any]:
     """Scores a run on the gold documents and, if it covers them, on the test sentences.
 
     Args:
         directory: the run folder
-        gold_file: the gold documents
+        gold_file: the gold documents, see eval.datasets.read_documents
         task: "end-to-end" is scored on mentions and relations, "md" on mentions, and
             "md-test-sentences" only on the test sentences
-        test: uq-pet-token's test sentences, see eval.test_split
+        test: uq-pet-token's test sentences of the dataset, see eval.test_split
+        types: the dataset's mention types, see eval.datasets
     """
     predicted = autoannotate.JsonImporter(runner.predictions_file(directory, task)).do_import()
     if task == "md-test-sentences":
         metrics = {"documents": len(predicted)}
     else:
         tasks = ("md", "re") if task == "end-to-end" else ("md",)
-        metrics = scoring.score(autoannotate.JsonImporter(gold_file).do_import(), predicted, tasks)
-    test_predicted, dropped = test_split.predict_test_split(test, predicted)
+        metrics = scoring.score(datasets.read_documents(gold_file), predicted, tasks)
+    test_predicted, dropped = test_split.predict_test_split(test, predicted, types)
     if test_predicted is not None:
         # mentions dropped as they overlap an earlier one, which BIO tags can't represent
         test_scores = test_split.evaluate(test, test_predicted)
@@ -72,7 +74,7 @@ def _run_row(directory: pathlib.Path) -> typing.Dict[str, typing.Any]:
     row: typing.Dict[str, typing.Any] = {
         "config": manifest["config"],
         "run": manifest["run"],
-        **manifest["settings"],
+        **runner.manifest_settings(manifest),
         "documents": metrics["documents"],
         "complete": metrics["documents"] == manifest["documents_planned"],
     }
@@ -105,6 +107,7 @@ def _summary_row(config: str, runs: typing.List[typing.Dict[str, typing.Any]]) -
     documents = sorted({r["documents"] for r in complete})
     row: typing.Dict[str, typing.Any] = {
         "config": config,
+        "dataset": runs[0]["dataset"],
         "task": runs[0]["task"],
         "provider": runs[0]["provider"],
         "model": runs[0]["model"],
@@ -168,14 +171,14 @@ def print_summary(summary: typing.List[typing.Dict[str, typing.Any]]) -> None:
 
     table = Table(
         title="Mean over complete runs (± SD over runs); MD and RE F1 are means over documents, "
-        "test F1 is on uq-pet-token's test sentences"
+        "test F1 is on uq-pet-token's test sentences of the dataset"
     )
-    columns = ("config", "task", "reasoning", "runs", "docs", "MD F1", "RE F1", "test F1")
+    columns = ("config", "dataset", "task", "reasoning", "runs", "docs", "MD F1", "RE F1", "test F1")
     for column in (*columns, "tokens in", "tokens out"):
         table.add_column(column)
     for row in summary:
         table.add_row(
-            row["config"], row["task"], str(row["reasoning_effort"] or "-"), str(row["runs"]), row["documents"],
+            row["config"], row["dataset"], row["task"], str(row["reasoning_effort"] or "-"), str(row["runs"]), row["documents"],
             fmt(row, "md_f1"), fmt(row, "re_f1"), fmt(row, "test_f1"),
             fmt(row, "prompt_tokens", percent=False), fmt(row, "completion_tokens", percent=False),
         )

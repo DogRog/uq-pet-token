@@ -18,20 +18,29 @@ def _():
 @app.cell
 def _(mo, sys):
     REPO_DIR = mo.notebook_dir().parent
-    GOLD_FILE = REPO_DIR / "res" / "gold" / "pet.jsonl"
-    # uq-pet-token's PET test split, see src/eval/test_split.py
-    TEST_FILE = REPO_DIR / "res" / "gold" / "pet-v1.1-test.jsonl"
     PRED_DIR = REPO_DIR / "res" / "pred"
     if str(REPO_DIR / "src") not in sys.path:
         sys.path.insert(0, str(REPO_DIR / "src"))
     from autoannotate import JsonImporter
-    from eval import scoring, test_split
+    from eval import datasets, scoring, test_split
+    from experiments import runner
 
-    return GOLD_FILE, JsonImporter, PRED_DIR, TEST_FILE, scoring, test_split
+    return JsonImporter, PRED_DIR, datasets, runner, scoring, test_split
 
 
 @app.cell
-def _(GOLD_FILE, JsonImporter, PRED_DIR, TEST_FILE, json, pd, scoring, test_split):
+def _(JsonImporter, PRED_DIR, datasets, json, pd, runner, scoring, test_split):
+    # gold documents, test split and every sentence of each dataset whose files are there (the
+    # medical ones are generated, see scripts/uq-pet-token-splits.py); see src/eval/datasets.py
+    gold = {}
+    for _name, _dataset in datasets.DATASETS.items():
+        if _dataset.gold_file.exists() and _dataset.test_file.exists():
+            gold[_name] = {
+                "documents": datasets.read_documents(_dataset.gold_file),
+                "test": test_split.load_test_split(_dataset.test_file),
+                "sentences": test_split.load_test_split(_dataset.sentences_file),
+            }
+
     # what the folder holding pet.jsonl says was predicted, and what to score on the gold
     # documents; md-test-sentences runs annotated single test sentences, scored only on the test
     _scored = {
@@ -42,8 +51,6 @@ def _(GOLD_FILE, JsonImporter, PRED_DIR, TEST_FILE, json, pd, scoring, test_spli
         "md-test-sentences": (),
     }
 
-    _gold = JsonImporter(GOLD_FILE).do_import()
-    _test = test_split.load_test_split(TEST_FILE)
     _rows = []
     # runs of a config: <folder>/run-<i>/<task>/pet.jsonl;
     # predictions from before the configs: <folder>/<task>/pet.jsonl
@@ -54,48 +61,72 @@ def _(GOLD_FILE, JsonImporter, PRED_DIR, TEST_FILE, json, pd, scoring, test_spli
             continue
         _run_dir = _predictions.parent.parent
         _is_run = _run_dir.name.startswith("run-")
-        _documents = JsonImporter(_predictions).do_import()
-        _metrics = {"documents": len(_documents)}
-        if _scored[_task]:
-            _metrics = scoring.score(_gold, _documents, _scored[_task])
-        # run.json records how many documents a run was meant to annotate and the tokens it used
+        # run.json records the dataset, how many documents a run was meant to annotate and the
+        # tokens it used; predictions from before the configs annotated PET
         _manifest_file = _run_dir / "run.json"
         _manifest = None
         if _manifest_file.exists():
             _manifest = json.loads(_manifest_file.read_text(encoding="utf8"))
-        _planned = _manifest["documents_planned"] if _manifest else len(_gold)
+        _dataset = runner.manifest_settings(_manifest)["dataset"] if _manifest else "pet"
+        if _dataset not in gold:
+            continue
+        _gold = gold[_dataset]
+        _types = datasets.DATASETS[_dataset].types
+        _documents = JsonImporter(_predictions).do_import()
+        _metrics = {"documents": len(_documents)}
+        if _scored[_task]:
+            _metrics = scoring.score(_gold["documents"], _documents, _scored[_task])
+        _planned = _manifest["documents_planned"] if _manifest else len(_gold["documents"])
         _row = {
+            "dataset": _dataset,
             "folder": _run_dir.parent.name if _is_run else _run_dir.name,
             "task": _task,
             "documents": _metrics["documents"],
+            # md-test-sentences documents are single sentences, so token costs are per sentence
+            "sentences": sum(len(_d.sentences) for _d in _documents),
             "complete": _metrics["documents"] == _planned,
             "output_tokens": _manifest["totals"]["all"]["completion_tokens"] if _manifest else None,
+            "reasoning_effort": _manifest["settings"]["reasoning_effort"] if _manifest else None,
         }
         for _s in _scored[_task]:
             for _name in ("precision", "recall", "f1"):
                 _row[f"{_s}_{_name}"] = _metrics[_s]["macro"][_name]["mean"]
                 _row[f"{_s}_{_name}_sd_docs"] = _metrics[_s]["macro"][_name]["std"]
         # mentions on the test sentences, scored like uq-pet-token's models
-        _test_predicted, _ = test_split.predict_test_split(_test, _documents)
+        _test_predicted, _ = test_split.predict_test_split(_gold["test"], _documents, _types)
         if _task != "re" and _task != "isolated-re" and _test_predicted is not None:
-            _test_scores = test_split.evaluate(_test, _test_predicted)
+            _test_scores = test_split.evaluate(_gold["test"], _test_predicted)
             _row["test_precision"] = _test_scores["entity_precision"]
             _row["test_recall"] = _test_scores["entity_recall"]
             _row["test_f1"] = _test_scores["entity_f1"]
             _row["test_macro_f1"] = _test_scores["entity_macro_f1"]
+        # the same scoring on all the dataset's sentences, for runs that annotated whole documents
+        _all_predicted, _ = test_split.predict_test_split(_gold["sentences"], _documents, _types)
+        if _task != "re" and _task != "isolated-re" and _all_predicted is not None:
+            _all_scores = test_split.evaluate(_gold["sentences"], _all_predicted)
+            _row["all_sentences_f1"] = _all_scores["entity_f1"]
         _rows.append(_row)
     runs = pd.DataFrame(_rows)
-    return (runs,)
+    return gold, runs
 
 
 @app.cell
-def _(mo):
+def _(gold, mo):
+    dataset = mo.ui.dropdown(options=list(gold), value="pet", label="Dataset")
+    return (dataset,)
+
+
+@app.cell
+def _(dataset, gold, mo):
+    _documents = len(gold[dataset.value]["documents"])
+    _sentences = len(gold[dataset.value]["test"])
+    _all = f"all {_documents} documents (overlapping mentions match)"
     evaluation = mo.ui.dropdown(
         options={
-            "all 45 documents (overlapping mentions match)": "all",
-            "test split, 84 sentences (exact mentions match, as uq-pet-token)": "test",
+            _all: "all",
+            f"test split, {_sentences} sentences (exact mentions match, as uq-pet-token)": "test",
         },
-        value="all 45 documents (overlapping mentions match)",
+        value=_all,
         label="Evaluate on",
     )
     return (evaluation,)
@@ -112,12 +143,14 @@ def _(evaluation, mo):
 
 
 @app.cell
-def _(evaluation, mo, pd, runs, spread):
+def _(dataset, evaluation, mo, pd, runs, spread):
     mo.stop(runs.empty, mo.md("No predictions in `res/pred/` yet."))
+    runs_of_dataset = runs[runs["dataset"] == dataset.value]
 
     # table column -> runs column
     if evaluation.value == "test":
-        _complete = runs[runs["complete"] & runs.get("test_f1", pd.Series(dtype=float)).notna()]
+        _test_f1 = runs_of_dataset.get("test_f1", pd.Series(dtype=float))
+        _complete = runs_of_dataset[runs_of_dataset["complete"] & _test_f1.notna()]
         _columns = {
             "md precision": "test_precision",
             "md recall": "test_recall",
@@ -125,9 +158,9 @@ def _(evaluation, mo, pd, runs, spread):
             "md macro f1": "test_macro_f1",
         }
     else:
-        _scored_on_documents = runs.get("md_f1", pd.Series(dtype=float)).notna()
-        _scored_on_documents |= runs.get("re_f1", pd.Series(dtype=float)).notna()
-        _complete = runs[runs["complete"] & _scored_on_documents]
+        _scored_on_documents = runs_of_dataset.get("md_f1", pd.Series(dtype=float)).notna()
+        _scored_on_documents |= runs_of_dataset.get("re_f1", pd.Series(dtype=float)).notna()
+        _complete = runs_of_dataset[runs_of_dataset["complete"] & _scored_on_documents]
         # relation columns only if some run extracted relations
         _scored = [s for s in ("md", "re") if _complete.get(f"{s}_f1", pd.Series()).notna().any()]
         _columns = {
@@ -151,27 +184,39 @@ def _(evaluation, mo, pd, runs, spread):
         for _label, _column in _columns.items():
             _known = _group[_column].notna().all()
             _row[_label] = _mean_sd(_group, _column) if _known else ""
-        _tokens = _group["output_tokens"] / _group["documents"]
-        _row["output tokens / doc"] = round(_tokens.mean()) if _tokens.notna().all() else None
+        _tokens = _group["output_tokens"] / _group["sentences"]
+        _row["output tokens / sentence"] = round(_tokens.mean()) if _tokens.notna().all() else None
         _rows.append(_row)
-    table = pd.DataFrame(_rows)
+    table = pd.DataFrame(
+        _rows, columns=["folder", "task", "runs", *_columns, "output tokens / sentence"]
+    )
     # predictions from before the configs have no run.json, so no token counts
-    table["output tokens / doc"] = table["output tokens / doc"].astype("Int64")
-    return (table,)
+    table["output tokens / sentence"] = table["output tokens / sentence"].astype("Int64")
+    return runs_of_dataset, table
 
 
 @app.cell
-def _(evaluation, mo, spread, table):
+def _(dataset, datasets, evaluation, gold, mo, spread, table):
+    _dataset = datasets.DATASETS[dataset.value]
+    _gold_file = _dataset.gold_file.relative_to(_dataset.gold_file.parents[2])
+    _test_file = _dataset.test_file.relative_to(_dataset.test_file.parents[2])
+    _sources = {
+        "pet": "`res/gold/pet.jsonl` (the PET release)",
+        "quishpi": (
+            f"`{_gold_file}` (Quishpi's sentences as cut by uq-pet-token, grouped into documents)"
+        ),
+        "medical": f"`{_gold_file}` (MedicalProcessInstruks' sentences, grouped into documents)",
+    }
     _notes = {
-        "all": """
-        Scored against `res/gold/pet.jsonl` (the PET release), macro-averaged over documents. A
+        "all": f"""
+        Scored against {_sources[dataset.value]}, macro-averaged over documents. A
         predicted mention is correct if its type matches a gold mention and their tokens overlap,
         a relation if its type matches and both its head and tail overlap; each gold annotation
         matches once.
         """,
-        "test": """
-        Scored only on uq-pet-token's 84 test sentences against their PET v1.1 tags
-        (`res/gold/pet-v1.1-test.jsonl`), with seqeval as uq-pet-token does: a mention is correct
+        "test": f"""
+        Scored only on uq-pet-token's {len(gold[dataset.value]["test"])} test sentences against
+        their tags (`{_test_file}`), with seqeval as uq-pet-token does: a mention is correct
         only if its type and both span boundaries match. Precision, recall and F1 are micro over
         all mentions; macro F1 averages the F1 of the mention types. Overlapping predicted
         mentions keep the one listed first. Task `md-test-sentences`: the LLM got each test
@@ -186,8 +231,81 @@ def _(evaluation, mo, spread, table):
         as mean ± standard deviation over runs or over documents.
         {_notes[evaluation.value]}
         """),
-        mo.hstack([evaluation, spread], justify="start", gap=2),
+        mo.hstack([dataset, evaluation, spread], justify="start", gap=2),
         mo.ui.table(table, selection=None, pagination=False),
+    ])
+    return
+
+
+
+@app.cell
+def _(dataset, pd, runs_of_dataset):
+    # mention detection configs, one row per model and reasoning effort: the model is the folder
+    # name before "-md" without the dataset, e.g. "gemma-4-31b" for gemma-4-31b-md-reasoning-low
+    # and quishpi-gemma-4-31b-md-reasoning-low
+    _reasoning_names = {"none": "off"}
+    _reasoning_order = ["off", "minimal", "low", "medium", "high"]
+    _md = runs_of_dataset[
+        runs_of_dataset["complete"] & runs_of_dataset["task"].isin(["md", "md-test-sentences"])
+    ].copy()
+    _md["model"] = (
+        _md["folder"].str.removeprefix(f"{dataset.value}-").str.split("-md").str[0]
+    )
+    _md["reasoning"] = _md["reasoning_effort"].map(
+        lambda effort: _reasoning_names.get(effort, effort or "default")
+    )
+
+    def _mean_sd(values):
+        if len(values) < 2:
+            return f"{100 * values.mean():.1f}"
+        return f"{100 * values.mean():.1f} ± {100 * values.std():.1f}"
+
+    def _change(new, old):
+        return f"{100 * (new.mean() - old.mean()):+.1f}" if len(new) and len(old) else ""
+
+    # models ordered by their best test F1, the reasoning efforts from off to high
+    _best = list(_md.groupby("model")["test_f1"].max().sort_values(ascending=False).index)
+    _rows = []
+    for (_model, _reasoning), _group in _md.groupby(["model", "reasoning"]):
+        _whole = _group[_group["task"] == "md"]
+        _all = _whole["all_sentences_f1"].dropna()
+        _test = _whole["test_f1"].dropna()
+        _sentences = _group[_group["task"] == "md-test-sentences"]["test_f1"].dropna()
+        _rows.append({
+            "model": _model,
+            "reasoning": _reasoning,
+            "all sentences": _mean_sd(_all) if len(_all) else "",
+            "test: whole documents": _mean_sd(_test) if len(_test) else "",
+            "test: single sentences": _mean_sd(_sentences) if len(_sentences) else "",
+            "change": _change(_sentences, _test),
+        })
+    _columns = [
+        "model", "reasoning", "all sentences", "test: whole documents", "test: single sentences",
+        "change",
+    ]
+    test_table = pd.DataFrame(sorted(_rows, key=lambda r: (
+        _best.index(r["model"]),
+        _reasoning_order.index(r["reasoning"]) if r["reasoning"] in _reasoning_order else 99,
+    )), columns=_columns)
+    return (test_table,)
+
+
+@app.cell
+def _(dataset, gold, mo, test_table):
+    _sentences = len(gold[dataset.value]["sentences"])
+    _test = len(gold[dataset.value]["test"])
+    mo.vstack([
+        mo.md(f"""
+        ## Test split: whole documents vs single sentences
+
+        Mention F1 in percent on {dataset.value} (BIO tags as uq-pet-token's, exact spans, micro),
+        mean ± standard deviation over runs. All sentences: the LLM annotated whole documents,
+        scored on all {_sentences} sentences of the dataset. Test: scored only on uq-pet-token's
+        {_test} test sentences, either from the whole-document runs or from runs where the LLM got
+        each test sentence on its own, like uq-pet-token's models. Change: single sentences minus
+        whole documents on the test split, in points.
+        """),
+        mo.ui.table(test_table, selection=None, pagination=False),
     ])
     return
 

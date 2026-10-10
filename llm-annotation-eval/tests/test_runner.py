@@ -6,9 +6,11 @@ import openai
 import pytest
 
 from autoannotate import JsonExporter, JsonImporter, data
-from eval import test_split
+from eval import datasets, test_split
 from experiments import report, runner
 from experiments.config import RunConfig
+
+PET_TYPES = datasets.DATASETS["pet"].types
 
 CONFIG = RunConfig(name="test-config", provider="nhr", model="org/Model-1", reasoning_effort="low")
 REQUEST = httpx.Request("POST", "https://llm.test/v1/chat/completions")
@@ -99,7 +101,7 @@ def test_run_writes_predictions_calls_and_manifest(tmp_path, gold_file, client):
     manifest = read_manifest(directory)
     assert manifest["config"] == "test-config" and manifest["run"] == 1
     assert manifest["settings"] == {
-        "task": "end-to-end", "provider": "nhr", "model": "org/Model-1", "reasoning_effort": "low"
+        "dataset": "pet", "task": "end-to-end", "provider": "nhr", "model": "org/Model-1", "reasoning_effort": "low"
     }
     assert manifest["api"]["instruction_role"] == "system"
     assert manifest["api"]["extra_body"] == {"cache": {"no-cache": True}}
@@ -202,7 +204,7 @@ def test_mention_detection_only(tmp_path, gold_file, client, test):
     directory = runner.run_dir(pred_dir, config, 1)
 
     runner.annotate_run(config, 1, directory, gold_file, client)
-    metrics = report.score_run(directory, gold_file, "md", test)
+    metrics = report.score_run(directory, gold_file, "md", test, PET_TYPES)
     [row] = report.write_summary(pred_dir)
 
     assert [d.id for d in JsonImporter(runner.predictions_file(directory, "md")).do_import()] == ["doc-a", "doc-b", "doc-c"]
@@ -262,7 +264,7 @@ def test_score_and_summarize_repeated_runs(tmp_path, gold_file, client, fake_cli
     for run, run_client in enumerate(clients, start=1):
         directory = runner.run_dir(pred_dir, config, run)
         runner.annotate_run(config, run, directory, gold_file, run_client)
-        metrics = report.score_run(directory, gold_file, "end-to-end", test)
+        metrics = report.score_run(directory, gold_file, "end-to-end", test, PET_TYPES)
         assert json.loads((directory / "metrics.json").read_text()) == metrics
 
     summary = report.write_summary(pred_dir)
@@ -301,7 +303,7 @@ def test_test_sentences_are_annotated_on_their_own(tmp_path, gold_file, client, 
     directory = runner.run_dir(pred_dir, config, 1)
 
     runner.annotate_run(config, 1, directory, test_file, client, workers=2)
-    metrics = report.score_run(directory, gold_file, "md-test-sentences", test)
+    metrics = report.score_run(directory, gold_file, "md-test-sentences", test, PET_TYPES)
     [row] = report.write_summary(pred_dir)
 
     predicted = JsonImporter(runner.predictions_file(directory, "md-test-sentences")).do_import()
@@ -316,4 +318,45 @@ def test_test_sentences_are_annotated_on_their_own(tmp_path, gold_file, client, 
     assert metrics["test"]["entity_f1"] == pytest.approx(0.8)
     assert row["md_f1"] is None and row["test_f1"] == pytest.approx(0.8)
     predictions_file = runner.predictions_file(directory, "md-test-sentences")
-    assert test_split.export(predictions_file, test) is not None
+    assert test_split.export(predictions_file, test, PET_TYPES) is not None
+
+
+def test_runs_from_before_datasets_resume_as_pet(tmp_path, gold_file, client):
+    directory = runner.run_dir(tmp_path, CONFIG, 1)
+    runner.annotate_run(CONFIG, 1, directory, gold_file, client)
+    # run.json as it was written before there were other datasets
+    manifest = read_manifest(directory)
+    del manifest["settings"]["dataset"]
+    runner.write_json(directory / "run.json", manifest)
+    (directory / "end-to-end" / "pet.jsonl").unlink()
+
+    runner.annotate_run(CONFIG, 1, directory, gold_file, client)
+
+    assert read_manifest(directory)["settings"]["dataset"] == "pet"
+
+
+def test_quishpi_run(tmp_path, fake_client):
+    pred_dir = tmp_path / "pred"
+    sentences = [
+        {"document name": doc, "sentence-ID": 0, "tokens": "the clerk checks the form".split(),
+         "ner-tags": ["O", "O", "B-Action", "O", "B-Entity"]}
+        for doc in ("doc-a", "doc-b")
+    ]
+    sentences_file = tmp_path / "quishpi.jsonl"
+    sentences_file.write_text("".join(json.dumps(r) + "\n" for r in sentences))
+    config = RunConfig(name="quishpi-md", provider="nhr", model="m", dataset="quishpi", task="md")
+    directory = runner.run_dir(pred_dir, config, 1)
+    quishpi_client = fake_client("clerk\tEntity\t0\nchecks\tAction\t0")
+
+    runner.annotate_run(config, 1, directory, sentences_file, quishpi_client)
+    types = datasets.DATASETS["quishpi"].types
+    metrics = report.score_run(directory, sentences_file, "md", sentences, types)
+    [row] = report.write_summary(pred_dir)
+
+    instruction = quishpi_client.calls[0]["messages"][0]["content"][0]["text"]
+    assert "**Condition**" in instruction and "**Activity**" not in instruction
+    assert read_manifest(directory)["settings"]["dataset"] == "quishpi"
+    # checks is right, the clerk is not an entity, the form is missed
+    assert metrics["md"]["micro"]["precision"] == 0.5
+    assert metrics["test"]["entity_precision"] == 0.5 and metrics["test"]["entity_recall"] == 0.5
+    assert row["dataset"] == "quishpi" and row["test_f1"] == 0.5

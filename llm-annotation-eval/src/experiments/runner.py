@@ -3,7 +3,8 @@
 A run folder (res/pred/<config>/run-<i>/) contains:
 
 - <task>/pet.jsonl: the predicted documents, each appended as soon as it is done; <task> is
-  "end-to-end" or "md", see experiments.config
+  "end-to-end", "md" or "md-test-sentences", see experiments.config; the file is called pet.jsonl
+  for every dataset
 - calls.jsonl: one line per LLM call, with tokens, duration, raw response, reasoning and parser issues
 - run.json: the manifest, with settings, prompts, code and package versions per session, and totals
 - metrics.json: the scores, written by experiments.report
@@ -32,7 +33,7 @@ from rich.progress import track
 
 import autoannotate
 from autoannotate import data
-from eval import test_split
+from eval import datasets, test_split
 from experiments import definitions
 from experiments.config import RunConfig
 
@@ -96,6 +97,11 @@ def write_json(path: pathlib.Path, value: typing.Any) -> None:
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf8")
 
 
+def manifest_settings(manifest: typing.Dict[str, typing.Any]) -> typing.Dict[str, typing.Any]:
+    """The settings in a run.json; runs from before there were other datasets annotated PET."""
+    return {"dataset": "pet", **manifest["settings"]}
+
+
 def _load_manifest(
         directory: pathlib.Path, config: RunConfig, run: int, prompts: typing.Dict[str, str]
 ) -> typing.Dict[str, typing.Any]:
@@ -114,6 +120,7 @@ def _load_manifest(
         }
 
     manifest = json.loads(manifest_file.read_text(encoding="utf8"))
+    manifest["settings"] = manifest_settings(manifest)
     for key in ("settings", "prompts"):
         if manifest[key] != expected[key]:
             raise RuntimeError(
@@ -199,11 +206,12 @@ def input_documents(task: str, input_file: pathlib.Path) -> typing.List[data.Doc
 
     Args:
         task: see experiments.config.TASKS
-        input_file: the gold documents, or for md-test-sentences the test split
+        input_file: the gold documents (see eval.datasets.read_documents), or for
+            md-test-sentences the test split
     """
     if task == "md-test-sentences":
         return test_split.sentence_documents(test_split.load_test_split(input_file))
-    return autoannotate.JsonImporter(input_file).do_import()
+    return datasets.read_documents(input_file)
 
 
 def annotate_run(
@@ -211,15 +219,18 @@ def annotate_run(
 ) -> None:
     """Annotates the gold documents that are not yet in the run's predictions.
 
-    :param gold_file: the gold documents, or for md-test-sentences the test split
+    :param gold_file: the gold documents of the config's dataset, or for md-test-sentences its
+        test split, see eval.datasets.Dataset.input_file
     :param workers: number of documents annotated at the same time
     """
     provider = autoannotate.get_provider(config.provider)
+    dataset = datasets.DATASETS[config.dataset]
+    mention_definitions, mention_example = definitions.mention_prompt(dataset)
     mention_annotator = autoannotate.LLMMentionAnnotator(
         client=client,
         language_model=config.model,
-        example=definitions.mention_format_example,
-        mention_definitions=definitions.mention_definitions,
+        example=mention_example,
+        mention_definitions=mention_definitions,
         reasoning_effort=config.reasoning_effort,
         instruction_role=provider.instruction_role,
         extra_body=provider.extra_body,

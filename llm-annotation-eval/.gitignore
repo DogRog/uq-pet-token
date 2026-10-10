@@ -6,3 +6,5 @@ __pycache__/
 res/pred/
 # marimo session state, written when a notebook is opened in the editor
 __marimo__/
+# MedicalProcessInstruks is gated on the Hugging Face Hub, generate with scripts/uq-pet-token-splits.py
+res/gold/medical*.jsonl

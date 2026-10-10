@@ -1,6 +1,0 @@
-# rejects reasoning_effort high, medium is the highest level it accepts
-task: md-test-sentences
-provider: nhr
-model: Qwen/Qwen3.8-27B-FP8
-reasoning_effort: low
-repeats: 5
