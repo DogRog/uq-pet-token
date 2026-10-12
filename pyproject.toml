@@ -25,7 +25,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "marimo-lens>=0.2.0",
     "openai>=3.26.1",
     "pytest>=8.0",
     "ruff>=0.14",
