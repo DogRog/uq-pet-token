@@ -15,6 +15,21 @@
         "--no-token"
       ],
       "port": 2720
+    },
+    {
+      "name": "preprocessing-checks",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": [
+        "run",
+        "marimo",
+        "run",
+        "notebooks/preprocessing_checks.py",
+        "--headless",
+        "--port",
+        "2721",
+        "--no-token"
+      ],
+      "port": 2721
     }
   ]
 }
