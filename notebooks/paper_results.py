@@ -1062,11 +1062,12 @@ def _(alt, gap_names, matching, mo, pl, pr, status, sweep, sweep_gap):
     mo.vstack(
         [
             mo.md(
-                "## 8. Robustness: UQ against random at 30 sampled configurations\n"
+                "## 8. Robustness: UQ (Top-K) against random at 30 sampled configurations\n"
                 "The same 30 configurations, sampled from the tuning search space before any "
                 "results, run with both arms on the test split. This asks whether the "
                 "headline depends on tuning: a positive mean here means UQ helps across "
-                f"typical settings, not just at the winner ({matching} match)."
+                f"typical settings, not just at the winner ({matching} match). The sweep ran "
+                "Top-K acquisition only, so the panel's acquisition choice does not apply."
             ),
             sweep_gap,
             mo.ui.altair_chart(_chart)
