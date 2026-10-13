@@ -30,7 +30,7 @@ def _(mo):
       them in proportion to their scores (ADR 0009).
     - The floating panel switches every chapter between exact match (headline, tuning
       objective) and partial match (reported only, ADR 0010), and picks the acquisition
-      shown in chapters 3–5. Chapter 11 marks unmatched entities by the chosen matching.
+      shown in chapters 3–5. Chapter 10 marks unmatched entities by the chosen matching.
     - Nothing is downloaded or trained. Per-run diagnostics (tag coverage, timing,
       selected words) are in `notebooks/best_uq_analysis.py`.
     """)
@@ -50,7 +50,7 @@ def _():
     import marimo as mo
     import polars as pl
     from scipy import stats
-    from wigglystuff import FloatingPanel
+    from wigglystuff import FloatingPanel, ParallelCoordinates
 
     from utils import paper_results as pr
 
@@ -63,7 +63,6 @@ def _():
         "random": "#4C78A8",
         "supervised": "#54A24B",
     }
-    learning_rate_axis = alt.Axis(format=".0e", values=[1e-5, 3e-5, 1e-4, 3e-4])
 
     def series_color(series):
         """Color the given series consistently across chapters, listing only those."""
@@ -78,10 +77,10 @@ def _():
 
     return (
         FloatingPanel,
+        ParallelCoordinates,
         Path,
         alt,
         html,
-        learning_rate_axis,
         mo,
         pl,
         pr,
@@ -112,10 +111,8 @@ def _(pr, refresh, results_root):
     status = pr.sweep_status(results_root)
     curves = pr.best_uq_curves(results_root)
     supervised = pr.supervised_scores(results_root)
-    tuning = pr.tuning_trials(results_root)
-    frozen = pr.best_uq_settings(results_root)
     sizes = pr.dataset_sizes(results_root)
-    return curves, frozen, sizes, status, supervised, tuning
+    return curves, sizes, status, supervised
 
 
 @app.cell
@@ -155,7 +152,7 @@ def _(mo, pl, pr, sizes, status):
         ],
     )
     _open = status.filter(~pl.col("done")).select(
-        "stage", "dataset", "model", "complete", "failed", "planned", "sweep"
+        "stage", "dataset", "model", "complete", "failed", "planned", "tested", "sweep"
     )
     mo.vstack(
         [
@@ -696,6 +693,13 @@ def _(
         pl.lit("supervised").alias("series"),
     )
     _points = pl.concat([_sup, _random, _uq])
+    _widest = _points.drop_nulls("sd").sort("sd", descending=True).head(1).to_dicts()
+    _spread = (
+        f"; seeds vary most for {_widest[0]['model']} on {_widest[0]['dataset']}, "
+        f"{_widest[0]['series']} (SD {100 * _widest[0]['sd']:.1f} pp)"
+        if _widest
+        else ""
+    )
     _chart = (
         alt.Chart(_points)
         .mark_point(size=110, filled=True, opacity=0.9)
@@ -738,7 +742,7 @@ def _(
                 "Final-round test F1 of both arms after acquiring the whole pool, next to "
                 f"the supervised baseline, {acquisition.value} acquisition. Both arms end "
                 "close to the supervised score, so sequential acquisition with replay costs "
-                "little final accuracy; ModernBERT on PET varies most between seeds."
+                f"little final accuracy{_spread}."
             ),
             mo.ui.altair_chart(_chart),
             mo.accordion(
@@ -865,11 +869,21 @@ def _(alt, mo, pl, pr, seeds, stats):
     return
 
 
+@app.cell
+def _(mo):
+    gap_names = {"gap_auc": "gap AUC", "final_gap": "final gap"}
+    _options = {"AUC": "gap_auc", "Final F1": "final_gap"}
+    metric_gap = mo.ui.dropdown(_options, value="AUC", label="Gap in")
+    sweep_gap = mo.ui.dropdown(_options, value="AUC", label="Gap in")
+    return gap_names, metric_gap, sweep_gap
+
+
 @app.cell(hide_code=True)
-def _(alt, mo, pl, pr, seeds, series_color):
+def _(alt, gap_names, metric_gap, mo, pl, pr, seeds, series_color):
+    _name = gap_names[metric_gap.value]
     _means = (
         seeds.group_by(pr.SETTING)
-        .agg((100 * pl.col("gap_auc").mean()).alias("gap"))
+        .agg((100 * pl.col(metric_gap.value).mean()).alias("gap"))
         .with_columns(series=pl.col("uq_metric"))
     )
     _bars = (
@@ -877,7 +891,7 @@ def _(alt, mo, pl, pr, seeds, series_color):
         .mark_bar()
         .encode(
             x=alt.X("uq_metric:N", title=None, sort=pr.UQ_METRICS, axis=None),
-            y=alt.Y("mean(gap):Q", title="Mean gap AUC across models (pp)"),
+            y=alt.Y("mean(gap):Q", title=f"Mean {_name} across models (pp)"),
             color=series_color(pr.UQ_METRICS),
             tooltip=["uq_metric", alt.Tooltip("mean(gap):Q", format="+.2f")],
         )
@@ -902,20 +916,27 @@ def _(alt, mo, pl, pr, seeds, series_color):
         .fill_null(0)
         .sort("uq_metric")
     )
+    _winners = _winners.select("uq_metric", *[d for d in pr.DATASET_ORDER if d in _winners.columns])
     _most_best = (
         _winners.select("uq_metric", pl.sum_horizontal(pl.exclude("uq_metric")).alias("total"))
         .sort("total", descending=True)
         .row(0, named=True)
     )
     _worst = _means.sort("gap").row(0, named=True)
+    _spread = (
+        _means.group_by("dataset", "model", "acquisition")
+        .agg((pl.col("gap").max() - pl.col("gap").min()).alias("spread"))["spread"]
+        .mean()
+    )
     mo.vstack(
         [
             mo.md(
                 "## 7. Which UQ metric?\n"
-                "Bars are the mean gap AUC over the five models; ticks are the individual "
+                f"Bars are the mean {_name} over the five models; ticks are the individual "
                 "models. The table counts how often each metric gave a model its largest "
                 "gap (5 models × 2 acquisitions per dataset)."
             ),
+            metric_gap,
             mo.hstack(
                 [
                     mo.ui.altair_chart(
@@ -935,8 +956,9 @@ def _(alt, mo, pl, pr, seeds, series_color):
                 f"**{_most_best['uq_metric']}** gives a model its largest gap most often "
                 f"({_most_best['total']} of {_means.height // 3} times). The weakest setting is "
                 f"{_worst['uq_metric']} for {_worst['model']} on {_worst['dataset']} with "
-                f"{_worst['acquisition']} ({_worst['gap']:+.2f} pp). Differences between "
-                "metrics are small next to the gap itself."
+                f"{_worst['acquisition']} ({_worst['gap']:+.2f} pp). Within a setting the "
+                f"metrics differ by {_spread:.2f} pp on average, against a mean {_name} of "
+                f"{_means['gap'].mean():+.2f} pp."
             ),
         ]
     )
@@ -944,8 +966,9 @@ def _(alt, mo, pl, pr, seeds, series_color):
 
 
 @app.cell(hide_code=True)
-def _(alt, matching, mo, pl, pr, status, sweep):
-    _ttests = pr.config_gap_ttests(sweep)
+def _(alt, gap_names, matching, mo, pl, pr, status, sweep, sweep_gap):
+    _name = gap_names[sweep_gap.value]
+    _ttests = pr.config_gap_ttests(sweep, sweep_gap.value) if sweep.height else pl.DataFrame()
     _verdicts = {}
     if _ttests.height:
         for _row in (
@@ -989,7 +1012,7 @@ def _(alt, matching, mo, pl, pr, status, sweep):
             .then(pl.lit(""))
             .otherwise(pl.format(" ({}/{} so far)", "configs", "planned_configs")),
         ),
-        gap_pp=100 * pl.col("gap_auc"),
+        gap_pp=100 * pl.col(sweep_gap.value),
     )
     _strip = (
         alt.Chart(_labelled)
@@ -997,7 +1020,7 @@ def _(alt, matching, mo, pl, pr, status, sweep):
         .encode(
             x=alt.X("uq_metric:N", title=None, sort=pr.UQ_METRICS, axis=alt.Axis(labelAngle=-30)),
             xOffset=alt.XOffset("jitter:Q"),
-            y=alt.Y("gap_pp:Q", title="Gap AUC (pp)"),
+            y=alt.Y("gap_pp:Q", title=f"{_name[0].upper()}{_name[1:]} (pp)"),
             color=alt.Color(
                 "uq_metric:N",
                 legend=None,
@@ -1036,13 +1059,14 @@ def _(alt, matching, mo, pl, pr, status, sweep):
                 "headline depends on tuning: a positive mean here means UQ helps across "
                 f"typical settings, not just at the winner ({matching} match)."
             ),
+            sweep_gap,
             mo.ui.altair_chart(_chart)
             if sweep.height
             else mo.md("No completed configurations yet."),
-            mo.md("### One-sample t-tests of gap AUC across configurations"),
+            mo.md(f"### One-sample t-tests of {_name} across configurations"),
             mo.callout(
                 mo.md(
-                    "UQ beats random across configurations (Holm p < 0.05):\n\n"
+                    f"UQ beats random in {_name} across configurations (Holm p < 0.05):\n\n"
                     + "\n".join(
                         f"- **{verdict}**: {', '.join(_names)}"
                         for verdict in ("all metrics", "some metrics", "no metric")
@@ -1071,8 +1095,8 @@ def _(alt, matching, mo, pl, pr, status, sweep):
             mo.accordion(
                 {
                     "How to read this": mo.md("""
-    - Each point is one configuration's gap AUC, averaged over 5 model seeds; the black
-      tick is the mean over configurations.
+    - Each point is one configuration's gap, averaged over 5 model seeds; the black tick
+      is the mean over configurations.
     - Holm and Bonferroni adjust across the three UQ metrics within each sweep. The
       metrics share each configuration's random arm, so they are correlated.
     - Sweeps still running are labelled with their progress; their tests use the
@@ -1088,107 +1112,127 @@ def _(alt, matching, mo, pl, pr, status, sweep):
 
 
 @app.cell(hide_code=True)
-def _(mo):
-    driver = mo.ui.dropdown(
-        {
-            "Random arm's test AUC": "random_auc",
-            "Learning rate": "learning_rate",
-            "Update passes": "update_passes",
-            "Replay ratio": "replay_ratio",
-            "K (words per round)": "k",
-            "Batch size": "batch_size",
-            "Weight decay": "weight_decay",
-        },
-        value="Random arm's test AUC",
-        label="Against",
+def _(ParallelCoordinates, gap_names, mo, pl, pr, sweep, sweep_gap):
+    mo.stop(sweep.is_empty())
+    config_drivers = [
+        "learning_rate",
+        "k",
+        "update_passes",
+        "replay_ratio",
+        "batch_size",
+        "weight_decay",
+    ]
+    _random = {"gap_auc": "random_auc", "final_gap": "random_final"}[sweep_gap.value]
+    config_gaps = (
+        sweep.group_by("dataset", "model", "config_id")
+        .agg(
+            pl.col(config_drivers).first(),
+            (100 * pl.col(_random).first()).alias("random_pp"),
+            (100 * pl.col(sweep_gap.value).mean()).alias("gap_pp"),
+        )
+        .sort(
+            pl.col("dataset").replace_strict(pr.DATASET_ORDER, [0, 1, 2]),
+            pl.col("model").replace_strict(pr.MODEL_ORDER, list(range(5))),
+            "config_id",
+        )
     )
+    drivers_plot = mo.ui.anywidget(
+        ParallelCoordinates(
+            # HiPlot draws columns right to left; this puts the gap rightmost.
+            config_gaps.select(
+                "gap_pp",
+                "random_pp",
+                *reversed(config_drivers[1:]),
+                pl.col("learning_rate").log10().alias("log10_learning_rate"),
+                "model",
+                "dataset",
+            ),
+            color_by="gap_pp",
+            height=480,
+        )
+    )
+    _score = "AUC" if sweep_gap.value == "gap_auc" else "final F1"
     mo.vstack(
         [
             mo.md(
                 "### What drives the gap across configurations?\n"
-                "Each point is one configuration's gap AUC, averaged over the three UQ "
-                "metrics. Spearman ρ per sweep is below the chart."
+                "One line per configuration, coloured by `gap_pp`: its "
+                f"{gap_names[sweep_gap.value]} in pp, averaged over the three UQ metrics. "
+                f"`random_pp` is the random arm's {_score}. Brush an axis to select the "
+                "lines crossing it, then Keep or Exclude them; drag an axis title to reorder."
             ),
-            driver,
+            drivers_plot,
         ]
     )
-    return (driver,)
+    return config_drivers, config_gaps, drivers_plot
 
 
 @app.cell(hide_code=True)
-def _(alt, driver, learning_rate_axis, mo, pl, stats, sweep):
-    mo.stop(sweep.is_empty())
-    _per_config = (
-        sweep.group_by("dataset", "model", "config_id")
-        .agg(
-            (100 * pl.col("gap_auc").mean()).alias("gap_pp"),
-            pl.col(
-                "random_auc",
-                "learning_rate",
-                "update_passes",
-                "replay_ratio",
-                "k",
-                "batch_size",
-                "weight_decay",
-            ).first(),
-        )
-        .with_columns(
-            panel=pl.format("{} · {}", "dataset", "model"), random_auc=100 * pl.col("random_auc")
-        )
-    )
-    _column = driver.value
-    _scale = alt.Scale(type="log") if _column == "learning_rate" else alt.Scale(zero=False)
-    _axis = learning_rate_axis if _column == "learning_rate" else alt.Axis()
-    _chart = (
-        (
-            alt.Chart(_per_config)
-            .mark_circle(size=55, opacity=0.75)
-            .encode(
-                x=alt.X(
-                    f"{_column}:Q",
-                    title=driver.selected_key + (" (pp)" if _column == "random_auc" else ""),
-                    scale=_scale,
-                    axis=_axis,
-                ),
-                y=alt.Y("gap_pp:Q", title="Mean gap AUC (pp)"),
-                color=alt.Color("dataset:N"),
-                tooltip=[
-                    "panel",
-                    "config_id",
-                    alt.Tooltip("gap_pp:Q", format="+.2f"),
-                    alt.Tooltip(f"{_column}:Q", format=".3g"),
-                ],
-            )
-            + alt.Chart(_per_config)
-            .mark_rule(color="gray", strokeDash=[4, 4])
-            .encode(y=alt.datum(0))
-        )
-        .properties(width=200, height=180)
-        .facet(facet=alt.Facet("panel:N", title=None), columns=4)
-    )
+def _(config_drivers, config_gaps, drivers_plot, mo, pl, stats):
+    # Only Keep and Exclude reach Python; a brush alone does not.
+    _kept = config_gaps[drivers_plot.widget.filtered_indices]
+    _columns = [*config_drivers, "random_pp"]
     _rho = pl.DataFrame(
         [
-            {
-                "sweep": panel,
-                "configurations": group.height,
-                "spearman_rho": stats.spearmanr(group[_column], group["gap_pp"]).statistic,
-                "p_value": stats.spearmanr(group[_column], group["gap_pp"]).pvalue,
+            {"sweep": f"{dataset} · {model}", "configurations": group.height}
+            | {
+                column: stats.spearmanr(group[column], group["gap_pp"]).statistic
+                if group[column].n_unique() > 1
+                else None
+                for column in _columns
             }
-            for (panel,), group in _per_config.group_by("panel", maintain_order=True)
-            if group.height > 2 and group[_column].n_unique() > 1
+            for (dataset, model), group in config_gaps.group_by(
+                "dataset", "model", maintain_order=True
+            )
+            if group.height > 2
         ]
     )
     mo.vstack(
         [
-            mo.ui.altair_chart(_chart),
-            mo.ui.table(
-                _rho.sort("sweep") if _rho.height else _rho,
-                selection=None,
-                format_mapping={"spearman_rho": "{:+.2f}", "p_value": "{:.2g}"},
+            mo.hstack(
+                [
+                    mo.stat(
+                        f"{_kept['gap_pp'].mean():+.2f} pp" if _kept.height else "–",
+                        label="Mean gap of the kept configurations",
+                        caption=f"{_kept.height} of {config_gaps.height} configurations",
+                        bordered=True,
+                    ),
+                    mo.stat(
+                        f"{(_kept['gap_pp'] > 0).sum()}/{_kept.height}",
+                        label="Kept configurations favouring UQ",
+                        bordered=True,
+                    ),
+                ],
+                justify="start",
             ),
-            mo.md(
-                "Negative ρ against the random arm's AUC means UQ helps most where random "
-                "learns slowly. These are exploratory, unadjusted correlations."
+            mo.accordion(
+                {
+                    "Kept configurations": mo.ui.table(
+                        _kept,
+                        selection=None,
+                        page_size=10,
+                        format_mapping={
+                            "learning_rate": "{:.2e}",
+                            "random_pp": "{:.2f}",
+                            "gap_pp": "{:+.2f}",
+                        },
+                    ),
+                    "Spearman ρ of the gap against each setting, per sweep": mo.vstack(
+                        [
+                            mo.ui.table(
+                                _rho,
+                                selection=None,
+                                format_mapping={c: "{:+.2f}" for c in _columns},
+                            ),
+                            mo.md(
+                                "Computed over every configuration of the sweep, not just "
+                                "the kept ones. Negative ρ against `random_pp` means UQ "
+                                "helps most where random learns slowly. These are "
+                                "exploratory, unadjusted correlations."
+                            ),
+                        ]
+                    ),
+                }
             ),
         ]
     )
@@ -1234,6 +1278,7 @@ def _(
     seeds,
     stats,
     supervised,
+    sweep,
     ttr_window,
 ):
     mo.stop(lexicon.is_empty(), mo.md(f"No dataset could be loaded: {lexicon_errors}"))
@@ -1350,6 +1395,18 @@ def _(
 
     _gaps = seeds.group_by("dataset").agg((100 * pl.col("gap_auc").mean()).alias("gap"))
     _gap = dict(_gaps.iter_rows())
+    _ttests = pr.config_gap_ttests(sweep) if sweep.height else pl.DataFrame()
+
+    def _significant(dataset):
+        rows = _ttests.filter(pl.col("dataset") == dataset) if _ttests.height else _ttests
+        if not rows.height:
+            return f"no {dataset} models yet"
+        models = rows.group_by("model").agg((pl.col("holm_p") < 0.05).any().alias("significant"))
+        names = sorted(models.filter("significant")["model"], key=pr.MODEL_ORDER.index)
+        return f"{len(names)} of {models.height} {dataset} models" + (
+            f" ({', '.join(names)})" if names else ""
+        )
+
     mo.vstack(
         [
             mo.ui.altair_chart(_charts),
@@ -1373,9 +1430,10 @@ def _(
                             "- " + _compare("entity words"),
                             "A simpler vocabulary would show a **lower** TTR. At the validation "
                             f"winners Quishpi's mean gap AUC is {_gap.get('Quishpi', 0):+.2f} pp "
-                            f"against PET's {_gap.get('PET', 0):+.2f} pp (chapter 2); the "
-                            "non-significant Quishpi results are chapter 8's t-tests across "
-                            "sampled configurations.",
+                            f"against PET's {_gap.get('PET', 0):+.2f} pp (chapter 2). Across "
+                            "sampled configurations, chapter 8's t-tests find a significant "
+                            "gap AUC (Holm p < 0.05 on at least one UQ metric) for "
+                            f"{_significant('PET')} and {_significant('Quishpi')}.",
                         ]
                     )
                 ),
@@ -1399,127 +1457,6 @@ def _(
     - TTR measures vocabulary repetition, not how hard the tags are to tell apart.
     """)
                 }
-            ),
-        ]
-    )
-    return
-
-
-@app.cell(hide_code=True)
-def _(alt, frozen, learning_rate_axis, mo, pl, pr, tuning):
-    _winners = tuning.filter("winner").sort(
-        pl.col("dataset").replace_strict(pr.DATASET_ORDER, [0, 1, 2]),
-        pl.col("model").replace_strict(pr.MODEL_ORDER, list(range(5))),
-    )
-    _parameters = [c for c in frozen.columns if c not in ("dataset", "model")]
-    _check = frozen.join(_winners, on=["dataset", "model"], suffix="_winner")
-    _mismatch = _check.filter(
-        pl.any_horizontal(
-            [
-                (pl.col(p) - pl.col(f"{p}_winner")).abs() > 1e-12 * pl.col(p).abs().clip(1e-12)
-                for p in _parameters
-            ]
-        )
-    )
-    _low, _high = 1e-5, 5e-4
-    _near_bound = _winners.filter(
-        (pl.col("learning_rate") < 1.25 * _low) | (pl.col("learning_rate") > _high / 1.25)
-    )
-    _scatter = (
-        alt.Chart(tuning.with_columns(validation_auc_pp=100 * pl.col("validation_auc")))
-        .mark_circle(opacity=0.55)
-        .encode(
-            x=alt.X(
-                "learning_rate:Q",
-                title="Learning rate",
-                scale=alt.Scale(type="log", domain=[_low, _high]),
-                axis=learning_rate_axis,
-            ),
-            y=alt.Y("validation_auc_pp:Q", title="Random arm validation AUC (entity F1, pp)"),
-            color=alt.Color("model:N", sort=pr.MODEL_ORDER),
-            size=alt.condition("datum.winner", alt.value(220), alt.value(30)),
-            stroke=alt.condition("datum.winner", alt.value("black"), alt.value(None)),
-            tooltip=[
-                "dataset",
-                "model",
-                "config_id",
-                alt.Tooltip("validation_auc_pp:Q", format=".2f"),
-                alt.Tooltip("learning_rate:Q", format=".2e"),
-                "k",
-                "update_passes",
-                "replay_ratio",
-                "batch_size",
-                "weight_decay",
-            ],
-        )
-        .properties(width=360, height=260)
-        .facet(column=alt.Column("dataset:N", title=None, sort=pr.DATASET_ORDER))
-        .resolve_scale(y="independent")
-    )
-    mo.vstack(
-        [
-            mo.md(
-                "## 10. Random-baseline tuning\n"
-                "100 sampled configurations per model and dataset, scored by the random arm's "
-                "validation-holdout entity-F1 AUC (exact match). The winner, outlined, is "
-                "frozen for best UQ (chapter 2) and its test run."
-            ),
-            mo.ui.altair_chart(_scatter),
-            mo.callout(
-                mo.md("Every best-UQ run used its tuning winner's settings."),
-                kind="success",
-            )
-            if _mismatch.is_empty()
-            else mo.callout(
-                mo.md(
-                    f"**{_mismatch.height} best-UQ runs differ from their tuning winner:** "
-                    + ", ".join(
-                        f"{r['dataset']} {r['model']}" for r in _mismatch.iter_rows(named=True)
-                    )
-                ),
-                kind="danger",
-            ),
-            mo.callout(
-                mo.md(
-                    "No winner's learning rate is within a factor of 1.25 of the search bounds "
-                    "(1e-5 to 5e-4)."
-                ),
-                kind="success",
-            )
-            if _near_bound.is_empty()
-            else mo.callout(
-                mo.md(
-                    "**Learning rate near a search bound:** "
-                    + ", ".join(
-                        f"{r['dataset']} {r['model']} ({r['learning_rate']:.2e})"
-                        for r in _near_bound.iter_rows(named=True)
-                    )
-                ),
-                kind="warn",
-            ),
-            mo.md("### Validation winners"),
-            mo.ui.table(
-                _winners.select(
-                    "dataset",
-                    "model",
-                    "config_id",
-                    "validation_auc",
-                    "learning_rate",
-                    "k",
-                    "update_passes",
-                    "replay_ratio",
-                    "batch_size",
-                    "weight_decay",
-                    "sweep_complete",
-                ),
-                selection=None,
-                page_size=15,
-                format_mapping={"validation_auc": "{:.3f}", "learning_rate": "{:.2e}"},
-            ),
-            mo.md(
-                "Winners of incomplete sweeps (`sweep_complete` false) are provisional. "
-                "Medical has tuning only so far; its best-UQ, supervised, and random-sweep "
-                "stages follow in the same chain."
             ),
         ]
     )
@@ -1647,7 +1584,7 @@ def _(
                 note = f"{len(entities)} entities"
             lines.append(
                 f"<div style='display:flex;gap:8px;line-height:1.9'><span style='flex:0 0 "
-                f"140px;opacity:.6;font-size:.85em'>{line} · {note}</span>"
+                f"190px;white-space:nowrap;opacity:.6;font-size:.85em'>{line} · {note}</span>"
                 f"<span>{_render(sentence['tokens'], entities)}</span></div>"
             )
         return (
@@ -1673,7 +1610,7 @@ def _(
     mo.vstack(
         [
             mo.md(
-                "## 11. Gold and predicted entities on the test split\n"
+                "## 10. Gold and predicted entities on the test split\n"
                 "Each best-UQ run saves the predicted tags behind every evaluation row, so "
                 "any round of either arm can be read sentence by sentence. Red dashed "
                 f"outlines mark entities with no {matching} match: on a predicted line, "
@@ -1700,7 +1637,7 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md("""
-    ## 12. Caveats
+    ## 11. Caveats
 
     - **Test split sizes.** Quishpi tests on 41 sentences and PET on 84, so single-round
       scores move by several F1 points between seeds. Gap AUC averages over every round

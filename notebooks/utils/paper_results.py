@@ -55,7 +55,10 @@ def _acquisition(plan: dict) -> str:
 
 
 def sweep_status(results_root: Path) -> pl.DataFrame:
-    """One row per sweep: stage, dataset, model, and its completed, failed, pending items."""
+    """One row per sweep: stage, dataset, model, and its completed, failed, pending items.
+
+    A supervised sweep is done only once its test runs have finished after tuning.
+    """
     rows = []
     for stage, stage_name in STAGES.items():
         for sweep_dir, plan, summary, dataset, model in _sweeps(results_root / stage):
@@ -65,6 +68,10 @@ def sweep_status(results_root: Path) -> pl.DataFrame:
                 status: sum(item["status"] == status for item in items)
                 for status in ("complete", "failed")
             }
+            test_runs = (summary or {}).get("test_runs") or []
+            tested = stage != "supervised" or (
+                bool(test_runs) and all(run["status"] == "complete" for run in test_runs)
+            )
             rows.append(
                 {
                     "stage": stage_name,
@@ -74,10 +81,13 @@ def sweep_status(results_root: Path) -> pl.DataFrame:
                     "complete": counts["complete"],
                     "failed": counts["failed"],
                     "planned": planned,
+                    "tested": tested,
                     "sweep": sweep_dir.name,
                 }
             )
-    return pl.DataFrame(rows).with_columns((pl.col("complete") == pl.col("planned")).alias("done"))
+    return pl.DataFrame(rows).with_columns(
+        ((pl.col("complete") == pl.col("planned")) & pl.col("tested")).alias("done")
+    )
 
 
 def best_uq_curves(results_root: Path) -> pl.DataFrame:
@@ -254,51 +264,11 @@ def supervised_scores(results_root: Path) -> pl.DataFrame:
     return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
 
 
-def tuning_trials(results_root: Path) -> pl.DataFrame:
-    """Every completed random-baseline tuning trial with its validation score and winner flag.
-
-    The winner is the highest score, ties broken by ascending configuration ID, among
-    completed trials; it is final only when the sweep is complete.
-    """
-    rows = []
-    for _, _, summary, dataset, model in _sweeps(results_root / "random_baseline_search"):
-        trials = [
-            trial for trial in (summary or {}).get("trials", []) if trial["status"] == "complete"
-        ]
-        if not trials:
-            continue
-        winner = min(trials, key=lambda trial: (-trial["score"], trial["config_id"]))["config_id"]
-        for trial in trials:
-            rows.append(
-                {
-                    "dataset": dataset,
-                    "model": model,
-                    "config_id": trial["config_id"],
-                    "validation_auc": trial["score"],
-                    "winner": trial["config_id"] == winner,
-                    "sweep_complete": bool(summary.get("complete")),
-                    **trial["parameters"],
-                }
-            )
-    return pl.DataFrame(rows)
-
-
-def best_uq_settings(results_root: Path) -> pl.DataFrame:
-    """The frozen hyperparameters each best-UQ sweep ran with, one row per model and dataset."""
-    rows = {}
-    for _, plan, _, dataset, model in _sweeps(results_root / "best_uq"):
-        rows[dataset, model] = {
-            "dataset": dataset,
-            "model": model,
-            **plan["configurations"][0]["parameters"],
-        }
-    return pl.DataFrame(list(rows.values()))
-
-
 def random_sweep_comparisons(results_root: Path, field: str) -> pl.DataFrame:
-    """Per configuration and UQ metric of the 30-config sweeps: gap AUC and random-arm AUC.
+    """Per configuration and UQ metric of the 30-config sweeps: gaps and random-arm scores.
 
-    The random arm is shared by the UQ metrics of one configuration, so its AUC repeats.
+    Each score comes as an AUC and a final-round value, averaged over model seeds. The
+    random arm is shared by the UQ metrics of one configuration, so its scores repeat.
     """
     rows = []
     for sweep_dir, _, summary, dataset, model in _sweeps(results_root / "random_search"):
@@ -308,8 +278,13 @@ def random_sweep_comparisons(results_root: Path, field: str) -> pl.DataFrame:
             gap = comparison.get(f"mean_test_{field}_gap_auc")
             if gap is None:
                 continue
-            aucs = curve_auc(pl.read_csv(sweep_dir / comparison["run_dir"] / "results.csv"), field)
+            results = pl.read_csv(sweep_dir / comparison["run_dir"] / "results.csv")
+            aucs = curve_auc(results, field)
             random_aucs = [auc for (_, arm), auc in aucs.items() if arm == "random"]
+            random_finals = results.filter(
+                (pl.col("arm") == "random")
+                & (pl.col("round") == pl.col("round").max().over("seed"))
+            )[field]
             rows.append(
                 {
                     "dataset": dataset,
@@ -317,7 +292,9 @@ def random_sweep_comparisons(results_root: Path, field: str) -> pl.DataFrame:
                     "config_id": comparison["config_id"],
                     "uq_metric": comparison["uq_metric"],
                     "gap_auc": gap,
+                    "final_gap": comparison[f"mean_final_test_{field}_gap"],
                     "random_auc": sum(random_aucs) / len(random_aucs),
+                    "random_final": random_finals.mean(),
                     **comparison["parameters"],
                 }
             )
@@ -355,8 +332,8 @@ def gap_curves(curves: pl.DataFrame, field: str) -> pl.DataFrame:
     )
 
 
-def config_gap_ttests(comparisons: pl.DataFrame) -> pl.DataFrame:
-    """One-sample t-test of gap AUC against zero across a sweep's sampled configurations.
+def config_gap_ttests(comparisons: pl.DataFrame, gap: str = "gap_auc") -> pl.DataFrame:
+    """One-sample t-test of a gap column against zero across a sweep's sampled configurations.
 
     One row per dataset, model, and UQ metric with at least two configurations; Holm and
     Bonferroni adjust across the three planned UQ metrics within each sweep.
@@ -367,7 +344,7 @@ def config_gap_ttests(comparisons: pl.DataFrame) -> pl.DataFrame:
     for (dataset, model, metric), group in comparisons.group_by(
         "dataset", "model", "uq_metric", maintain_order=True
     ):
-        gaps = group["gap_auc"].to_list()
+        gaps = group[gap].to_list()
         if len(gaps) < 2:
             continue
         test = stats.ttest_1samp(gaps, 0)
