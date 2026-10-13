@@ -1,0 +1,20 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "paper-results",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": [
+        "run",
+        "marimo",
+        "run",
+        "notebooks/paper_results.py",
+        "--headless",
+        "--port",
+        "2720",
+        "--no-token"
+      ],
+      "port": 2720
+    }
+  ]
+}
