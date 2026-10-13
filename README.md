@@ -78,7 +78,7 @@ at the project root (see [Weights & Biases](#weights--biases)).
 | Compare the paper rerun across datasets and models | `notebooks/paper_results.py` |
 | Inspect one best-config run: learning curves and selection diagnostics | `notebooks/best_uq_analysis.py` |
 | Inspect random-search test curves and selections | `notebooks/random_search_analysis.py` |
-| Check Quishpi or MedicalProcessInstruks preprocessing against the raw files | `notebooks/quishpi_preprocessing.py`, `notebooks/medical_preprocessing.py` |
+| Check PET, Quishpi, and MedicalProcessInstruks preprocessing against the raw files | `notebooks/preprocessing_checks.py` |
 
 ## Protocol
 
@@ -794,8 +794,7 @@ recorded in [docs/adr/](docs/adr/).
 | `notebooks/paper_results.py` | chaptered cross-dataset view of the paper rerun |
 | `notebooks/best_uq_analysis.py` | best-config UQ comparisons against random and the supervised bound |
 | `notebooks/random_search_analysis.py` | random-sweep summaries and per-configuration drill-downs |
-| `notebooks/quishpi_preprocessing.py` | Quishpi preprocessing checks against the raw files |
-| `notebooks/medical_preprocessing.py` | MedicalProcessInstruks preprocessing checks against the raw files |
+| `notebooks/preprocessing_checks.py` | PET, Quishpi, and MedicalProcessInstruks preprocessing checks against the raw files |
 | `notebooks/utils/` | chart builders, acquisition diagnostics, oracle selection, and W&B comparison media |
 | `configs/<dataset>/tune_random/` | random-baseline tuning settings, one file per model |
 | `configs/<dataset>/best_uq/` | frozen validation winners for fixed UQ comparisons |
