@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.25.0"
+__generated_with = "0.25.1"
 app = marimo.App(width="full")
 
 
@@ -44,6 +44,7 @@ def _(mo):
 @app.cell
 def _():
     import html
+    import json
     from pathlib import Path
 
     import altair as alt
@@ -53,6 +54,8 @@ def _():
     from wigglystuff import FloatingPanel, ParallelCoordinates
 
     from utils import paper_results as pr
+    from utils.acquisition_analysis import tag_selections
+    from utils.charts import make_tag_category_coverage_chart, make_tag_coverage_chart
 
     alt.data_transformers.disable_max_rows()
     results_root = Path(__file__).resolve().parents[1] / "results"
@@ -81,12 +84,16 @@ def _():
         Path,
         alt,
         html,
+        json,
+        make_tag_category_coverage_chart,
+        make_tag_coverage_chart,
         mo,
         pl,
         pr,
         results_root,
         series_color,
         stats,
+        tag_selections,
     )
 
 
@@ -101,8 +108,11 @@ def _(FloatingPanel, mo):
     acquisition = mo.ui.dropdown(
         ["Top-K", "Gumbel noise"], value="Top-K", label="Acquisition (ch. 3–5)"
     )
-    FloatingPanel(mo.vstack([entity_matching, acquisition, refresh]))
-    return acquisition, entity_matching, refresh
+    pool_percent = mo.ui.slider(
+        start=0, stop=100, step=1, value=25, label="Pool acquired, % (ch. 3)", show_value=True
+    )
+    FloatingPanel(mo.vstack([entity_matching, acquisition, pool_percent, refresh]))
+    return acquisition, entity_matching, pool_percent, refresh
 
 
 @app.cell
@@ -203,14 +213,27 @@ def _(mo, pl, pr, sizes, status, winners):
     return
 
 
+@app.cell
+def _(mo):
+    headline_gap = mo.ui.dropdown(
+        {"Gap AUC": "gap_auc", "Final F1 gap": "final_gap"}, value="Gap AUC", label="Gap"
+    )
+    return (headline_gap,)
+
+
 @app.cell(hide_code=True)
-def _(alt, matching, mo, pl, pr, seeds):
+def _(alt, headline_gap, matching, mo, pl, pr, seeds):
+    _gap = headline_gap.value
+    _other = "final_gap" if _gap == "gap_auc" else "gap_auc"
+    _names = {"gap_auc": "gap AUC", "final_gap": "final F1 gap"}
+    _shown = f"{_gap}_pp"
     _settings = seeds.group_by(pr.SETTING).agg(
         (100 * pl.col("gap_auc").mean()).alias("gap_auc_pp"),
         (100 * pl.col("gap_auc").std()).alias("gap_auc_sd_pp"),
-        (pl.col("gap_auc") > 0).sum().alias("seeds_favouring_uq"),
-        pl.len().alias("seeds"),
         (100 * pl.col("final_gap").mean()).alias("final_gap_pp"),
+        (100 * pl.col("final_gap").std()).alias("final_gap_sd_pp"),
+        (pl.col(_gap) > 0).sum().alias("seeds_favouring_uq"),
+        pl.len().alias("seeds"),
         (100 * pl.col("random_auc").mean()).alias("random_auc_pp"),
         (100 * pl.col("uq_auc").mean()).alias("uq_auc_pp"),
     )
@@ -219,29 +242,29 @@ def _(alt, matching, mo, pl, pr, seeds):
     }
     _stats = [
         mo.stat(
-            f"{(_settings['gap_auc_pp'] > 0).sum()}/{_settings.height}",
+            f"{(_settings[_shown] > 0).sum()}/{_settings.height}",
             label="Settings where UQ wins",
             caption="dataset × model × acquisition × UQ metric",
             bordered=True,
         ),
         mo.stat(
-            f"{(seeds['gap_auc'] > 0).sum()}/{seeds.height}",
+            f"{(seeds[_gap] > 0).sum()}/{seeds.height}",
             label="Model seeds where UQ wins",
-            caption="per-seed gap AUC > 0",
+            caption=f"per-seed {_names[_gap]} > 0",
             bordered=True,
         ),
         *[
             mo.stat(
-                f"{_by_dataset[dataset]['gap_auc_pp'].mean():+.2f} pp",
-                label=f"Mean gap AUC · {dataset}",
-                caption=f"final gap {_by_dataset[dataset]['final_gap_pp'].mean():+.2f} pp",
+                f"{_by_dataset[dataset][_shown].mean():+.2f} pp",
+                label=f"Mean {_names[_gap]} · {dataset}",
+                caption=f"{_names[_other]} {_by_dataset[dataset][f'{_other}_pp'].mean():+.2f} pp",
                 bordered=True,
             )
             for dataset in pr.DATASET_ORDER
             if dataset in _by_dataset
         ],
     ]
-    _limit = float(_settings["gap_auc_pp"].abs().max())
+    _limit = float(_settings[_shown].abs().max())
     _base = alt.Chart(_settings).encode(
         x=alt.X("uq_metric:N", title=None, sort=pr.UQ_METRICS),
         y=alt.Y("model:N", title=None, sort=pr.MODEL_ORDER),
@@ -250,16 +273,17 @@ def _(alt, matching, mo, pl, pr, seeds):
         (
             _base.mark_rect().encode(
                 color=alt.Color(
-                    "gap_auc_pp:Q",
-                    title="Gap AUC (pp)",
+                    f"{_shown}:Q",
+                    title=f"{_names[_gap].capitalize()} (pp)",
                     scale=alt.Scale(scheme="blueorange", domain=[-_limit, _limit]),
                 ),
                 tooltip=[
                     *pr.SETTING,
                     alt.Tooltip("gap_auc_pp:Q", format="+.2f"),
                     alt.Tooltip("gap_auc_sd_pp:Q", format=".2f"),
-                    "seeds_favouring_uq",
                     alt.Tooltip("final_gap_pp:Q", format="+.2f"),
+                    alt.Tooltip("final_gap_sd_pp:Q", format=".2f"),
+                    "seeds_favouring_uq",
                 ],
             )
             + _base.mark_text(fontSize=12)
@@ -267,7 +291,7 @@ def _(alt, matching, mo, pl, pr, seeds):
                 text=alt.Text("label:N"),
             )
             .transform_calculate(
-                label="format(datum.gap_auc_pp, '+.1f') + ' (' + datum.seeds_favouring_uq + '/' + datum.seeds + ')'"
+                label=f"format(datum.{_shown}, '+.1f') + ' (' + datum.seeds_favouring_uq + '/' + datum.seeds + ')'"
             )
         )
         .properties(width=330, height=190)
@@ -280,10 +304,11 @@ def _(alt, matching, mo, pl, pr, seeds):
         [
             mo.md(
                 "## 2. Headline: UQ beats random at the validation winners\n"
-                f"Test {matching}-match entity-F1 gap AUC for every model, UQ metric, and "
-                "acquisition, each model at its validation winner with 5 model seeds. "
+                f"Test {matching}-match entity-F1 {_names[_gap].replace(' F1', '')} for every model, UQ metric, "
+                "and acquisition, each model at its validation winner with 5 model seeds. "
                 "Cells show the gap in pp and how many seeds favour UQ."
             ),
+            headline_gap,
             mo.hstack(_stats, justify="start", gap=1, wrap=True),
             mo.ui.altair_chart(_heatmap),
             mo.accordion(
@@ -302,8 +327,10 @@ def _(alt, matching, mo, pl, pr, seeds):
     - The three UQ metrics of one model share its bootstrap and random arm, so they are
       not independent replications; Top-K and Gumbel noise share them too.
     - Seeds share the data split; a seed fixes model initialisation and selection.
-    - The final gap is noisy on Quishpi (41 test sentences) and, at the full pool, only
-      reflects learning order. Gap AUC is the headline.
+    - **Gap** switches the cards and the heatmap between gap AUC and the final F1 gap:
+      the last round's UQ-minus-random test entity F1, after both arms acquired the whole
+      pool. The final gap is noisy on Quishpi (41 test sentences) and only reflects
+      learning order. Gap AUC is the headline.
     - Chapter 8 checks the same comparison at 30 sampled configurations instead of
       one tuned configuration.
     """),
@@ -321,19 +348,12 @@ def _(acquisition, mo, pr, seeds):
         value="PET",
         label="Dataset",
     )
-    curve_metric = mo.ui.dropdown(
-        ["all three"] + pr.UQ_METRICS, value="all three", label="UQ metric"
-    )
+    curve_metric = mo.ui.dropdown(pr.UQ_METRICS, value="entropy", label="UQ metric")
     curve_view = mo.ui.radio(
         ["F1 curves", "Precision & recall", "Gap curves"],
         value="F1 curves",
         label="Show",
         inline=True,
-    )
-    curve_zoom = mo.ui.dropdown(
-        {"whole pool": 100, "first 50%": 50, "first 25%": 25},
-        value="whole pool",
-        label="Pool shown",
     )
     mo.vstack(
         [
@@ -343,15 +363,13 @@ def _(acquisition, mo, pr, seeds):
                 "**F1 curves** show seed means with ±1 SD bands and the supervised upper "
                 "bound (green dashes); **precision & recall** splits F1 into false "
                 "positives (precision) and missed entities (recall), one row per arm; "
-                "**gap curves** show UQ − random per round. Zoom in on the start of the pool, "
-                "where the arms differ most."
+                "**gap curves** show UQ − random per round. The red line marks the pool "
+                "percentage set in the floating panel."
             ),
-            mo.hstack(
-                [curve_dataset, curve_metric, curve_zoom, curve_view], justify="start", gap=2
-            ),
+            mo.hstack([curve_dataset, curve_metric, curve_view], justify="start", gap=2),
         ]
     )
-    return curve_dataset, curve_metric, curve_view, curve_zoom
+    return curve_dataset, curve_metric, curve_view
 
 
 @app.cell(hide_code=True)
@@ -361,21 +379,31 @@ def _(
     curve_dataset,
     curve_metric,
     curve_view,
-    curve_zoom,
     curves,
     field,
     gaps,
     matching,
     mo,
     pl,
+    pool_percent,
     pr,
     series_color,
     supervised,
 ):
-    _metrics = pr.UQ_METRICS if curve_metric.value == "all three" else [curve_metric.value]
-    _x = alt.X(
-        "percent:Q", title="Pool acquired (%)", scale=alt.Scale(domain=[0, curve_zoom.value])
-    )
+    _metrics = [curve_metric.value]
+    _x = alt.X("percent:Q", title="Pool acquired (%)", scale=alt.Scale(domain=[0, 100]))
+
+    def _marker(base, panels):
+        """One red rule per facet panel at the floating panel's pool percentage.
+
+        It reuses the layer's own data, because a faceted layer chart needs one dataset.
+        """
+        return (
+            base.transform_aggregate(rows="count()", groupby=panels)
+            .mark_rule(color="red", strokeWidth=1.5)
+            .encode(x=alt.datum(pool_percent.value))
+        )
+
     _color = series_color(_metrics + ["random"] * (curve_view.value != "Gap curves"))
     _runs = curves.filter(
         (pl.col("dataset") == curve_dataset.value)
@@ -406,12 +434,10 @@ def _(
             .with_columns(pl.col("measure").replace_strict(_measures))
             .group_by("model", "series", "round", "measure")
             .agg(pl.col("percent_acquired").mean().alias("percent"), pl.col("value").mean())
-            .filter(pl.col("percent") <= curve_zoom.value)
         )
+        _base = alt.Chart(_data)
         _chart = (
-            alt.Chart(_data)
-            .mark_line(strokeWidth=2)
-            .encode(
+            _base.mark_line(strokeWidth=2).encode(
                 x=_x,
                 y=alt.Y("value:Q", title=f"{matching.capitalize()}-match score"),
                 color=alt.Color(
@@ -434,7 +460,7 @@ def _(
                     alt.Tooltip("value:Q", format=".3f"),
                 ],
             )
-        )
+        ) + _marker(_base, ["series", "model"])
         _facet = {
             "row": alt.Row("series:N", title=None, sort=["random", *pr.UQ_METRICS]),
             "column": alt.Column("model:N", title=None, sort=pr.MODEL_ORDER),
@@ -452,7 +478,6 @@ def _(
                 low=(pl.col("mean") - pl.col("sd")).clip(0, 1),
                 high=(pl.col("mean") + pl.col("sd")).clip(0, 1),
             )
-            .filter(pl.col("percent") <= curve_zoom.value)
         )
         _sup = (
             supervised.filter(pl.col("dataset") == curve_dataset.value)
@@ -483,6 +508,7 @@ def _(
             + _base.mark_rule(strokeDash=[6, 4], color="#54A24B", strokeWidth=2).encode(
                 y="mean(supervised):Q"
             )
+            + _marker(_base, ["model"])
         )
     else:
         _data = (
@@ -502,7 +528,6 @@ def _(
                 high=pl.col("mean") + pl.col("sd"),
                 series=pl.col("uq_metric"),
             )
-            .filter(pl.col("percent") <= curve_zoom.value)
         )
         _base = alt.Chart(_data)
         _chart = (
@@ -525,6 +550,7 @@ def _(
                 ],
             )
             + _base.mark_rule(color="gray", strokeDash=[4, 4]).encode(y=alt.datum(0))
+            + _marker(_base, ["model"])
         )
     mo.vstack(
         [
@@ -537,8 +563,102 @@ def _(
       labelled pool (ADR 0006): an upper bound, not a matched-budget arm.
     - Both arms end on the same full pool, so the curves meet near 100%; the advantage
       is how much sooner UQ gets there.
+    - The red line is the pool percentage from the floating panel's slider; the coverage
+      charts below show what each arm had acquired by then.
     - **Precision & recall** shows seed means only. Precision below recall means more
       false positives than missed entities; recall below precision means the reverse.
+    """)
+                }
+            ),
+        ]
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(
+    Path,
+    acquisition,
+    best_runs,
+    curve_dataset,
+    curve_metric,
+    json,
+    make_tag_category_coverage_chart,
+    make_tag_coverage_chart,
+    mo,
+    pl,
+    pool_percent,
+    tag_selections,
+):
+    _heading = mo.md(
+        "### What each arm acquired by the red line\n"
+        f"How much of each gold tag each arm has acquired once {pool_percent.value}% of the "
+        f"pool is labelled: {curve_dataset.value}, {curve_metric.value}, "
+        f"{acquisition.value} acquisition, averaged over the five models and their seeds. "
+        "The first chart counts each tag against its own tokens in the pool, which keeps "
+        "rare tags visible; the second counts it against all scoreable pool tokens."
+    )
+    _runs = best_runs.filter(
+        (pl.col("dataset") == curve_dataset.value)
+        & (pl.col("acquisition") == acquisition.value)
+        & (pl.col("uq_metric") == curve_metric.value)
+    )
+    _frames, _label_order, _partial, _acquired = [], None, [], []
+    for _model, _run_dir in _runs.select("model", "run_dir").iter_rows():
+        _results = pl.read_csv(Path(_run_dir) / "results.csv")
+        _ends = _results.group_by("seed", "arm").agg(pl.col("percent_acquired").max())
+        if not (_ends["percent_acquired"] >= 100).all():
+            _partial.append(_model)
+            continue
+        _frame, _order = tag_selections(
+            json.loads((Path(_run_dir) / "selections.json").read_text()), _results, _run_dir
+        )
+        _frames.append(_frame)
+        _label_order = _label_order or _order
+        _acquired.append(
+            _results.filter(pl.col("percent_acquired") <= pool_percent.value)["n_acquired"].max()
+            or 0
+        )
+    mo.stop(
+        not _frames,
+        mo.vstack([_heading, mo.md("No completed run covers the whole pool for this choice.")]),
+    )
+    # Every run of a dataset shares its pool, so the summaries average over models and seeds.
+    _selections = pl.concat(_frames, how="diagonal_relaxed")
+    _note = (
+        f"**Acquired words per arm: {min(_acquired):,}**"
+        if min(_acquired) == max(_acquired)
+        else f"**Acquired words per arm: {min(_acquired):,}–{max(_acquired):,}** across models"
+    ) + ", the latest completed round at or below the red line."
+    if _partial:
+        _note += f" Left out because they did not acquire the whole pool: {', '.join(_partial)}."
+    mo.vstack(
+        [
+            _heading,
+            mo.md(_note),
+            mo.ui.altair_chart(
+                make_tag_category_coverage_chart(
+                    _selections, pool_percent.value, curve_metric.value, label_order=_label_order
+                )
+            ),
+            mo.ui.altair_chart(
+                make_tag_coverage_chart(
+                    _selections, pool_percent.value, curve_metric.value, label_order=_label_order
+                )
+            ),
+            mo.accordion(
+                {
+                    "How to read this": mo.md("""
+    - Bars are means over every model and model seed of the chosen setting and include zero
+      counts. Both charts use full BIO tags, ordered by how many distinct pool words carry
+      each tag.
+    - Random acquisition sits near the red line's percentage on every tag in the first
+      chart; bars far from it show what the uncertainty arm prioritizes or postpones.
+    - Only completed rounds at or below the red line count, without interpolation. Models
+      with a larger K reach a given percentage in fewer, bigger rounds.
+    - Tag totals come from the completed acquisition logs; this retrospective view does
+      not use gold labels to select words. Per-model, per-seed diagnostics are in
+      `notebooks/best_uq_analysis.py`.
     """)
                 }
             ),
@@ -1270,17 +1390,23 @@ def _(config_drivers, config_gaps, drivers_plot, mo, pl, stats):
 
 
 @app.cell
-def _(mo, pl, pr, refresh, results_root):
+def _(pl, pr, refresh, results_root):
     refresh.value
-    _runs = pr.best_uq_runs(results_root).sort(
+    best_runs = pr.best_uq_runs(results_root).sort(
         pl.col("dataset").replace_strict(pr.DATASET_ORDER, [0, 1, 2]),
         pl.col("model").replace_strict(pr.MODEL_ORDER, list(range(5))),
         pl.col("acquisition").replace_strict(["Top-K", "Gumbel noise"], [0, 1]),
         "uq_metric",
     )
-    _options = {" · ".join(row[:4]): row[4] for row in _runs.iter_rows()}
+    # "dataset · model · acquisition · UQ metric" -> the comparison's run folder.
+    run_options = {" · ".join(row[:4]): row[4] for row in best_runs.iter_rows()}
+    return best_runs, run_options
+
+
+@app.cell
+def _(mo, run_options):
     viewer_run = mo.ui.dropdown(
-        _options, value=next(iter(_options), None), label="Run", searchable=True
+        run_options, value=next(iter(run_options), None), label="Run", searchable=True
     )
     viewer_lines = mo.ui.multiselect(
         ["Gold", "Uncertainty", "Random"],
