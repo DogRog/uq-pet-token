@@ -30,7 +30,7 @@ def _(mo):
       them in proportion to their scores (ADR 0009).
     - The floating panel switches every chapter between exact match (headline, tuning
       objective) and partial match (reported only, ADR 0010), and picks the acquisition
-      shown in chapters 3–5. Chapter 10 marks unmatched entities by the chosen matching.
+      shown in chapters 3–5. Chapter 9 marks unmatched entities by the chosen matching.
     - Nothing is downloaded or trained. Per-run diagnostics (tag coverage, timing,
       selected words) are in `notebooks/best_uq_analysis.py`.
     """)
@@ -1270,230 +1270,6 @@ def _(config_drivers, config_gaps, drivers_plot, mo, pl, stats):
 
 
 @app.cell
-def _(pr):
-    lexicon, lexicon_errors = pr.dataset_words(["pet", "quishpi", "medical"])
-    return lexicon, lexicon_errors
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    ttr_window = mo.ui.slider(
-        start=25, stop=250, step=25, value=50, show_value=True, label="Window size (words)"
-    )
-    mo.vstack(
-        [
-            mo.md(
-                "## 9. Is Quishpi simpler than PET? Lexical diversity\n"
-                "The **type-token ratio** (TTR) is distinct words divided by all words: "
-                "lower means more repetition, a simpler vocabulary to learn. Plain TTR "
-                "falls as a text gets longer, so datasets of different sizes are compared "
-                "on windows of the same number of words (mean segmental TTR). **Entity "
-                "words** keeps only words inside gold entities, the vocabulary the model "
-                "has to tag."
-            ),
-            ttr_window,
-        ]
-    )
-    return (ttr_window,)
-
-
-@app.cell(hide_code=True)
-def _(
-    alt,
-    lexicon,
-    lexicon_errors,
-    mo,
-    pl,
-    pr,
-    seeds,
-    stats,
-    supervised,
-    sweep,
-    ttr_window,
-):
-    mo.stop(lexicon.is_empty(), mo.md(f"No dataset could be loaded: {lexicon_errors}"))
-    _sentences = pr.sentence_ttr(lexicon)
-    _windows = pl.concat(
-        [
-            pr.window_ttr(lexicon, ttr_window.value).with_columns(words_kept=pl.lit("all words")),
-            pr.window_ttr(lexicon, ttr_window.value, entity_only=True).with_columns(
-                words_kept=pl.lit("entity words")
-            ),
-        ]
-    )
-    _datasets = [d for d in pr.DATASET_ORDER if d in lexicon["dataset"].unique().to_list()]
-    _y = alt.Y("dataset:N", title=None, sort=_datasets)
-    _color = alt.Color("dataset:N", sort=_datasets, legend=None)
-
-    def _box(data, column, title, domain=None):
-        return (
-            alt.Chart(data)
-            .mark_boxplot(size=22, extent=1.5)
-            .encode(
-                x=alt.X(
-                    f"{column}:Q",
-                    title=title,
-                    scale=alt.Scale(domain=domain) if domain else alt.Scale(zero=False),
-                ),
-                y=_y,
-                color=_color,
-            )
-            .properties(width=330, height=130)
-        )
-
-    _charts = alt.vconcat(
-        alt.hconcat(
-            _box(_sentences, "ttr", "Per-sentence TTR", [0, 1]),
-            _box(_sentences, "words", "Sentence length (words)"),
-        ),
-        alt.hconcat(
-            _box(
-                _windows.filter(pl.col("words_kept") == "all words"),
-                "ttr",
-                f"TTR per {ttr_window.value}-word window, all words",
-                [0, 1],
-            ),
-            _box(
-                _windows.filter(pl.col("words_kept") == "entity words"),
-                "ttr",
-                f"TTR per {ttr_window.value}-word window, entity words",
-                [0, 1],
-            ),
-        ),
-    )
-    _window_means = _windows.group_by("dataset", "words_kept").agg(
-        pl.col("ttr").mean().alias("ttr"), pl.len().alias("windows")
-    )
-
-    def _window_value(dataset, kept, column="ttr"):
-        rows = _window_means.filter((pl.col("dataset") == dataset) & (pl.col("words_kept") == kept))
-        return rows[column][0] if rows.height else None
-
-    _summary = (
-        lexicon.group_by("dataset")
-        .agg(
-            pl.len().alias("words"),
-            pl.col("word").n_unique().alias("distinct_words"),
-            (100 * pl.col("entity").mean()).alias("entity_words_pct"),
-            pl.col("tag").n_unique().alias("bio_tags"),
-        )
-        .join(
-            _sentences.group_by("dataset").agg(
-                pl.len().alias("sentences"), pl.col("ttr").mean().alias("sentence_ttr")
-            ),
-            on="dataset",
-        )
-        .with_columns(
-            window_ttr_all=pl.col("dataset").map_elements(
-                lambda d: _window_value(d, "all words"), return_dtype=pl.Float64
-            ),
-            window_ttr_entity=pl.col("dataset").map_elements(
-                lambda d: _window_value(d, "entity words"), return_dtype=pl.Float64
-            ),
-            entity_windows=pl.col("dataset").map_elements(
-                lambda d: _window_value(d, "entity words", "windows"), return_dtype=pl.UInt32
-            ),
-        )
-        .join(
-            supervised.group_by("dataset").agg(
-                pl.col("entity_f1").mean().alias("supervised_test_f1")
-            ),
-            on="dataset",
-            how="left",
-        )
-        .sort(pl.col("dataset").replace_strict(_datasets, list(range(len(_datasets)))))
-    )
-
-    def _compare(kept):
-        a = _windows.filter((pl.col("dataset") == "Quishpi") & (pl.col("words_kept") == kept))
-        b = _windows.filter((pl.col("dataset") == "PET") & (pl.col("words_kept") == kept))
-        if a.height < 2 or b.height < 2:
-            return f"{kept}: too few windows to compare"
-        test = stats.mannwhitneyu(a["ttr"], b["ttr"])
-        relation = (
-            "no clear difference from"
-            if test.pvalue >= 0.05
-            else "more diverse than"
-            if a["ttr"].mean() > b["ttr"].mean()
-            else "less diverse than"
-        )
-        return (
-            f"**{kept}**: Quishpi {a['ttr'].mean():.3f} vs PET {b['ttr'].mean():.3f}, "
-            f"{relation} PET (Mann–Whitney p = {test.pvalue:.2g}, {a.height} vs {b.height} "
-            "windows)"
-        )
-
-    _gaps = seeds.group_by("dataset").agg((100 * pl.col("gap_auc").mean()).alias("gap"))
-    _gap = dict(_gaps.iter_rows())
-    _ttests = pr.config_gap_ttests(sweep) if sweep.height else pl.DataFrame()
-
-    def _significant(dataset):
-        rows = _ttests.filter(pl.col("dataset") == dataset) if _ttests.height else _ttests
-        if not rows.height:
-            return f"no {dataset} models yet"
-        models = rows.group_by("model").agg((pl.col("holm_p") < 0.05).any().alias("significant"))
-        names = sorted(models.filter("significant")["model"], key=pr.MODEL_ORDER.index)
-        return f"{len(names)} of {models.height} {dataset} models" + (
-            f" ({', '.join(names)})" if names else ""
-        )
-
-    mo.vstack(
-        [
-            mo.ui.altair_chart(_charts),
-            mo.ui.table(
-                _summary,
-                selection=None,
-                format_mapping={
-                    "entity_words_pct": "{:.1f}",
-                    "sentence_ttr": "{:.3f}",
-                    "window_ttr_all": "{:.3f}",
-                    "window_ttr_entity": "{:.3f}",
-                    "supervised_test_f1": "{:.3f}",
-                },
-            ),
-            mo.callout(
-                mo.md(
-                    "\n\n".join(
-                        [
-                            "Quishpi against PET at equal window sizes:",
-                            "- " + _compare("all words"),
-                            "- " + _compare("entity words"),
-                            "A simpler vocabulary would show a **lower** TTR. At the validation "
-                            f"winners Quishpi's mean gap AUC is {_gap.get('Quishpi', 0):+.2f} pp "
-                            f"against PET's {_gap.get('PET', 0):+.2f} pp (chapter 2). Across "
-                            "sampled configurations, chapter 8's t-tests find a significant "
-                            "gap AUC (Holm p < 0.05 on at least one UQ metric) for "
-                            f"{_significant('PET')} and {_significant('Quishpi')}.",
-                        ]
-                    )
-                ),
-                kind="neutral",
-            )
-            if {"PET", "Quishpi"} <= set(_datasets)
-            else mo.md(""),
-            mo.md(f"Not loaded: {lexicon_errors}") if lexicon_errors else mo.md(""),
-            mo.accordion(
-                {
-                    "How to read this": mo.md("""
-    - Every split is included (bootstrap sentences, pool, test split), lowercased, with
-      punctuation dropped. Windows run over each dataset's text in document order and do
-      not overlap; a shorter final window is dropped.
-    - Per-sentence TTR is close to 1 for short sentences, so it mostly tracks sentence
-      length; compare windows instead.
-    - Entity windows are few on Quishpi, where only about a quarter of words are inside
-      an entity; shrink the window to get more of them.
-    - 13 of Quishpi's 18 texts are also PET documents (README), so their running text is
-      largely the same; the datasets differ mainly in what is labelled.
-    - TTR measures vocabulary repetition, not how hard the tags are to tell apart.
-    """)
-                }
-            ),
-        ]
-    )
-    return
-
-
-@app.cell
 def _(mo, pl, pr, refresh, results_root):
     refresh.value
     _runs = pr.best_uq_runs(results_root).sort(
@@ -1640,7 +1416,7 @@ def _(
     mo.vstack(
         [
             mo.md(
-                "## 10. Gold and predicted entities on the test split\n"
+                "## 9. Gold and predicted entities on the test split\n"
                 "Each best-UQ run saves the predicted tags behind every evaluation row, so "
                 "any round of either arm can be read sentence by sentence. Red dashed "
                 f"outlines mark entities with no {matching} match: on a predicted line, "
@@ -1667,7 +1443,7 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md("""
-    ## 11. Caveats
+    ## 10. Caveats
 
     - **Test split sizes.** Quishpi tests on 41 sentences and PET on 84, so single-round
       scores move by several F1 points between seeds. Gap AUC averages over every round

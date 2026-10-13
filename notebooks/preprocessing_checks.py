@@ -37,7 +37,8 @@ def _(mo):
       left open a sentence: the release cut an entity at a sentence break such as "e.g.".
       The dataset is gated: accept its conditions on the Hub and run
       `uv run hf auth login` once.
-    - **Splits and statistics** and the **Document viewer** switch between datasets.
+    - **Splits and statistics** and the **Document viewer** switch between datasets;
+      **Lexical diversity** compares all of them at once.
     - Raw files are downloaded only when missing. Nothing is trained, and the validation
       holdout is not covered.
     """)
@@ -59,8 +60,9 @@ def _():
     import polars as pl
 
     from uq_pet import data_prep
+    from utils import lexical_diversity as ld
 
-    return Counter, alt, data_prep, html, json, mo, pl
+    return Counter, alt, data_prep, html, json, ld, mo, pl
 
 
 @app.cell
@@ -1012,6 +1014,186 @@ def _(alt, dataset_selector, datasets, decode_entities, mo, pl, tag_names):
     return
 
 
+@app.cell
+def _(datasets, ld):
+    lexicon = ld.dataset_words(
+        {name: (dataset["sentences"], dataset["tags"]) for name, dataset in datasets.items()}
+    )
+    return (lexicon,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    ttr_window = mo.ui.slider(
+        start=25, stop=250, step=25, value=50, show_value=True, label="Window size (words)"
+    )
+    return (ttr_window,)
+
+
+@app.cell(hide_code=True)
+def _(alt, datasets, ld, lexicon, mo, pl, ttr_window):
+    _order = list(datasets)
+    _sentences = ld.sentence_ttr(lexicon)
+    _windows = pl.concat(
+        [
+            ld.window_ttr(lexicon, ttr_window.value).with_columns(words_kept=pl.lit("all words")),
+            ld.window_ttr(lexicon, ttr_window.value, entity_only=True).with_columns(
+                words_kept=pl.lit("entity words")
+            ),
+        ]
+    )
+    _y = alt.Y("dataset:N", title=None, sort=_order)
+    _color = alt.Color("dataset:N", sort=_order, legend=None)
+
+    def _box(data, column, title, domain=None):
+        return (
+            alt.Chart(data)
+            .mark_boxplot(size=22, extent=1.5)
+            .encode(
+                x=alt.X(
+                    f"{column}:Q",
+                    title=title,
+                    scale=alt.Scale(domain=domain) if domain else alt.Scale(zero=False),
+                ),
+                y=_y,
+                color=_color,
+            )
+            .properties(width=330, height=130)
+        )
+
+    _charts = alt.vconcat(
+        alt.hconcat(
+            _box(_sentences, "ttr", "Per-sentence TTR", [0, 1]),
+            _box(_sentences, "words", "Sentence length (words)"),
+        ),
+        alt.hconcat(
+            *[
+                _box(
+                    _windows.filter(pl.col("words_kept") == kept),
+                    "ttr",
+                    f"TTR per {ttr_window.value}-word window, {kept}",
+                    [0, 1],
+                )
+                for kept in ("all words", "entity words")
+            ]
+        ),
+    )
+
+    def _window_means(kept, suffix):
+        return (
+            _windows.filter(pl.col("words_kept") == kept)
+            .group_by("dataset")
+            .agg(
+                pl.col("ttr").mean().alias(f"window_ttr_{suffix}"),
+                pl.len().alias(f"windows_{suffix}"),
+            )
+        )
+
+    _summary = (
+        lexicon.group_by("dataset")
+        .agg(
+            pl.len().alias("words"),
+            pl.col("word").n_unique().alias("distinct_words"),
+            (100 * pl.col("entity").mean()).alias("entity_words_pct"),
+        )
+        .join(
+            _sentences.group_by("dataset").agg(
+                pl.len().alias("sentences"),
+                pl.col("words").median().alias("median_sentence_words"),
+                pl.col("ttr").mean().alias("sentence_ttr"),
+            ),
+            on="dataset",
+        )
+        .join(_window_means("all words", "all"), on="dataset", how="left")
+        .join(_window_means("entity words", "entity"), on="dataset", how="left")
+        .sort(pl.col("dataset").replace_strict(_order, list(range(len(_order)))))
+    )
+    _tests = ld.pairwise_window_tests(_windows, _order)
+
+    def _finding(row):
+        verb = (
+            "does not clearly differ from"
+            if row["holm_p"] >= 0.05
+            else "is more diverse than"
+            if row["ttr"] > row["against_ttr"]
+            else "is less diverse than"
+        )
+        return (
+            f"- **{row['dataset']}** ({row['ttr']:.3f}) {verb} **{row['against']}** "
+            f"({row['against_ttr']:.3f}); Holm p = {row['holm_p']:.2g}, "
+            f"{row['windows']} vs {row['against_windows']} windows"
+        )
+
+    _findings = [
+        f"**{kept.capitalize()}**, mean TTR per {ttr_window.value}-word window:\n\n"
+        + "\n".join(
+            _finding(row)
+            for row in _tests.filter(pl.col("words_kept") == kept).iter_rows(named=True)
+        )
+        for kept in ("all words", "entity words")
+        if _tests.height and kept in _tests["words_kept"].to_list()
+    ]
+    mo.vstack(
+        [
+            mo.md(
+                "## 6. Lexical diversity: is any dataset simpler?\n"
+                "The **type-token ratio** (TTR) is distinct words divided by all words: "
+                "lower means more repetition, a simpler vocabulary to learn. Plain TTR "
+                "falls as a text gets longer, so datasets of different sizes are compared "
+                "on windows of the same number of words (mean segmental TTR). **Entity "
+                "words** keeps only words inside gold entities, the vocabulary the model "
+                "has to tag."
+            ),
+            ttr_window,
+            mo.ui.altair_chart(_charts),
+            mo.ui.table(
+                _summary,
+                selection=None,
+                format_mapping={
+                    "entity_words_pct": "{:.1f}",
+                    "sentence_ttr": "{:.3f}",
+                    "window_ttr_all": "{:.3f}",
+                    "window_ttr_entity": "{:.3f}",
+                },
+            ),
+            mo.callout(mo.md("\n\n".join(_findings)), kind="neutral")
+            if _findings
+            else mo.md("Too few windows to compare the datasets; shrink the window."),
+            mo.accordion(
+                {
+                    "Pairwise tests": mo.ui.table(
+                        _tests,
+                        selection=None,
+                        format_mapping={
+                            "ttr": "{:.3f}",
+                            "against_ttr": "{:.3f}",
+                            "p_value": "{:.2g}",
+                            "holm_p": "{:.2g}",
+                        },
+                    ),
+                    "How to read this": mo.md("""
+    - Every split is included (bootstrap sentences, pool, test split), lowercased, with
+      punctuation dropped. Windows run over each dataset's text in document order and do
+      not overlap; a shorter final window is dropped.
+    - Per-sentence TTR is close to 1 for short sentences, so it mostly tracks sentence
+      length. MedicalProcessInstruks has the shortest sentences; compare windows instead.
+    - Each pair of datasets is compared with a Mann–Whitney test on window TTR; Holm
+      adjusts across the three pairs within each word set.
+    - Entity windows are few on Quishpi, where only about a quarter of words are inside
+      an entity; shrink the window to get more of them.
+    - MedicalProcessInstruks has about half PET's words, so about half its windows, and
+      comes from clinical guidelines rather than business process descriptions.
+    - 13 of Quishpi's 18 texts are also PET documents (ADR 0008), so their running text
+      is largely the same; the datasets differ mainly in what is labelled.
+    - TTR measures vocabulary repetition, not how hard the tags are to tell apart.
+    """),
+                }
+            ),
+        ]
+    )
+    return
+
+
 @app.cell(hide_code=True)
 def _(dataset_selector, datasets, mo):
     _dataset = datasets[dataset_selector.value]
@@ -1095,7 +1277,7 @@ def _(
         )
     mo.vstack(
         [
-            mo.md("## 6. Document viewer"),
+            mo.md("## 7. Document viewer"),
             mo.hstack([dataset_selector, document_selector], justify="start"),
             mo.Html(f"<div style='line-height:2'>{_legend}</div><table>{_rows}</table>"),
             *_extras,
