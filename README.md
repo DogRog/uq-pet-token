@@ -75,11 +75,10 @@ at the project root (see [Weights & Biases](#weights--biases)).
 | Run the appendix's test-tuned random oracle sweeps | `scripts/run_oracle_random_all_models.sh` |
 | Tune and train the fully supervised upper bound | `scripts/run_supervised_all_models.sh` |
 | Sample hyperparameters and compare UQ against random | `scripts/run_random_search_all_models.sh` |
-| Inspect tuning completeness and winners | `notebooks/random_baseline_analysis.py` |
-| Compare best-config UQ results and learning curves | `notebooks/best_uq_analysis.py` |
-| Compare Gumbel noise and word form caps with top-K selection | `notebooks/acquisition_variants_analysis.py` |
-| Compare UQ against the test-tuned random oracle (appendix) | `notebooks/oracle_random_analysis.py` |
+| Compare the paper rerun across datasets and models | `notebooks/paper_results.py` |
+| Inspect one best-config run: learning curves and selection diagnostics | `notebooks/best_uq_analysis.py` |
 | Inspect random-search test curves and selections | `notebooks/random_search_analysis.py` |
+| Check Quishpi or MedicalProcessInstruks preprocessing against the raw files | `notebooks/quishpi_preprocessing.py`, `notebooks/medical_preprocessing.py` |
 
 ## Protocol
 
@@ -390,9 +389,8 @@ bash scripts/run_stochastic_uq_all_models.sh --dry-run
 bash scripts/run_stochastic_uq_all_models.sh
 ```
 
-`notebooks/acquisition_variants_analysis.py` pairs each variant run under `results/` with
-a top-K run of identical settings and compares their learning curves, selection
-redundancy, and round-to-round stability.
+Chapter 6 of `notebooks/paper_results.py` compares Gumbel noise with top-K. No notebook
+analyzes word form cap runs; they are not part of the paper rerun.
 
 ### 3. Supervised upper bound
 
@@ -450,17 +448,17 @@ Outputs under `results/supervised/<sweep-name>/`:
 ### 4. Analyze saved results
 
 ```bash
-uv run marimo edit notebooks/random_baseline_analysis.py
+uv run marimo edit notebooks/paper_results.py
 uv run marimo edit notebooks/best_uq_analysis.py
 uv run marimo edit notebooks/random_search_analysis.py
-uv run marimo edit notebooks/oracle_random_analysis.py
 ```
 
 These notebooks read saved files and do not train models.
 
-- `random_baseline_analysis.py` reads `results/random_baseline_search/` and shows trial
-  completeness and the highest-scoring configuration in each completed sweep.
-  Incomplete sweeps are excluded from the winner table.
+- `paper_results.py` compares every dataset and model across the stages, in numbered
+  chapters: progress and random-baseline validation winners, the headline gap, learning
+  curves, label efficiency, the supervised bound, top-K against Gumbel noise, UQ
+  metrics, the random sweep, and a test-split entity viewer.
 - `best_uq_analysis.py` compares the fixed comparisons in `results/best_uq/`. It draws
   the supervised test rows for the selected checkpoint as a dashed reference line with a
   ±1 SD band, plus the sentence-level curve when several percentages were run. The AL
@@ -477,7 +475,6 @@ These notebooks read saved files and do not train models.
   entity F1 (when available), and token accuracy, plus acquired NER-tag coverage and
   selected words with sentence context. Sentence context is read from the local
   `data/raw/PETv1.1-entities.jsonl`, so it covers PET sweeps only.
-- `oracle_random_analysis.py` reads `results/oracle_random/` for the appendix below.
 
 ### 5. Appendix: test-tuned random oracle
 
@@ -510,15 +507,9 @@ All five checkpoints take roughly 28 hours. W&B logs each checkpoint to its own
 (see [Weights & Biases](#weights--biases)). See
 [configs/pet/oracle_random/README.md](configs/pet/oracle_random/README.md).
 
-`notebooks/oracle_random_analysis.py` reports, per checkpoint and UQ metric:
-
-- the oracle gain: how far the oracle random arm's test AUC exceeds the validation
-  winner's in stage 1, which measures the inflation from tuning on the test split;
-- the gap between UQ and random at the oracle configuration in stage 2, and a z-score
-  dividing it by the seed band (the standard deviation of the random arm's AUC across
-  model seeds), with Holm-adjusted paired t-test p-values across the three metrics;
-- checks that stage 2 reruns stage 1's random arm and that stage 1's validation winner
-  reproduces the random arm in `results/best_uq/`.
+The paper rerun leaves the oracle out. `notebooks/best_uq_analysis.py` draws the stage 2
+test curves in its appendix section when `results/oracle_random/uq/` holds a comparison
+for the selected checkpoint and UQ metric; no notebook analyzes stage 1.
 
 The oracle is biased against UQ twice: the random arm's test score carries the winner's
 curse, and UQ runs at random's best settings rather than its own. Oracle numbers are
@@ -748,9 +739,6 @@ not uploaded retroactively on resume.
   Resuming never starts or resumes those historical UQ comparisons.
 - The Optuna workflow has been removed. Existing `results/optuna` artifacts contain
   validation evaluations and are excluded from test analysis.
-- `notebooks/fixed_all_metrics_analysis.py` analyzes one historical sweep,
-  `results/sweeps/bert_token_uq_20260825_090329_945236_fixed-all-metrics/`, and needs
-  its `combined_results.csv` and selection files. It is not a general viewer.
 
 ## Development
 
@@ -803,12 +791,11 @@ recorded in [docs/adr/](docs/adr/).
 | `scripts/run_random_search_all_models.sh` | exploratory random sweep for every dataset and checkpoint |
 | `scripts/run_oracle_random_all_models.sh` | appendix test-tuned random oracle sweeps for all five checkpoints |
 | `notebooks/bert_token_uq.py` | controls, experiment run, tables, and plots |
-| `notebooks/random_baseline_analysis.py` | trial completeness and best saved validation configurations |
+| `notebooks/paper_results.py` | chaptered cross-dataset view of the paper rerun |
 | `notebooks/best_uq_analysis.py` | best-config UQ comparisons against random and the supervised bound |
-| `notebooks/acquisition_variants_analysis.py` | Gumbel noise and word form caps against matched top-K runs |
 | `notebooks/random_search_analysis.py` | random-sweep summaries and per-configuration drill-downs |
-| `notebooks/oracle_random_analysis.py` | appendix: UQ against the test-tuned random oracle |
-| `notebooks/fixed_all_metrics_analysis.py` | read-only analysis of one historical sweep |
+| `notebooks/quishpi_preprocessing.py` | Quishpi preprocessing checks against the raw files |
+| `notebooks/medical_preprocessing.py` | MedicalProcessInstruks preprocessing checks against the raw files |
 | `notebooks/utils/` | chart builders, acquisition diagnostics, oracle selection, and W&B comparison media |
 | `configs/<dataset>/tune_random/` | random-baseline tuning settings, one file per model |
 | `configs/<dataset>/best_uq/` | frozen validation winners for fixed UQ comparisons |
