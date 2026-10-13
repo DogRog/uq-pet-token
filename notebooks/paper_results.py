@@ -1014,6 +1014,15 @@ def _(alt, gap_names, matching, mo, pl, pr, status, sweep, sweep_gap):
         ),
         gap_pp=100 * pl.col(sweep_gap.value),
     )
+    # One row per dataset, models in the usual order.
+    _panels = (
+        _labelled.sort(
+            pl.col("dataset").replace_strict(pr.DATASET_ORDER, [0, 1, 2]),
+            pl.col("model").replace_strict(pr.MODEL_ORDER, list(range(5))),
+        )["panel"]
+        .unique(maintain_order=True)
+        .to_list()
+    )
     _strip = (
         alt.Chart(_labelled)
         .mark_circle(size=45, opacity=0.7)
@@ -1048,7 +1057,7 @@ def _(alt, gap_names, matching, mo, pl, pr, status, sweep, sweep_gap):
     _chart = (
         (_strip + _mean + _zero)
         .properties(width=170, height=220)
-        .facet(facet=alt.Facet("panel:N", title=None), columns=4)
+        .facet(facet=alt.Facet("panel:N", title=None, sort=_panels), columns=len(pr.MODEL_ORDER))
     )
     mo.vstack(
         [
