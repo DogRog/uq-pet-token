@@ -5,10 +5,14 @@ from each sweep's plan, so sweep folder names never need parsing.
 """
 
 import json
+from functools import cache
 from pathlib import Path
 
 import polars as pl
+from seqeval.metrics.sequence_labeling import get_entities
 
+from uq_pet import data_prep
+from uq_pet.active_learning import read_predictions
 from utils.oracle_analysis import curve_auc
 
 MODELS = {
@@ -95,6 +99,80 @@ def best_uq_curves(results_root: Path) -> pl.DataFrame:
 
 
 SETTING = ["dataset", "model", "acquisition", "uq_metric"]
+
+
+def best_uq_runs(results_root: Path) -> pl.DataFrame:
+    """The run folder of every completed best-UQ comparison, keyed by its setting."""
+    rows = [
+        {
+            "dataset": dataset,
+            "model": model,
+            "acquisition": _acquisition(plan),
+            "uq_metric": comparison["uq_metric"],
+            "run_dir": str(sweep_dir / comparison["run_dir"]),
+        }
+        for sweep_dir, plan, summary, dataset, model in _sweeps(results_root / "best_uq")
+        for comparison in (summary or {}).get("comparisons", [])
+        if comparison["status"] == "complete"
+    ]
+    return pl.DataFrame(rows, schema=[*SETTING, "run_dir"])
+
+
+@cache
+def _test_split(dataset: str) -> tuple[dict, ...]:
+    (_, _, _, test), _ = data_prep.load_splits(dataset)
+    return tuple(test)
+
+
+def load_test_predictions(run_dir: Path) -> tuple[list[dict], pl.DataFrame, list]:
+    """Return a run's test sentences with gold `tags`, results rows, and predicted tags.
+
+    Predicted tags come one per results row. predictions.npz stores tags only, so the words come from rebuilding the run's test
+    split from local data; its gold tags must equal the saved ones.
+    """
+    dataset = json.loads((run_dir / "config.json").read_text())["dataset"]
+    test = _test_split(dataset)
+    gold, predictions = read_predictions(run_dir)
+    labels = data_prep.DATASET_TAGS[dataset]
+    if gold != [[labels[tag] for tag in sentence["ner_tags"]] for sentence in test]:
+        raise ValueError(f"{run_dir} was not scored on the rebuilt {dataset} test split")
+    sentences = [sentence | {"tags": tags} for sentence, tags in zip(test, gold, strict=True)]
+    return sentences, pl.read_csv(run_dir / "results.csv"), predictions
+
+
+def match_entities(
+    gold: list[str], predicted: list[str], matching: str
+) -> tuple[list[tuple[int, int, str, bool]], list[tuple[int, int, str, bool]]]:
+    """Return gold and predicted (first word, end word, type, matched) entities of a sentence.
+
+    Entities are chunked and matched as the scores do: exact needs the same words and
+    type; partial needs the same type and one shared word, each gold entity matching
+    once, greedily in predicted order.
+    """
+    unmatched = [(start, end + 1, kind) for kind, start, end in get_entities(gold)]
+    gold_entities = list(unmatched)
+    predicted_entities = []
+    for kind, start, end in get_entities(predicted):
+        match = next(
+            (
+                entity
+                for entity in unmatched
+                if entity[2] == kind
+                and (
+                    entity[:2] == (start, end + 1)
+                    if matching == "exact"
+                    else entity[0] <= end and start < entity[1]
+                )
+            ),
+            None,
+        )
+        if match is not None:
+            unmatched.remove(match)
+        predicted_entities.append((start, end + 1, kind, match is not None))
+    return (
+        [(*entity, entity not in unmatched) for entity in gold_entities],
+        predicted_entities,
+    )
 
 
 def seed_scores(curves: pl.DataFrame, field: str) -> pl.DataFrame:

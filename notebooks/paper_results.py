@@ -30,7 +30,7 @@ def _(mo):
       them in proportion to their scores (ADR 0009).
     - The floating panel switches every chapter between exact match (headline, tuning
       objective) and partial match (reported only, ADR 0010), and picks the acquisition
-      shown in chapters 3–5.
+      shown in chapters 3–5. Chapter 10 marks unmatched entities by the chosen matching.
     - Nothing is downloaded or trained. Per-run diagnostics (tag coverage, timing,
       selected words) are in `notebooks/best_uq_analysis.py`.
     """)
@@ -43,6 +43,7 @@ def _(mo):
 
 @app.cell
 def _():
+    import html
     from pathlib import Path
 
     import altair as alt
@@ -77,7 +78,9 @@ def _():
 
     return (
         FloatingPanel,
+        Path,
         alt,
+        html,
         learning_rate_axis,
         mo,
         pl,
@@ -1260,10 +1263,181 @@ def _(alt, frozen, learning_rate_axis, mo, pl, pr, tuning):
     return
 
 
+@app.cell
+def _(mo, pl, pr, refresh, results_root):
+    refresh.value
+    _runs = pr.best_uq_runs(results_root).sort(
+        pl.col("dataset").replace_strict(pr.DATASET_ORDER, [0, 1, 2]),
+        pl.col("model").replace_strict(pr.MODEL_ORDER, list(range(5))),
+        pl.col("acquisition").replace_strict(["Top-K", "Gumbel noise"], [0, 1]),
+        "uq_metric",
+    )
+    _options = {" · ".join(row[:4]): row[4] for row in _runs.iter_rows()}
+    viewer_run = mo.ui.dropdown(
+        _options, value=next(iter(_options), None), label="Run", searchable=True
+    )
+    viewer_lines = mo.ui.multiselect(
+        ["Gold", "Uncertainty", "Random"],
+        value=["Gold", "Uncertainty", "Random"],
+        label="Lines",
+    )
+    return viewer_lines, viewer_run
+
+
+@app.cell
+def _(Path, mo, pr, viewer_run):
+    mo.stop(viewer_run.value is None)
+    test_sentences, run_rows, run_predictions = pr.load_test_predictions(Path(viewer_run.value))
+    entity_types = sorted(
+        {
+            tag[2:]
+            for rows in (*run_predictions, [s["tags"] for s in test_sentences])
+            for tags in rows
+            for tag in tags
+            if tag != "O"
+        }
+    )
+    _rounds = run_rows["round"].unique().sort()
+    _seeds = run_rows["seed"].unique().sort().to_list()
+    viewer_seed = mo.ui.dropdown(
+        {str(seed): seed for seed in _seeds}, value=str(_seeds[0]), label="Model seed"
+    )
+    viewer_round = mo.ui.slider(
+        _rounds.min(), _rounds.max(), value=_rounds.max() // 4, label="Round", show_value=True
+    )
+    _documents = sorted({s["document_name"] for s in test_sentences})
+    viewer_document = mo.ui.dropdown(
+        ["All test sentences", *_documents], value=_documents[0], label="Document"
+    )
+    return (
+        entity_types,
+        run_predictions,
+        run_rows,
+        test_sentences,
+        viewer_document,
+        viewer_round,
+        viewer_seed,
+    )
+
+
+@app.cell(hide_code=True)
+def _(
+    entity_types,
+    field,
+    html,
+    matching,
+    mo,
+    pl,
+    pr,
+    run_predictions,
+    run_rows,
+    test_sentences,
+    viewer_document,
+    viewer_lines,
+    viewer_round,
+    viewer_run,
+    viewer_seed,
+):
+    _colors = {
+        kind: f"hsl({360 * i / len(entity_types):.0f} 70% 50% / 0.28)"
+        for i, kind in enumerate(entity_types)
+    }
+    _rows = run_rows.with_row_index().filter(
+        (pl.col("seed") == viewer_seed.value) & (pl.col("round") == viewer_round.value)
+    )
+    _arms = {
+        name: _rows.filter(pl.col("arm") == arm).row(0, named=True)
+        for name, arm in (("Uncertainty", "uncertainty"), ("Random", "random"))
+    }
+    _shown = [line for line in ("Gold", "Uncertainty", "Random") if line in viewer_lines.value]
+
+    def _render(tokens, entities):
+        pieces = [html.escape(token) for token in tokens]
+        for start, end, kind, matched in reversed(entities):
+            outline = "" if matched else ";outline:1.5px dashed #E45756"
+            pieces[start:end] = [
+                f'<span style="background:{_colors[kind]};border-radius:3px;'
+                f'padding:1px 3px{outline}" title="{kind}">{" ".join(pieces[start:end])}'
+                f"<sub style='opacity:.7'> {kind}</sub></span>"
+            ]
+        return " ".join(pieces)
+
+    _reference = next((line for line in _shown if line != "Gold"), None)
+
+    def _sentence(index, sentence):
+        tags = sentence["tags"]
+        matches = {
+            line: pr.match_entities(tags, run_predictions[_arms[line]["index"]][index], matching)
+            for line in _shown
+            if line != "Gold"
+        }
+        lines = []
+        for line in _shown:
+            if line != "Gold":
+                entities = matches[line][1]
+                note = f"{sum(e[3] for e in entities)}/{len(entities)} correct"
+            elif _reference:
+                entities = matches[_reference][0]
+                note = f"{sum(e[3] for e in entities)}/{len(entities)} found"
+            else:
+                entities = pr.match_entities(tags, tags, matching)[0]
+                note = f"{len(entities)} entities"
+            lines.append(
+                f"<div style='display:flex;gap:8px;line-height:1.9'><span style='flex:0 0 "
+                f"140px;opacity:.6;font-size:.85em'>{line} · {note}</span>"
+                f"<span>{_render(sentence['tokens'], entities)}</span></div>"
+            )
+        return (
+            f"<tr><td style='opacity:.6;padding:4px 12px 8px 0;vertical-align:top;"
+            f"white-space:nowrap'>{html.escape(str(sentence['document_name']))}"
+            f"&nbsp;·&nbsp;{sentence['sentence_id']}</td>"
+            f"<td style='text-align:left;padding-bottom:8px'>{''.join(lines)}</td></tr>"
+        )
+
+    _table = "".join(
+        _sentence(index, sentence)
+        for index, sentence in sorted(
+            enumerate(test_sentences),
+            key=lambda item: (item[1]["document_name"], item[1]["sentence_id"]),
+        )
+        if viewer_document.value in ("All test sentences", sentence["document_name"])
+    )
+    _legend = " ".join(
+        f'<span style="background:{color};border-radius:3px;padding:1px 6px">{kind}</span>'
+        for kind, color in _colors.items()
+    )
+    _uq, _random = _arms["Uncertainty"], _arms["Random"]
+    mo.vstack(
+        [
+            mo.md(
+                "## 10. Gold and predicted entities on the test split\n"
+                "Each best-UQ run saves the predicted tags behind every evaluation row, so "
+                "any round of either arm can be read sentence by sentence. Red dashed "
+                f"outlines mark entities with no {matching} match: on a predicted line, "
+                "spurious entities; on the gold line, entities the first predicted line "
+                "shown missed."
+            ),
+            mo.hstack(
+                [viewer_run, viewer_seed, viewer_round, viewer_document, viewer_lines],
+                justify="start",
+                wrap=True,
+            ),
+            mo.md(
+                f"Round {viewer_round.value} of {_uq['total_rounds']}, "
+                f"{_uq['percent_acquired']:.1f}% of the pool acquired. Test {matching} "
+                f"entity F1: uncertainty **{_uq[field]:.3f}**, random "
+                f"**{_random[field]:.3f}**."
+            ),
+            mo.Html(f"<div>{_legend}</div><table style='width:100%'>{_table}</table>"),
+        ]
+    )
+    return
+
+
 @app.cell(hide_code=True)
 def _(mo):
     mo.md("""
-    ## 10. Caveats
+    ## 11. Caveats
 
     - **Test split sizes.** Quishpi tests on 41 sentences and PET on 84, so single-round
       scores move by several F1 points between seeds. Gap AUC averages over every round
