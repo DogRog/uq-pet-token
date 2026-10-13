@@ -30,7 +30,7 @@ def _(mo):
       them in proportion to their scores (ADR 0009).
     - The floating panel switches every chapter between exact match (headline, tuning
       objective) and partial match (reported only, ADR 0010), and picks the acquisition
-      shown in chapters 3–5. Chapter 10 marks unmatched entities by the chosen matching.
+      shown in chapters 3–5. Chapter 11 marks unmatched entities by the chosen matching.
     - Nothing is downloaded or trained. Per-run diagnostics (tag coverage, timing,
       selected words) are in `notebooks/best_uq_analysis.py`.
     """)
@@ -1673,7 +1673,7 @@ def _(
     mo.vstack(
         [
             mo.md(
-                "## 10. Gold and predicted entities on the test split\n"
+                "## 11. Gold and predicted entities on the test split\n"
                 "Each best-UQ run saves the predicted tags behind every evaluation row, so "
                 "any round of either arm can be read sentence by sentence. Red dashed "
                 f"outlines mark entities with no {matching} match: on a predicted line, "
@@ -1700,7 +1700,7 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md("""
-    ## 11. Caveats
+    ## 12. Caveats
 
     - **Test split sizes.** Quishpi tests on 41 sentences and PET on 84, so single-round
       scores move by several F1 points between seeds. Gap AUC averages over every round
