@@ -112,7 +112,8 @@ def _(pr, refresh, results_root):
     curves = pr.best_uq_curves(results_root)
     supervised = pr.supervised_scores(results_root)
     sizes = pr.dataset_sizes(results_root)
-    return curves, sizes, status, supervised
+    winners = pr.tuning_winners(results_root)
+    return curves, sizes, status, supervised, winners
 
 
 @app.cell
@@ -126,7 +127,7 @@ def _(curves, entity_matching, pr, results_root):
 
 
 @app.cell(hide_code=True)
-def _(mo, pl, pr, sizes, status):
+def _(mo, pl, pr, sizes, status, winners):
     _stage_order = list(pr.STAGES.values())
     # Best UQ runs two sweeps per model, Top-K and Gumbel noise.
     _expected = pl.when(pl.col("stage") == pr.STAGES["best_uq"]).then(10).otherwise(5)
@@ -178,6 +179,25 @@ def _(mo, pl, pr, sizes, status):
             else mo.md(""),
             mo.md("### Datasets"),
             mo.ui.table(sizes, selection=None),
+            mo.accordion(
+                {
+                    "Random-baseline validation winners": mo.ui.table(
+                        winners.sort(
+                            pl.col("dataset").replace_strict(
+                                pr.DATASET_ORDER, list(range(len(pr.DATASET_ORDER)))
+                            ),
+                            pl.col("model").replace_strict(pr.MODEL_ORDER, list(range(5))),
+                        ),
+                        selection=None,
+                        format_mapping={
+                            "validation_score": "{:.3f}",
+                            "learning_rate": "{:.2e}",
+                        },
+                    )
+                }
+            )
+            if winners.height
+            else mo.md(""),
         ]
     )
     return

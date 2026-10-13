@@ -264,6 +264,28 @@ def supervised_scores(results_root: Path) -> pl.DataFrame:
     return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
 
 
+def tuning_winners(results_root: Path) -> pl.DataFrame:
+    """The validation winner of each finished random-baseline tuning sweep and its tuned settings."""
+    rows = []
+    for sweep_dir, plan, summary, dataset, model in _sweeps(
+        results_root / "random_baseline_search"
+    ):
+        if not (summary or {}).get("complete"):
+            continue
+        selection = json.loads((sweep_dir / "selection.json").read_text())
+        best = json.loads((sweep_dir / "best_config.json").read_text())
+        rows.append(
+            {
+                "dataset": dataset,
+                "model": model,
+                "config_id": selection["config_id"],
+                "validation_score": selection["validation_score"],
+                **{name: best[name] for name in plan["search_space"]},
+            }
+        )
+    return pl.DataFrame(rows)
+
+
 def random_sweep_comparisons(results_root: Path, field: str) -> pl.DataFrame:
     """Per configuration and UQ metric of the 30-config sweeps: gaps and random-arm scores.
 
