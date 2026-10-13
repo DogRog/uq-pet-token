@@ -2,7 +2,7 @@
 
 import json
 
-import httpx
+import httpx2
 import polars as pl
 import pytest
 import torch
@@ -283,8 +283,8 @@ def test_medical_joins_both_files_and_is_split_like_pet(tmp_path):
 
 def test_medical_explains_gated_access(monkeypatch):
     def gated(*args, **kwargs):
-        request = httpx.Request("GET", "https://huggingface.co")
-        raise GatedRepoError("401", response=httpx.Response(401, request=request))
+        request = httpx2.Request("GET", "https://huggingface.co")
+        raise GatedRepoError("401", response=httpx2.Response(401, request=request))
 
     monkeypatch.setattr(data_prep, "hf_hub_download", gated)
     with pytest.raises(RuntimeError, match="accept its conditions"):
