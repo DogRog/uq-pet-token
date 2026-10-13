@@ -403,3 +403,73 @@ def config_gap_ttests(comparisons: pl.DataFrame) -> pl.DataFrame:
         )
         .drop("rank")
     )
+
+
+def dataset_words(datasets: list[str]) -> tuple[pl.DataFrame, dict[str, str]]:
+    """Every word of each dataset in document order, with its gold tag and entity flag.
+
+    All splits are included: bootstrap sentences, pool, and test split. Words are
+    lowercased; tokens without a letter or digit (punctuation) are dropped. Datasets that
+    cannot be loaded are reported in the returned errors instead of raising.
+    """
+    from uq_pet.data_prep import DATASET_TAGS, load_splits
+
+    rows, errors = [], {}
+    for name in datasets:
+        try:
+            (seed, pool_inputs, pool_gold, test), _ = load_splits(name)
+        except Exception as error:  # noqa: BLE001 - a gated or missing dataset is reported
+            errors[DATASETS.get(name, name)] = f"{type(error).__name__}: {error}"
+            continue
+        tags = DATASET_TAGS[name]
+        sentences = [*seed, *test] + [
+            {
+                **pool,
+                "ner_tags": [pool_gold[pool["pool_idx"], i] for i in range(len(pool["tokens"]))],
+            }
+            for pool in pool_inputs
+        ]
+        for sentence in sorted(sentences, key=lambda s: (s["document_name"], s["sentence_id"])):
+            for word_idx, (word, tag) in enumerate(
+                zip(sentence["tokens"], sentence["ner_tags"], strict=True)
+            ):
+                if not any(char.isalnum() for char in word):
+                    continue
+                rows.append(
+                    {
+                        "dataset": DATASETS.get(name, name),
+                        "document": sentence["document_name"],
+                        "sentence_id": sentence["sentence_id"],
+                        "word_idx": word_idx,
+                        "word": word.lower(),
+                        "tag": tags[tag],
+                    }
+                )
+    words = pl.DataFrame(rows).with_columns(entity=pl.col("tag") != "O")
+    return words, errors
+
+
+def sentence_ttr(words: pl.DataFrame) -> pl.DataFrame:
+    """Type-token ratio and length of every sentence (punctuation dropped)."""
+    return (
+        words.group_by("dataset", "document", "sentence_id")
+        .agg(pl.col("word").n_unique().alias("types"), pl.len().alias("words"))
+        .with_columns(ttr=pl.col("types") / pl.col("words"))
+    )
+
+
+def window_ttr(words: pl.DataFrame, size: int, entity_only: bool = False) -> pl.DataFrame:
+    """Type-token ratio of consecutive, non-overlapping windows of `size` words.
+
+    Windows run over each dataset's text in document order; a final window shorter than
+    `size` is dropped, so every value is comparable across datasets (mean segmental TTR).
+    With `entity_only`, only words inside gold entities are kept before windowing.
+    """
+    kept = words.filter(pl.col("entity")) if entity_only else words
+    return (
+        kept.with_columns(window=(pl.int_range(pl.len()) // size).over("dataset"))
+        .group_by("dataset", "window")
+        .agg(pl.col("word").n_unique().alias("types"), pl.len().alias("words"))
+        .filter(pl.col("words") == size)
+        .with_columns(ttr=pl.col("types") / size)
+    )

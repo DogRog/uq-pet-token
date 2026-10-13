@@ -308,7 +308,10 @@ def _(acquisition, mo, pr, seeds):
         ["all three"] + pr.UQ_METRICS, value="all three", label="UQ metric"
     )
     curve_view = mo.ui.radio(
-        ["F1 curves", "Gap curves"], value="F1 curves", label="Show", inline=True
+        ["F1 curves", "Precision & recall", "Gap curves"],
+        value="F1 curves",
+        label="Show",
+        inline=True,
     )
     curve_zoom = mo.ui.dropdown(
         {"whole pool": 100, "first 50%": 50, "first 25%": 25},
@@ -321,8 +324,10 @@ def _(acquisition, mo, pr, seeds):
                 "## 3. Learning curves\n"
                 f"Test entity F1 against the acquired pool, {acquisition.value} acquisition. "
                 "**F1 curves** show seed means with ±1 SD bands and the supervised upper "
-                "bound (green dashes); **gap curves** show UQ − random per round. Zoom in "
-                "on the start of the pool, where the arms differ most."
+                "bound (green dashes); **precision & recall** splits F1 into false "
+                "positives (precision) and missed entities (recall), one row per arm; "
+                "**gap curves** show UQ − random per round. Zoom in on the start of the pool, "
+                "where the arms differ most."
             ),
             mo.hstack(
                 [curve_dataset, curve_metric, curve_zoom, curve_view], justify="start", gap=2
@@ -354,21 +359,71 @@ def _(
     _x = alt.X(
         "percent:Q", title="Pool acquired (%)", scale=alt.Scale(domain=[0, curve_zoom.value])
     )
-    _color = series_color(_metrics + ["random"] * (curve_view.value == "F1 curves"))
-    if curve_view.value == "F1 curves":
-        _runs = curves.filter(
-            (pl.col("dataset") == curve_dataset.value)
-            & (pl.col("acquisition") == acquisition.value)
-            & pl.col("uq_metric").is_in(_metrics)
-        ).with_columns(
-            series=pl.when(pl.col("arm") == "random")
-            .then(pl.lit("random"))
-            .otherwise(pl.col("uq_metric"))
+    _color = series_color(_metrics + ["random"] * (curve_view.value != "Gap curves"))
+    _runs = curves.filter(
+        (pl.col("dataset") == curve_dataset.value)
+        & (pl.col("acquisition") == acquisition.value)
+        & pl.col("uq_metric").is_in(_metrics)
+    ).with_columns(
+        series=pl.when(pl.col("arm") == "random")
+        .then(pl.lit("random"))
+        .otherwise(pl.col("uq_metric"))
+    )
+    # The UQ metrics share one random arm; keep a single copy of it.
+    _runs = _runs.filter((pl.col("arm") == "uncertainty") | (pl.col("uq_metric") == _metrics[0]))
+    _facet = {"facet": alt.Facet("model:N", title=None, sort=pr.MODEL_ORDER), "columns": 5}
+    _size = {"width": 215, "height": 230}
+    if curve_view.value == "Precision & recall":
+        _prefix = field.removesuffix("_f1")
+        _measures = {
+            field: "F1",
+            f"{_prefix}_precision": "precision",
+            f"{_prefix}_recall": "recall",
+        }
+        _data = (
+            _runs.unpivot(
+                on=list(_measures),
+                index=["model", "series", "round", "percent_acquired"],
+                variable_name="measure",
+            )
+            .with_columns(pl.col("measure").replace_strict(_measures))
+            .group_by("model", "series", "round", "measure")
+            .agg(pl.col("percent_acquired").mean().alias("percent"), pl.col("value").mean())
+            .filter(pl.col("percent") <= curve_zoom.value)
         )
-        # The UQ metrics share one random arm; keep a single copy of it.
-        _runs = _runs.filter(
-            (pl.col("arm") == "uncertainty") | (pl.col("uq_metric") == _metrics[0])
+        _chart = (
+            alt.Chart(_data)
+            .mark_line(strokeWidth=2)
+            .encode(
+                x=_x,
+                y=alt.Y("value:Q", title=f"{matching.capitalize()}-match score"),
+                color=alt.Color(
+                    "measure:N",
+                    title=None,
+                    scale=alt.Scale(
+                        domain=["F1", "precision", "recall"],
+                        range=["#9D9D9D", "#4C9BE8", "#F2A93B"],
+                    ),
+                    legend=alt.Legend(orient="top"),
+                ),
+                strokeDash=alt.condition(
+                    alt.datum.measure == "F1", alt.value([4, 3]), alt.value([1, 0])
+                ),
+                tooltip=[
+                    "model",
+                    "series",
+                    "measure",
+                    alt.Tooltip("percent:Q", format=".1f"),
+                    alt.Tooltip("value:Q", format=".3f"),
+                ],
+            )
         )
+        _facet = {
+            "row": alt.Row("series:N", title=None, sort=["random", *pr.UQ_METRICS]),
+            "column": alt.Column("model:N", title=None, sort=pr.MODEL_ORDER),
+        }
+        _size = {"width": 215, "height": 160}
+    elif curve_view.value == "F1 curves":
         _data = (
             _runs.group_by("model", "series", "round")
             .agg(
@@ -456,11 +511,7 @@ def _(
         )
     mo.vstack(
         [
-            mo.ui.altair_chart(
-                _chart.properties(width=215, height=230).facet(
-                    facet=alt.Facet("model:N", title=None, sort=pr.MODEL_ORDER), columns=5
-                )
-            ),
+            mo.ui.altair_chart(_chart.properties(**_size).facet(**_facet)),
             mo.accordion(
                 {
                     "How to read this": mo.md("""
@@ -469,6 +520,8 @@ def _(
       labelled pool (ADR 0006): an upper bound, not a matched-budget arm.
     - Both arms end on the same full pool, so the curves meet near 100%; the advantage
       is how much sooner UQ gets there.
+    - **Precision & recall** shows seed means only. Precision below recall means more
+      false positives than missed entities; recall below precision means the reverse.
     """)
                 }
             ),
@@ -1142,6 +1195,216 @@ def _(alt, driver, learning_rate_axis, mo, pl, stats, sweep):
     return
 
 
+@app.cell
+def _(pr):
+    lexicon, lexicon_errors = pr.dataset_words(["pet", "quishpi", "medical"])
+    return lexicon, lexicon_errors
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    ttr_window = mo.ui.slider(
+        start=25, stop=250, step=25, value=50, show_value=True, label="Window size (words)"
+    )
+    mo.vstack(
+        [
+            mo.md(
+                "## 9. Is Quishpi simpler than PET? Lexical diversity\n"
+                "The **type-token ratio** (TTR) is distinct words divided by all words: "
+                "lower means more repetition, a simpler vocabulary to learn. Plain TTR "
+                "falls as a text gets longer, so datasets of different sizes are compared "
+                "on windows of the same number of words (mean segmental TTR). **Entity "
+                "words** keeps only words inside gold entities, the vocabulary the model "
+                "has to tag."
+            ),
+            ttr_window,
+        ]
+    )
+    return (ttr_window,)
+
+
+@app.cell(hide_code=True)
+def _(
+    alt,
+    lexicon,
+    lexicon_errors,
+    mo,
+    pl,
+    pr,
+    seeds,
+    stats,
+    supervised,
+    ttr_window,
+):
+    mo.stop(lexicon.is_empty(), mo.md(f"No dataset could be loaded: {lexicon_errors}"))
+    _sentences = pr.sentence_ttr(lexicon)
+    _windows = pl.concat(
+        [
+            pr.window_ttr(lexicon, ttr_window.value).with_columns(words_kept=pl.lit("all words")),
+            pr.window_ttr(lexicon, ttr_window.value, entity_only=True).with_columns(
+                words_kept=pl.lit("entity words")
+            ),
+        ]
+    )
+    _datasets = [d for d in pr.DATASET_ORDER if d in lexicon["dataset"].unique().to_list()]
+    _y = alt.Y("dataset:N", title=None, sort=_datasets)
+    _color = alt.Color("dataset:N", sort=_datasets, legend=None)
+
+    def _box(data, column, title, domain=None):
+        return (
+            alt.Chart(data)
+            .mark_boxplot(size=22, extent=1.5)
+            .encode(
+                x=alt.X(
+                    f"{column}:Q",
+                    title=title,
+                    scale=alt.Scale(domain=domain) if domain else alt.Scale(zero=False),
+                ),
+                y=_y,
+                color=_color,
+            )
+            .properties(width=330, height=130)
+        )
+
+    _charts = alt.vconcat(
+        alt.hconcat(
+            _box(_sentences, "ttr", "Per-sentence TTR", [0, 1]),
+            _box(_sentences, "words", "Sentence length (words)"),
+        ),
+        alt.hconcat(
+            _box(
+                _windows.filter(pl.col("words_kept") == "all words"),
+                "ttr",
+                f"TTR per {ttr_window.value}-word window, all words",
+                [0, 1],
+            ),
+            _box(
+                _windows.filter(pl.col("words_kept") == "entity words"),
+                "ttr",
+                f"TTR per {ttr_window.value}-word window, entity words",
+                [0, 1],
+            ),
+        ),
+    )
+    _window_means = _windows.group_by("dataset", "words_kept").agg(
+        pl.col("ttr").mean().alias("ttr"), pl.len().alias("windows")
+    )
+
+    def _window_value(dataset, kept, column="ttr"):
+        rows = _window_means.filter((pl.col("dataset") == dataset) & (pl.col("words_kept") == kept))
+        return rows[column][0] if rows.height else None
+
+    _summary = (
+        lexicon.group_by("dataset")
+        .agg(
+            pl.len().alias("words"),
+            pl.col("word").n_unique().alias("distinct_words"),
+            (100 * pl.col("entity").mean()).alias("entity_words_pct"),
+            pl.col("tag").n_unique().alias("bio_tags"),
+        )
+        .join(
+            _sentences.group_by("dataset").agg(
+                pl.len().alias("sentences"), pl.col("ttr").mean().alias("sentence_ttr")
+            ),
+            on="dataset",
+        )
+        .with_columns(
+            window_ttr_all=pl.col("dataset").map_elements(
+                lambda d: _window_value(d, "all words"), return_dtype=pl.Float64
+            ),
+            window_ttr_entity=pl.col("dataset").map_elements(
+                lambda d: _window_value(d, "entity words"), return_dtype=pl.Float64
+            ),
+            entity_windows=pl.col("dataset").map_elements(
+                lambda d: _window_value(d, "entity words", "windows"), return_dtype=pl.UInt32
+            ),
+        )
+        .join(
+            supervised.group_by("dataset").agg(
+                pl.col("entity_f1").mean().alias("supervised_test_f1")
+            ),
+            on="dataset",
+            how="left",
+        )
+        .sort(pl.col("dataset").replace_strict(_datasets, list(range(len(_datasets)))))
+    )
+
+    def _compare(kept):
+        a = _windows.filter((pl.col("dataset") == "Quishpi") & (pl.col("words_kept") == kept))
+        b = _windows.filter((pl.col("dataset") == "PET") & (pl.col("words_kept") == kept))
+        if a.height < 2 or b.height < 2:
+            return f"{kept}: too few windows to compare"
+        test = stats.mannwhitneyu(a["ttr"], b["ttr"])
+        relation = (
+            "no clear difference from"
+            if test.pvalue >= 0.05
+            else "more diverse than"
+            if a["ttr"].mean() > b["ttr"].mean()
+            else "less diverse than"
+        )
+        return (
+            f"**{kept}**: Quishpi {a['ttr'].mean():.3f} vs PET {b['ttr'].mean():.3f}, "
+            f"{relation} PET (Mann–Whitney p = {test.pvalue:.2g}, {a.height} vs {b.height} "
+            "windows)"
+        )
+
+    _gaps = seeds.group_by("dataset").agg((100 * pl.col("gap_auc").mean()).alias("gap"))
+    _gap = dict(_gaps.iter_rows())
+    mo.vstack(
+        [
+            mo.ui.altair_chart(_charts),
+            mo.ui.table(
+                _summary,
+                selection=None,
+                format_mapping={
+                    "entity_words_pct": "{:.1f}",
+                    "sentence_ttr": "{:.3f}",
+                    "window_ttr_all": "{:.3f}",
+                    "window_ttr_entity": "{:.3f}",
+                    "supervised_test_f1": "{:.3f}",
+                },
+            ),
+            mo.callout(
+                mo.md(
+                    "\n\n".join(
+                        [
+                            "Quishpi against PET at equal window sizes:",
+                            "- " + _compare("all words"),
+                            "- " + _compare("entity words"),
+                            "A simpler vocabulary would show a **lower** TTR. At the validation "
+                            f"winners Quishpi's mean gap AUC is {_gap.get('Quishpi', 0):+.2f} pp "
+                            f"against PET's {_gap.get('PET', 0):+.2f} pp (chapter 2); the "
+                            "non-significant Quishpi results are chapter 8's t-tests across "
+                            "sampled configurations.",
+                        ]
+                    )
+                ),
+                kind="neutral",
+            )
+            if {"PET", "Quishpi"} <= set(_datasets)
+            else mo.md(""),
+            mo.md(f"Not loaded: {lexicon_errors}") if lexicon_errors else mo.md(""),
+            mo.accordion(
+                {
+                    "How to read this": mo.md("""
+    - Every split is included (bootstrap sentences, pool, test split), lowercased, with
+      punctuation dropped. Windows run over each dataset's text in document order and do
+      not overlap; a shorter final window is dropped.
+    - Per-sentence TTR is close to 1 for short sentences, so it mostly tracks sentence
+      length; compare windows instead.
+    - Entity windows are few on Quishpi, where only about a quarter of words are inside
+      an entity; shrink the window to get more of them.
+    - 13 of Quishpi's 18 texts are also PET documents (README), so their running text is
+      largely the same; the datasets differ mainly in what is labelled.
+    - TTR measures vocabulary repetition, not how hard the tags are to tell apart.
+    """)
+                }
+            ),
+        ]
+    )
+    return
+
+
 @app.cell(hide_code=True)
 def _(alt, frozen, learning_rate_axis, mo, pl, pr, tuning):
     _winners = tuning.filter("winner").sort(
@@ -1196,7 +1459,7 @@ def _(alt, frozen, learning_rate_axis, mo, pl, pr, tuning):
     mo.vstack(
         [
             mo.md(
-                "## 9. Random-baseline tuning\n"
+                "## 10. Random-baseline tuning\n"
                 "100 sampled configurations per model and dataset, scored by the random arm's "
                 "validation-holdout entity-F1 AUC (exact match). The winner, outlined, is "
                 "frozen for best UQ (chapter 2) and its test run."
