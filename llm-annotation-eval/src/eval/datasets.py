@@ -1,8 +1,8 @@
 """The datasets runs annotate, all evaluated like uq-pet-token evaluates its token classifiers.
 
 uq-pet-token splits PET v1.1, Quishpi and MedicalProcessInstruks into sentences the same way (see
-eval.test_split). For each, ``res/gold/`` holds every sentence and the test split, one sentence
-per line with BIO tags; ``scripts/uq-pet-token-splits.py`` writes the Quishpi and medical files
+eval.test_split). For each, ``res/gold/`` holds every sentence, the test split and the bootstrap
+sentences, one sentence per line with BIO tags; ``scripts/uq-pet-token-splits.py`` writes them
 with uq-pet-token's own code. Whole-document runs annotate PET's gold documents
 (``res/gold/pet.jsonl``, with relations), or for the other datasets their sentences grouped back
 into documents, with the tagged mentions as gold.
@@ -30,6 +30,9 @@ class Dataset:
     # every sentence, and uq-pet-token's test split
     sentences_file: pathlib.Path
     test_file: pathlib.Path
+    # uq-pet-token's bootstrap sentences: the labelled training sentences its token classifiers
+    # start from, and the prompts' examples
+    bootstrap_file: pathlib.Path
     # gold documents for whole-document runs; None: the sentences grouped into documents
     documents_file: typing.Optional[pathlib.Path] = None
 
@@ -54,6 +57,10 @@ class Dataset:
             if (r["document name"], r["sentence-ID"]) not in test_keys
         ]
 
+    def bootstrap(self) -> typing.List[test_split.Row]:
+        """uq-pet-token's bootstrap sentences, in its order."""
+        return test_split.load_test_split(self.bootstrap_file)
+
 
 # the 19 types of MedicalProcessInstruks that occur, named by their begin tag id like uq-pet-token
 MEDICAL_TYPE_IDS = (3, 5, 9, 11, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43)
@@ -74,6 +81,7 @@ DATASETS = {
             ),
             sentences_file=GOLD_DIR / "pet-v1.1.jsonl",
             test_file=GOLD_DIR / "pet-v1.1-test.jsonl",
+            bootstrap_file=GOLD_DIR / "pet-v1.1-bootstrap.jsonl",
             documents_file=GOLD_DIR / "pet.jsonl",
         ),
         Dataset(
@@ -81,12 +89,14 @@ DATASETS = {
             types=("Action", "Entity", "Condition"),
             sentences_file=GOLD_DIR / "quishpi.jsonl",
             test_file=GOLD_DIR / "quishpi-test.jsonl",
+            bootstrap_file=GOLD_DIR / "quishpi-bootstrap.jsonl",
         ),
         Dataset(
             name="medical",
             types=tuple(f"T{type_id:02d}" for type_id in MEDICAL_TYPE_IDS),
             sentences_file=GOLD_DIR / "medical.jsonl",
             test_file=GOLD_DIR / "medical-test.jsonl",
+            bootstrap_file=GOLD_DIR / "medical-bootstrap.jsonl",
         ),
     )
 }

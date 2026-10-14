@@ -71,7 +71,10 @@ class Report:
 
 
 def _available(dataset: datasets.Dataset) -> bool:
-    return dataset.sentences_file.exists() and dataset.test_file.exists()
+    return all(
+        path.exists()
+        for path in (dataset.sentences_file, dataset.test_file, dataset.bootstrap_file)
+    )
 
 
 def check_splits(report: Report, uq_dir: pathlib.Path) -> None:

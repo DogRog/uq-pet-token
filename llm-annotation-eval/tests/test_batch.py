@@ -96,7 +96,9 @@ def test_problems_before_running(monkeypatch, tmp_path):
     assert batch.problems(configs[:1]) == []
     assert "unique" in batch.problems(configs)[0]
 
-    missing = datasets.Dataset("pet", PET.types, tmp_path / "missing.jsonl", PET.test_file)
+    missing = datasets.Dataset(
+        "pet", PET.types, tmp_path / "missing.jsonl", PET.test_file, PET.bootstrap_file
+    )
     monkeypatch.setitem(datasets.DATASETS, "pet", missing)
     [problem] = batch.problems(configs[:1])
     assert problem.startswith("missing.jsonl is missing, needed by a")

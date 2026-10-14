@@ -254,7 +254,7 @@ def test_resuming_with_other_prompts_fails(tmp_path, gold_file, client, monkeypa
     prompt_dir = tmp_path / "prompts"
     shutil.copytree(runner.definitions.PROMPT_DIR, prompt_dir)
     pet = prompt_dir / "pet.yaml"
-    pet.write_text(pet.read_text().replace("some time passes", "some days pass"))
+    pet.write_text(pet.read_text().replace("the warehouse packs", "the warehouse wraps"))
     monkeypatch.setattr(runner.definitions, "PROMPT_DIR", prompt_dir)
 
     with pytest.raises(RuntimeError, match="prompts of test-config changed"):

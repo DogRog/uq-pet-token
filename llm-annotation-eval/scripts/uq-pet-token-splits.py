@@ -1,15 +1,18 @@
-"""Writes the Quishpi and MedicalProcessInstruks sentences and test splits of uq-pet-token.
+"""Writes the sentences, test splits and bootstrap sentences of uq-pet-token's datasets.
 
 Runs in uq-pet-token's environment, so the sentences are cut and split by its own code
 (``uq_pet.data_prep``) with its pinned datasets version:
 
     uv run --project ../uq-pet-token python scripts/uq-pet-token-splits.py
 
-For each dataset it writes ``res/gold/<dataset>.jsonl`` (every sentence, in the dataset's order)
-and ``res/gold/<dataset>-test.jsonl`` (the test split, in the split's order), one sentence per
-line with BIO tags, in the format of PETv1.1-entities.jsonl. MedicalProcessInstruks is gated, so
-its files are not tracked by git; log in with ``uv run --project ../uq-pet-token hf auth login``
-first. PET's files are checked, not written: they must equal what uq-pet-token splits now.
+For each dataset it writes ``res/gold/<dataset>.jsonl`` (every sentence, in the dataset's order),
+``res/gold/<dataset>-test.jsonl`` (the test split, in the split's order) and
+``res/gold/<dataset>-bootstrap.jsonl`` (the bootstrap sentences, the few labelled training
+sentences uq-pet-token's token classifiers start from, in its order; the prompts' examples), one
+sentence per line with BIO tags, in the format of PETv1.1-entities.jsonl. PET's files are named
+``pet-v1.1*.jsonl``. MedicalProcessInstruks is gated, so its files are not tracked by git; log in
+with ``uv run --project ../uq-pet-token hf auth login`` first. PET's sentences and test split are
+checked, not written: they must equal what uq-pet-token splits now.
 
 With ``--check`` nothing is written: every dataset's files are compared with what uq-pet-token
 splits now, and the exit code is 1 if one differs (experiments.checks runs this).
@@ -38,8 +41,8 @@ def rows(examples: list[dict], tags: list[str]) -> list[dict]:
     ]
 
 
-def split(dataset: str) -> tuple[list[dict], list[dict]]:
-    """Every sentence in the dataset's order, and the test split in the split's order."""
+def split(dataset: str) -> tuple[list[dict], list[dict], list[dict]]:
+    """Every sentence in the dataset's order, the test split and the bootstrap sentences."""
     tags = data_prep.DATASET_TAGS[dataset]
     (seed, _, pool_gold, test), _ = data_prep.load_splits(dataset)
     if dataset == "pet":
@@ -72,13 +75,15 @@ def split(dataset: str) -> tuple[list[dict], list[dict]]:
             for row in map(json.loads, path.read_text(encoding="utf-8").splitlines())
         ]
     test_rows = rows(test, tags)
+    bootstrap_rows = rows(seed, tags)
     # the split only reorders the sentences
     keys = [(r["document name"], r["sentence-ID"]) for r in everything]
     assert len(set(keys)) == len(keys)
     assert len(seed) + len({i for i, _ in pool_gold}) + len(test_rows) == len(everything)
     by_key = dict(zip(keys, everything))
     assert all(by_key[(r["document name"], r["sentence-ID"])] == r for r in test_rows)
-    return everything, test_rows
+    assert all(by_key[(r["document name"], r["sentence-ID"])] == r for r in bootstrap_rows)
+    return everything, test_rows, bootstrap_rows
 
 
 def write(path: pathlib.Path, sentences: list[dict]) -> None:
@@ -92,9 +97,9 @@ def read(path: pathlib.Path) -> list[dict]:
 
 
 FILES = {
-    "pet": ("pet-v1.1.jsonl", "pet-v1.1-test.jsonl"),
-    "quishpi": ("quishpi.jsonl", "quishpi-test.jsonl"),
-    "medical": ("medical.jsonl", "medical-test.jsonl"),
+    "pet": ("pet-v1.1.jsonl", "pet-v1.1-test.jsonl", "pet-v1.1-bootstrap.jsonl"),
+    "quishpi": ("quishpi.jsonl", "quishpi-test.jsonl", "quishpi-bootstrap.jsonl"),
+    "medical": ("medical.jsonl", "medical-test.jsonl", "medical-bootstrap.jsonl"),
 }
 
 
@@ -134,16 +139,23 @@ def main():
         same = check()
         print(f"uq-pet-token commit {commit}")
         sys.exit(0 if same else 1)
-    everything, test = split("pet")
-    assert everything == read(GOLD_DIR / "pet-v1.1.jsonl"), "PET v1.1 differs from uq-pet-token's"
-    assert test == read(GOLD_DIR / "pet-v1.1-test.jsonl"), "PET's test split differs"
-    print(f"pet: {len(everything)} sentences, {len(test)} test, unchanged")
+    everything, test, bootstrap = split("pet")
+    full_name, test_name, bootstrap_name = FILES["pet"]
+    assert everything == read(GOLD_DIR / full_name), "PET v1.1 differs from uq-pet-token's"
+    assert test == read(GOLD_DIR / test_name), "PET's test split differs"
+    write(GOLD_DIR / bootstrap_name, bootstrap)
+    print(
+        f"pet: {len(everything)} sentences, {len(test)} test, unchanged, "
+        f"{len(bootstrap)} bootstrap"
+    )
     for dataset in ("quishpi", "medical"):
-        everything, test = split(dataset)
-        full_name, test_name = FILES[dataset]
-        write(GOLD_DIR / full_name, everything)
-        write(GOLD_DIR / test_name, test)
-        print(f"{dataset}: {len(everything)} sentences, {len(test)} test")
+        everything, test, bootstrap = split(dataset)
+        for name, sentences in zip(FILES[dataset], (everything, test, bootstrap)):
+            write(GOLD_DIR / name, sentences)
+        print(
+            f"{dataset}: {len(everything)} sentences, {len(test)} test, "
+            f"{len(bootstrap)} bootstrap"
+        )
     print(f"uq-pet-token commit {commit}")
 
 

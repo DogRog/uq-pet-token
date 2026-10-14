@@ -92,8 +92,10 @@ def test_train_leaves_out_the_test_split(tmp_path):
         types=("Action",),
         sentences_file=write_sentences(tmp_path / "d.jsonl", rows),
         test_file=write_sentences(tmp_path / "d-test.jsonl", [rows[1]]),
+        bootstrap_file=write_sentences(tmp_path / "d-bootstrap.jsonl", [rows[2]]),
     )
     assert dataset.train() == [rows[0], rows[2]]
+    assert dataset.bootstrap() == [rows[2]]
     assert dataset.input_file("md") == dataset.sentences_file
     assert dataset.input_file("md-test-sentences") == dataset.test_file
 

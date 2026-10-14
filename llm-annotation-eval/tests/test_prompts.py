@@ -2,7 +2,7 @@ import pathlib
 
 import pytest
 
-from autoannotate import LLMMentionAnnotator, MentionParser, RelationParser, data, prompts
+from autoannotate import LLMMentionAnnotator, MentionParser, RelationParser, prompts, util
 from eval import datasets
 from experiments import definitions
 
@@ -104,24 +104,73 @@ def test_example_input_is_formatted_like_the_documents(make_doc):
     assert "\n".join(given) == LLMMentionAnnotator._format(make_doc(sentences))
 
 
-def test_relation_example_parses(make_doc):
-    relation_definitions, values = definitions.relation_prompt(datasets.DATASETS["pet"])
-    _, answer = example_parts(values["example"])
-    # the example's input, with the mentions in the order of their ids
-    document = make_doc(
-        ["the LLM extracts the text ."],
-        mentions=[
-            data.Mention("activity", (2,)), data.Mention("actor", (1,)),
-            data.Mention("activity data", (3, 4)),
-        ],
+@pytest.mark.parametrize("name", list(datasets.DATASETS))
+def test_mention_example_shows_the_bootstrap_sentences(name):
+    """The example is uq-pet-token's bootstrap sentences with all their mentions."""
+    dataset = available(name)
+    _, values = definitions.mention_prompt(dataset)
+    given, answer = example_parts(values["example"])
+    bootstrap = dataset.bootstrap()
+
+    assert given == [f"{i}: {' '.join(r['tokens'])}" for i, r in enumerate(bootstrap)]
+    assert len(answer) == sum(len(datasets.mention_spans(r["ner-tags"])) for r in bootstrap)
+
+
+def test_mention_example_lists_mentions_in_text_order():
+    sentences = [
+        {"document name": "a", "sentence-ID": 3, "tokens": ["the", "clerk", "checks", "it"],
+         "ner-tags": ["B-Actor", "I-Actor", "B-Activity", "O"]},
+        {"document name": "b", "sentence-ID": 0, "tokens": ["nothing", "here"],
+         "ner-tags": ["O", "O"]},
+        {"document name": "c", "sentence-ID": 1, "tokens": ["then", "pay"],
+         "ner-tags": ["O", "B-Activity"]},
+    ]
+
+    example = definitions.mention_example(sentences, "{{sentences}}\n--\n{{mentions}}")
+
+    assert example == (
+        "0: the clerk checks it\n1: nothing here\n2: then pay\n--\n"
+        "the clerk\tActor\t0\nchecks\tActivity\t0\npay\tActivity\t2"
     )
+
+
+def test_relation_example_parses():
+    dataset = datasets.DATASETS["pet"]
+    relation_definitions, values = definitions.relation_prompt(dataset)
+    given, answer = example_parts(values["example"])
+    document = definitions.relation_example_document(dataset)
     parser = RelationParser()
 
-    parsed = parser.parse(document, "\n".join(answer))
+    parsed = parser.parse(document.copy(clear=["relations"]), "\n".join(answer))
 
+    assert given == [util.format_document_text_with_entity_mentions(document)]
     assert parser.issues == []
-    assert len(parsed.relations) == len(answer)
+    assert parsed.relations == document.relations
     assert {r.type for r in parsed.relations} <= {d.type for d in relation_definitions}
+
+
+def test_relation_example_is_the_bootstrap_sentences_with_their_gold():
+    """The mentions in the bootstrap sentences, in text order, and the relations between them."""
+    dataset = datasets.DATASETS["pet"]
+    document = definitions.relation_example_document(dataset)
+    bootstrap = dataset.bootstrap()
+
+    assert [[t.text for t in s] for s in document.sentences] == [r["tokens"] for r in bootstrap]
+    starts = [m.token_document_indices[0] for m in document.mentions]
+    assert starts == sorted(starts)
+    # PET v1.1 tags the bootstrap sentences like res/gold/pet.jsonl
+    first = 0
+    spans = []
+    for r in bootstrap:
+        spans += [
+            (first + b, first + e, t.lower()) for b, e, t in datasets.mention_spans(r["ner-tags"])
+        ]
+        first += len(r["tokens"])
+    assert [
+        (m.token_document_indices[0], m.token_document_indices[-1] + 1, m.type)
+        for m in document.mentions
+    ] == spans
+    assert {r.type for r in document.relations} >= {"uses", "flow", "actor performer"}
 
 
 def test_only_pet_has_relations():
@@ -156,11 +205,3 @@ class TestMedicalPrompt:
         )
         assert by_type["T41"].endswith('the 1 mention in the training sentences: "the patient"')
         assert "does not occur" in by_type["T05"]
-
-    def test_example_shows_the_most_types(self, settings):
-        example = definitions.medical_mention_format_example(self.TRAIN, settings)
-
-        assert "\n0: If needed , give insulin and water" in example
-        assert "\n1: Observe the patient" in example
-        assert "\n2: observe closely" in example
-        assert "the patient\tT41\t1" in example and "closely\tT17\t2" in example

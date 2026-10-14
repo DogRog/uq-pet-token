@@ -42,7 +42,7 @@ def problems(configs: typing.List[run_config.RunConfig]) -> typing.List[str]:
         found.append(f"Config names must be unique, as they name the output folders: {duplicates}")
     for c in configs:
         dataset = datasets.DATASETS[c.dataset]
-        for path in (dataset.gold_file, dataset.test_file):
+        for path in (dataset.gold_file, dataset.test_file, dataset.bootstrap_file):
             if not path.exists():
                 found.append(
                     f"{path.name} is missing, needed by {c.name}; generate it with uv run "

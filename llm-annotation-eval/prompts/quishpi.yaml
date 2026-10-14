@@ -29,20 +29,15 @@ mentions:
   disambiguation: |-
     - In "the clerk sends the invoice .", "sends" is an Action and "invoice" an Entity; "the clerk" is no mention, as it performs the Action.
     - In "if the part is available in-house", the Condition is "the part is available in-house", without "if".
-  # the output lines separate text, type and sentence with a tab
+  # uq-pet-token's bootstrap sentences (res/gold/<dataset>-bootstrap.jsonl, the labelled sentences
+  # its token classifiers start from) with their mentions: sentences are "<i>: <words>" lines, as
+  # the documents are given; mentions one line per mention, text, type and sentence separated by
+  # a tab
   example: |-
     ### Input Example
 
-    0: the clerk checks the invoice .
-    1: if the invoice is correct , the clerk pays it .
-    2: otherwise the invoice is returned .
+    {{sentences}}
 
     ### Output Example
 
-    checks	Action	0
-    invoice	Entity	0
-    the invoice is correct	Condition	1
-    pays	Action	1
-    otherwise	Condition	2
-    invoice	Entity	2
-    returned	Action	2
+    {{mentions}}
