@@ -82,6 +82,14 @@ uv run --project ../uq-pet-token python scripts/uq-pet-token-splits.py
 
 MedicalProcessInstruks is gated, so its files are not tracked by git: accept its conditions on the Hub, log in with `uv run --project ../uq-pet-token hf auth login`, and run the script before the first medical run.
 
+Before reporting results next to uq-pet-token's, check that both are on the same data and scored the same way:
+
+```bash
+uv run python src/check-uq-pet-token-data.py
+```
+
+It rebuilds every split with uq-pet-token's code (the script above with `--check`, which writes nothing; `--no-rebuild` skips this), compares the test gold stored in each of uq-pet-token's reported supervised test runs with `res/gold/`, rescores those runs' predictions with `eval.test_split.evaluate` against their `results.csv`, checks that every run here used today's gold files (their sha256 in `run.json`) and that no test sentence is in a prompt, and exits with 1 if a check fails. It also lists the PET test sentences labelled differently in `pet.jsonl` and PET v1.1.
+
 The prompts differ per dataset ([prompts/](prompts/README.md)). PET's and Quishpi's mention definitions are written by hand; Quishpi's follow its annotations, which mark mostly single verbs as actions, the objects they act on as entities (not who performs them), and condition clauses. MedicalProcessInstruks names none of its types, and uq-pet-token does not guess names, so each type is described by its 10 most frequent texts in the training sentences, and the format example is the 3 training sentences that together show the most types. No test sentence appears in a prompt.
 
 ### Test split of uq-pet-token
@@ -112,6 +120,7 @@ uv run pytest
 - `src/autoannotate/`: annotators, response parsers and provider configs
 - `src/eval/`: matching and metrics; `datasets.py` lists the datasets with their files and mention types
 - `scripts/uq-pet-token-splits.py`: writes the Quishpi and medical sentence files with uq-pet-token's code
+- `src/check-uq-pet-token-data.py`: checks that results here and uq-pet-token's are on the same data and scored the same way
 - `res/gold/pet.jsonl`: gold annotations
 - `res/gold/pet-v1.1.jsonl`: all 417 PET v1.1 sentences with BIO tags (uq-pet-token's `PETv1.1-entities.jsonl`)
 - `res/gold/pet-v1.1-test.jsonl`: uq-pet-token's test split, with PET v1.1 tags

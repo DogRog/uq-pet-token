@@ -10,10 +10,16 @@ and ``res/gold/<dataset>-test.jsonl`` (the test split, in the split's order), on
 line with BIO tags, in the format of PETv1.1-entities.jsonl. MedicalProcessInstruks is gated, so
 its files are not tracked by git; log in with ``uv run --project ../uq-pet-token hf auth login``
 first. PET's files are checked, not written: they must equal what uq-pet-token splits now.
+
+With ``--check`` nothing is written: every dataset's files are compared with what uq-pet-token
+splits now, and the exit code is 1 if one differs (``src/check-uq-pet-token-data.py`` runs this).
+A dataset whose files are missing is skipped then.
 """
+import argparse
 import json
 import pathlib
 import subprocess
+import sys
 
 from uq_pet import data_prep
 
@@ -85,19 +91,58 @@ def read(path: pathlib.Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf8").splitlines()]
 
 
+FILES = {
+    "pet": ("pet-v1.1.jsonl", "pet-v1.1-test.jsonl"),
+    "quishpi": ("quishpi.jsonl", "quishpi-test.jsonl"),
+    "medical": ("medical.jsonl", "medical-test.jsonl"),
+}
+
+
+def check() -> bool:
+    """Compares every dataset's files with what uq-pet-token splits now; True if all are equal."""
+    same = True
+    for dataset, names in FILES.items():
+        paths = [GOLD_DIR / name for name in names]
+        if not all(path.exists() for path in paths):
+            print(f"{dataset}: skipped, {', '.join(names)} missing")
+            continue
+        for path, rebuilt in zip(paths, split(dataset)):
+            ours = read(path)
+            differing = [i for i, (a, b) in enumerate(zip(ours, rebuilt)) if a != b]
+            if ours == rebuilt:
+                print(f"{dataset}: {path.name} unchanged, {len(ours)} sentences")
+            else:
+                same = False
+                print(
+                    f"{dataset}: {path.name} DIFFERS, {len(ours)} sentences here, "
+                    f"{len(rebuilt)} in uq-pet-token, first differing lines {differing[:5]}"
+                )
+    return same
+
+
 def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument(
+        "--check", action="store_true", help="compare the files, write nothing"
+    )
+    args = parser.parse_args()
     commit = subprocess.run(
         ["git", "rev-parse", "--short", "HEAD"],
         cwd=data_prep.PROJECT_ROOT, capture_output=True, text=True, check=True,
     ).stdout.strip()
+    if args.check:
+        same = check()
+        print(f"uq-pet-token commit {commit}")
+        sys.exit(0 if same else 1)
     everything, test = split("pet")
     assert everything == read(GOLD_DIR / "pet-v1.1.jsonl"), "PET v1.1 differs from uq-pet-token's"
     assert test == read(GOLD_DIR / "pet-v1.1-test.jsonl"), "PET's test split differs"
     print(f"pet: {len(everything)} sentences, {len(test)} test, unchanged")
     for dataset in ("quishpi", "medical"):
         everything, test = split(dataset)
-        write(GOLD_DIR / f"{dataset}.jsonl", everything)
-        write(GOLD_DIR / f"{dataset}-test.jsonl", test)
+        full_name, test_name = FILES[dataset]
+        write(GOLD_DIR / full_name, everything)
+        write(GOLD_DIR / test_name, test)
         print(f"{dataset}: {len(everything)} sentences, {len(test)} test")
     print(f"uq-pet-token commit {commit}")
 
