@@ -3,7 +3,10 @@
 import altair as alt
 import polars as pl
 
-from uq_pet.experiment import summarize_label_category_coverage, summarize_label_pool_share
+from analysis.acquisition_analysis import (
+    summarize_label_category_coverage,
+    summarize_label_pool_share,
+)
 
 
 def make_learning_chart(result_records: list[dict], seed: int, uq_metric: str):

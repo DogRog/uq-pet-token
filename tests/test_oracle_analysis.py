@@ -4,7 +4,7 @@ import statistics
 import polars as pl
 import pytest
 
-from utils.oracle_analysis import (
+from analysis.oracle_analysis import (
     curve_auc,
     find_oracle_comparison,
     search_winner,

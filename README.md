@@ -773,7 +773,7 @@ recorded in [docs/adr/](docs/adr/).
 | `src/uq_pet/token_model.py` | masking, training, UQ metrics, inference, and evaluation |
 | `src/uq_pet/active_learning.py` | acquisition rounds, replay, orchestration, and outputs |
 | `src/uq_pet/config.py` | shared validated experiment and search configuration |
-| `src/uq_pet/experiment.py` | run execution and label coverage summaries |
+| `src/uq_pet/experiment.py` | one interactive-notebook run, persisted |
 | `src/uq_pet/search.py` | random sweep or baseline tuning, shared execution, resume, and summaries |
 | `src/uq_pet/supervised.py` | supervised random search, fixed-epoch test runs, resume, and summaries |
 | `src/uq_pet/utils/truncation.py` | word alignment and truncation checks |
@@ -796,7 +796,7 @@ recorded in [docs/adr/](docs/adr/).
 | `notebooks/best_uq_analysis.py` | best-config UQ comparisons against random and the supervised bound |
 | `notebooks/random_search_analysis.py` | random-sweep summaries and per-configuration drill-downs |
 | `notebooks/preprocessing_checks.py` | PET, Quishpi, and MedicalProcessInstruks preprocessing checks against the raw files, and their lexical diversity |
-| `notebooks/utils/` | chart builders, acquisition diagnostics, oracle selection, lexical diversity, and W&B comparison media |
+| `notebooks/analysis/` | chart builders, acquisition diagnostics and label coverage, oracle selection, lexical diversity, and W&B comparison media |
 | `configs/<dataset>/tune_random/` | random-baseline tuning settings, one file per model |
 | `configs/<dataset>/best_uq/` | frozen validation winners for fixed UQ comparisons |
 | `configs/<dataset>/supervised/` | supervised baseline settings |

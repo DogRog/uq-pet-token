@@ -1,7 +1,7 @@
 import polars as pl
 import pytest
 
-from utils.lexical_diversity import dataset_words, pairwise_window_tests, window_ttr
+from analysis.lexical_diversity import dataset_words, pairwise_window_tests, window_ttr
 
 TAGS = ["O", "B-Actor", "I-Actor"]
 

@@ -56,9 +56,9 @@ def _():
     from scipy import stats
     from wigglystuff import FloatingPanel, ParallelCoordinates
 
-    from utils import paper_results as pr
-    from utils.acquisition_analysis import tag_selections
-    from utils.charts import make_tag_category_coverage_chart, make_tag_coverage_chart
+    from analysis import paper_results as pr
+    from analysis.acquisition_analysis import tag_selections
+    from analysis.charts import make_tag_category_coverage_chart, make_tag_coverage_chart
 
     alt.data_transformers.disable_max_rows()
     results_root = Path(__file__).resolve().parents[1] / "results"
