@@ -9,19 +9,24 @@ from autoannotate import data
 MENTION_DEFS = [autoannotate.MentionDefinition(type="Actor", description="who does it", priority=1)]
 RELATION_DEFS = [autoannotate.RelationDefinition(type="uses", description="what is used")]
 PROMPT_DIR = pathlib.Path(__file__).parent.parent / "prompts"
+TEMPLATE_VALUES = {
+    "procedure": "PROCEDURE", "disambiguation": "DISAMBIGUATION", "example": "EXAMPLE",
+}
 
 
 def mention_annotator(client, **kwargs):
     return autoannotate.LLMMentionAnnotator(
         client=client, language_model="test-model", mention_definitions=MENTION_DEFS,
-        example="EXAMPLE", template=PROMPT_DIR / "mentions.txt", **{"reasoning_effort": None, **kwargs},
+        template_values=TEMPLATE_VALUES, template=PROMPT_DIR / "mentions.txt",
+        **{"reasoning_effort": None, **kwargs},
     )
 
 
 def relation_annotator(client, **kwargs):
     return autoannotate.LLMRelationsAnnotator(
         client=client, language_model="test-model", type_definitions=RELATION_DEFS,
-        example=None, template=PROMPT_DIR / "relations.txt", **{"reasoning_effort": None, **kwargs},
+        template_values=TEMPLATE_VALUES, template=PROMPT_DIR / "relations.txt",
+        **{"reasoning_effort": None, **kwargs},
     )
 
 
@@ -53,7 +58,7 @@ def test_mention_prompt_contains_definitions_example_and_numbered_sentences(fake
 
     instruction, user = map(message_text, messages)
     assert " - **Actor**: who does it" in instruction
-    assert "EXAMPLE" in instruction
+    assert all(value in instruction for value in TEMPLATE_VALUES.values())
     assert "{{" not in instruction
     assert user.endswith("0: the clerk works\n1: he rests")
 

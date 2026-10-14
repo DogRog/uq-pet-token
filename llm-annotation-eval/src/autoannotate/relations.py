@@ -57,21 +57,24 @@ class RelationParser(base.BaseParser):
 class LLMRelationsAnnotator(base.BaseAnnotator):
     def __init__(self, client: openai.OpenAI, language_model: str,
                  type_definitions: typing.List[definitions.RelationDefinition],
-                 example: typing.Optional[str],
+                 template_values: typing.Dict[str, str],
                  reasoning_effort: base.ReasoningEffort,
                  template: pathlib.Path,
                  instruction_role: typing.Literal["developer", "system"] = "developer",
                  extra_body: typing.Optional[typing.Dict[str, typing.Any]] = None):
         super().__init__(client, language_model, reasoning_effort, instruction_role, extra_body)
         self._prompt_template = prompts.Prompt(template)
-        self._example = example
+        self._template_values = template_values
         self._defs = type_definitions
 
     def get_instruction(self) -> str:
-        """The instruction message, the same for every document."""
-        example = self._example if self._example is not None else ""
+        """The instruction message, the same for every document.
+
+        The template gets the type definitions and the dataset's template values, e.g. its
+        procedure, disambiguation hints and format example.
+        """
         type_definitions = "\n".join(f" - {f.for_llm()}" for f in self._defs)
-        return self._prompt_template(type_definitions=type_definitions, example=example)
+        return self._prompt_template(type_definitions=type_definitions, **self._template_values)
 
     def get_messages(
             self,

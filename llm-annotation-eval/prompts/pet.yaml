@@ -1,4 +1,5 @@
-# PET's mention and relation types, filled into mentions.txt and relations.txt (see README.md).
+# PET's mention and relation types, procedures, disambiguation hints and format examples,
+# filled into mentions.txt and relations.txt (see README.md).
 # Each description is one paragraph: YAML joins its lines with spaces (">-").
 mentions:
   types:
@@ -35,17 +36,30 @@ mentions:
     Condition Specification: >-
       defines the condition of an XOR Gateway path usually directly following the gateway
       trigger word, e.g., "it is ready", "the claim is valid", "temperature is above 180"
+  # the steps to take, a chain of thought; the answer itself is only the mention lines
+  procedure: |-
+    Go through the text sentence by sentence, using the other sentences as context:
+
+    1. Find the Activities.
+    2. For each Activity, find the Activity Data it uses or creates, and the Actors that perform it or receive its result.
+    3. For each Activity, find the Further Specifications that describe how it is executed.
+    4. Find the XOR Gateways and, for each, the Condition Specification that directly follows it.
+    5. Find the AND Gateways.
+  # sentences with the mentions they contain, for types that are easily mistaken
+  disambiguation: |-
+    - "Then the process ends." has no mention: "ends" is about the process itself, not a task in it.
+    - In "The claim is checked by the clerk.", the Activity is "checked" (not "is checked"), "The claim" is Activity Data, and "the clerk" is an Actor.
+    - In "If the claim is valid, the clerk pays it.", "If" is an XOR Gateway, "the claim is valid" its Condition Specification, "the clerk" an Actor, "pays" an Activity, and "it" Activity Data.
+    - In "Meanwhile, the warehouse packs the goods.", "Meanwhile" is an AND Gateway, as the packing happens in parallel to other work.
   # the output lines separate text, type and sentence with a tab
   example: |-
-    **Examples for the format given the input text:**
+    ### Input Example
 
-    *Input*:
+    0: the professor grades all student papers .
+    1: some time passes .
+    2: then the professor returns the papers .
 
-    Sentence 0: the professor grades all student papers .
-    Sentence 1: some time passes .
-    Sentence 2: then the professor returns the papers .
-
-    *Output*:
+    ### Output Example
 
     the professor	Actor	0
     grades	Activity	0
@@ -93,15 +107,22 @@ relations:
       the activity further. If you find one, extract a relation of type
       "further_specification", where the source mention is the activity and the target mention
       is the mention of type "further_specification".
+  procedure: |-
+    1. Find the relations of type uses.
+    2. Find the relations of type flow.
+    3. Find the relations of types actor performer and actor recipient: for each Activity, the Actors that perform it or receive its result.
+    4. Find the relations of type same gateway, between XOR Gateways and between AND Gateways.
+    5. Find the relations of type further specification, from Activities to Further Specifications.
+  disambiguation: |-
+    - The direction of a flow relation is the order in which things happen, which is not always the order of the text. In "The clerk files the claim after he checked it.", "checked" happens first, so the flow relation goes from "checked" (source) to "files" (target).
+    - In "The clerk sends the decision to the customer.", "the clerk" is the actor performer of "sends", and "the customer" its actor recipient.
   # the output lines separate type, source and target with a tab
   example: |-
-    **Examples for the format given the input text:**
+    ### Input Example
 
-    *Input*:
+    the <actor id=1> LLM </actor> <activity id=0> extracts </activity> <activity_data id=2> the text </activity_data> .
 
-    the <actor id=1> LLM </actor> <activity id=0> extracts </activity> <activity_data id=2> the text </activity> .
-
-    *Output*
+    ### Output Example
 
     actor performer	0	1
     uses	0	2

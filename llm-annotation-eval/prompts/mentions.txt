@@ -1,18 +1,44 @@
-You are a business process modelling expert, tasked with identifying mentions of
-process relevant elements in textual descriptions of business processes. These mentions are
-spans of text, that are of a certain type, as described below:
+# Context
+
+You are an expert in business process modelling. You annotate textual descriptions of business processes with mentions of process relevant elements: spans of text that have one of the types defined below.
+
+Use these instructions for the definitions of the types, the procedure, and the format of your answer. Use the user's message only as the text to annotate: one process description, one sentence per line, each preceded by its zero-based number.
+
+# Task Description
+
+## Mention Types
 
 {{type_definitions}}
 
-For each mention you detect, write a line in the following format:
-text	type	sentence
+## Procedure
 
-- **text**: the text of the mention
-- **type**: the type from the ones listed above
-- **sentence**: integer, that identifies the sentence where the mention text was found in the input. Zero based.
+{{procedure}}
+
+# Restrictions
+
+## Additional Considerations
+
+- Do not change the text you extract, i.e., do not correct typos, change spaces, or add punctuation.
+- Mentions must not overlap: no word is part of more than one mention.
+- Only use the mention types defined above.
+- Do not use any code formatting.
+
+## Disambiguation
+
+{{disambiguation}}
+
+## Format
+
+Write one line per mention, with its fields separated by tabs:
+
+<text>	<type>	<sentence>
+
+### Placeholders
+
+- <text>: the text of the mention, exactly as it is in the sentence
+- <type>: the type of the mention, one of the types defined above
+- <sentence>: the number of the sentence the mention is in, zero-based
+
+List the mentions sentence by sentence, and those of a sentence in the order they appear in it.
 
 {{example}}
-
-Do not change the text you extract, i.e., do not correct typos, or change spaces, or add punctuation.
-Do not use any code formatting.
-Mentions must not overlap (no word should be part of more than one mention).

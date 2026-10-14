@@ -1,7 +1,7 @@
-# MedicalProcessInstruks' mention types, filled into mentions.txt (see README.md). The dataset
-# names none of its types (T03 ... T43), so the descriptions and the example are generated from
-# its training sentences (never the test split), with the texts and settings below. {{name}}
-# marks a value filled in for each type.
+# MedicalProcessInstruks' mention types, procedure, disambiguation hint and format example,
+# filled into mentions.txt (see README.md). The dataset names none of its types (T03 ... T43), so
+# the descriptions and the example are generated from its training sentences (never the test
+# split), with the texts and settings below. {{name}} marks a value filled in for each type.
 mentions:
   # how many of a type's most frequent texts its description lists
   texts_per_type: 10
@@ -13,18 +13,25 @@ mentions:
   # for a type without training mentions
   description_unseen: >-
     a type the dataset does not name. It does not occur in the training sentences.
+  # the steps to take, a chain of thought; the answer itself is only the mention lines
+  procedure: |-
+    Go through the text sentence by sentence, using the other sentences as context:
+
+    1. Compare the words and phrases of the sentence with the frequent texts listed for each type.
+    2. Extract every word or phrase that is like the texts of one of the types, with that type.
+  disambiguation: |-
+    If a word or phrase could be of several types, choose the type whose listed texts it is most similar to, in meaning and in length.
   # the example shows the training sentences that together have the most types, up to this many
   # sentences of at most this many words
   example_sentences: 3
   example_max_words: 30
-  # sentences: "Sentence <i>: <words>" lines; mentions: one tab-separated line per mention
+  # sentences: "<i>: <words>" lines, as the documents are given; mentions: one tab-separated line
+  # per mention
   example: |-
-    **Examples for the format given the input text:**
-
-    *Input*:
+    ### Input Example
 
     {{sentences}}
 
-    *Output*:
+    ### Output Example
 
     {{mentions}}

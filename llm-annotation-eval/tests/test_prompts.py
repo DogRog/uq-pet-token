@@ -2,7 +2,7 @@ import pathlib
 
 import pytest
 
-from autoannotate import MentionParser, RelationParser, data, prompts
+from autoannotate import LLMMentionAnnotator, MentionParser, RelationParser, data, prompts
 from eval import datasets
 from experiments import definitions
 
@@ -39,15 +39,15 @@ def test_template_from_text():
 
 
 @pytest.mark.parametrize("name", ["mentions.txt", "relations.txt"])
-def test_annotator_templates_take_definitions_and_example(name):
+def test_annotator_templates_take_definitions_and_the_datasets_values(name):
     template = prompts.Prompt(PROMPT_DIR / name)
-    assert template.template_params == {"type_definitions", "example"}
+    assert template.template_params == {"type_definitions", *definitions.TEMPLATE_VALUES}
 
 
 def example_parts(example):
     """The input and output lines of a format example."""
-    _, rest = example.split("*Input*", 1)
-    given, answer = rest.split("*Output*", 1)
+    _, rest = example.split("### Input Example", 1)
+    given, answer = rest.split("### Output Example", 1)
     given = [line for line in given.splitlines()[1:] if line.strip()]
     answer = [line for line in answer.splitlines()[1:] if line.strip()]
     return given, answer
@@ -72,8 +72,8 @@ def test_mention_types_are_the_datasets_types(name):
 @pytest.mark.parametrize("name", list(datasets.DATASETS))
 def test_mention_example_parses(name, make_doc):
     """The example's answer is in the format the parser reads, e.g. tabs were not replaced."""
-    mention_definitions, example = definitions.mention_prompt(available(name))
-    given, answer = example_parts(example)
+    mention_definitions, values = definitions.mention_prompt(available(name))
+    given, answer = example_parts(values["example"])
     sentences = [line.split(": ", 1)[1] for line in given]
     parser = MentionParser()
 
@@ -85,9 +85,28 @@ def test_mention_example_parses(name, make_doc):
     assert {m.type for m in parsed.mentions} <= types
 
 
+@pytest.mark.parametrize("name", list(datasets.DATASETS))
+def test_mention_prompt_fills_the_template(name):
+    mention_definitions, values = definitions.mention_prompt(available(name))
+    template = prompts.Prompt(definitions.mention_template())
+
+    instruction = template(type_definitions="", **values)
+
+    assert "{{" not in instruction and all(values.values())
+
+
+def test_example_input_is_formatted_like_the_documents(make_doc):
+    """The format example shows the sentences as the annotator sends them."""
+    _, values = definitions.mention_prompt(datasets.DATASETS["pet"])
+    given, _ = example_parts(values["example"])
+    sentences = [line.split(": ", 1)[1] for line in given]
+
+    assert "\n".join(given) == LLMMentionAnnotator._format(make_doc(sentences))
+
+
 def test_relation_example_parses(make_doc):
-    relation_definitions, example = definitions.relation_prompt(datasets.DATASETS["pet"])
-    _, answer = example_parts(example)
+    relation_definitions, values = definitions.relation_prompt(datasets.DATASETS["pet"])
+    _, answer = example_parts(values["example"])
     # the example's input, with the mentions in the order of their ids
     document = make_doc(
         ["the LLM extracts the text ."],
@@ -141,7 +160,7 @@ class TestMedicalPrompt:
     def test_example_shows_the_most_types(self, settings):
         example = definitions.medical_mention_format_example(self.TRAIN, settings)
 
-        assert "Sentence 0: If needed , give insulin and water" in example
-        assert "Sentence 1: Observe the patient" in example
-        assert "Sentence 2: observe closely" in example
+        assert "\n0: If needed , give insulin and water" in example
+        assert "\n1: Observe the patient" in example
+        assert "\n2: observe closely" in example
         assert "the patient\tT41\t1" in example and "closely\tT17\t2" in example

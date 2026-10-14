@@ -225,11 +225,11 @@ def annotate_run(
     """
     provider = autoannotate.get_provider(config.provider)
     dataset = datasets.DATASETS[config.dataset]
-    mention_definitions, mention_example = definitions.mention_prompt(dataset)
+    mention_definitions, mention_values = definitions.mention_prompt(dataset)
     mention_annotator = autoannotate.LLMMentionAnnotator(
         client=client,
         language_model=config.model,
-        example=mention_example,
+        template_values=mention_values,
         mention_definitions=mention_definitions,
         reasoning_effort=config.reasoning_effort,
         template=definitions.mention_template(),
@@ -239,11 +239,11 @@ def annotate_run(
     with_relations = config.task == "end-to-end"
     prompts = {"mentions": mention_annotator.get_instruction()}
     if with_relations:
-        relation_definitions, relation_example = definitions.relation_prompt(dataset)
+        relation_definitions, relation_values = definitions.relation_prompt(dataset)
         relation_annotator = autoannotate.LLMRelationsAnnotator(
             client=client,
             language_model=config.model,
-            example=relation_example,
+            template_values=relation_values,
             type_definitions=relation_definitions,
             reasoning_effort=config.reasoning_effort,
             template=definitions.relation_template(),

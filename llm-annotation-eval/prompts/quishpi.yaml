@@ -1,6 +1,6 @@
-# Quishpi's mention types, filled into mentions.txt (see README.md). Written after its
-# annotations: mostly single verbs as actions, the objects they act on as entities (not who
-# performs them), and condition clauses.
+# Quishpi's mention types, procedure, disambiguation hints and format example, filled into
+# mentions.txt (see README.md). Written after its annotations: mostly single verbs as actions, the
+# objects they act on as entities (not who performs them), and condition clauses.
 mentions:
   types:
     Action: >-
@@ -18,17 +18,26 @@ mentions:
       "if", "when" or "in case", without that word, e.g. "the part is available in-house" in
       "if the part is available in-house"; also the word that starts the alternative path,
       e.g. "otherwise".
+  # the steps to take, a chain of thought; the answer itself is only the mention lines
+  procedure: |-
+    Go through the text sentence by sentence, using the other sentences as context:
+
+    1. Find the Actions.
+    2. For each Action, find the Entity it is performed on.
+    3. Find the Conditions under which parts of the process are executed, and the words that start an alternative path.
+  # sentences with the mentions they contain, for types that are easily mistaken
+  disambiguation: |-
+    - In "the clerk sends the invoice .", "sends" is an Action and "invoice" an Entity; "the clerk" is no mention, as it performs the Action.
+    - In "if the part is available in-house", the Condition is "the part is available in-house", without "if".
   # the output lines separate text, type and sentence with a tab
   example: |-
-    **Examples for the format given the input text:**
+    ### Input Example
 
-    *Input*:
+    0: the clerk checks the invoice .
+    1: if the invoice is correct , the clerk pays it .
+    2: otherwise the invoice is returned .
 
-    Sentence 0: the clerk checks the invoice .
-    Sentence 1: if the invoice is correct , the clerk pays it .
-    Sentence 2: otherwise the invoice is returned .
-
-    *Output*:
+    ### Output Example
 
     checks	Action	0
     invoice	Entity	0

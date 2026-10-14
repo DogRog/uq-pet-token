@@ -1,10 +1,10 @@
 """Reads the prompts of each dataset from prompts/ (see prompts/README.md).
 
-prompts/mentions.txt and prompts/relations.txt are the instructions, with {{type_definitions}}
-and {{example}} filled in from prompts/<dataset>.yaml. PET's and Quishpi's types are described
-there by hand. MedicalProcessInstruks names none of its types, so their descriptions and the
-example are generated from its training sentences, with the wording and settings in
-prompts/medical.yaml; the test split never appears in a prompt.
+prompts/mentions.txt and prompts/relations.txt are the instructions, with {{type_definitions}},
+{{procedure}}, {{disambiguation}} and {{example}} filled in from prompts/<dataset>.yaml. PET's and
+Quishpi's types are described there by hand. MedicalProcessInstruks names none of its types, so
+their descriptions and the example are generated from its training sentences, with the wording
+and settings in prompts/medical.yaml; the test split never appears in a prompt.
 
 A run's manifest (run.json) records the rendered prompts, and resuming a run refuses to continue
 if they changed in between.
@@ -19,6 +19,10 @@ import autoannotate
 from eval import datasets
 
 PROMPT_DIR = pathlib.Path(__file__).resolve().parent.parent.parent / "prompts"
+
+# the parts of a task's section in prompts/<dataset>.yaml that fill the template's placeholders
+# of the same name, besides the type definitions
+TEMPLATE_VALUES = ("procedure", "disambiguation", "example")
 
 Row = datasets.test_split.Row
 
@@ -44,35 +48,46 @@ def _types(section: typing.Dict[str, typing.Any], where: str) -> typing.Dict[str
     types = section.get("types")
     if not isinstance(types, dict) or not all(isinstance(d, str) for d in types.values()):
         raise ValueError(f"{where}: expected 'types' with one description per type.")
-    if not isinstance(section.get("example"), str):
-        raise ValueError(f"{where}: expected an 'example'.")
     return types
+
+
+def _template_values(section: typing.Dict[str, typing.Any], where: str) -> typing.Dict[str, str]:
+    for name in TEMPLATE_VALUES:
+        if not isinstance(section.get(name), str):
+            raise ValueError(f"{where}: expected a '{name}'.")
+    return {name: section[name] for name in TEMPLATE_VALUES}
 
 
 def mention_prompt(
         dataset: datasets.Dataset
-) -> typing.Tuple[typing.List[autoannotate.MentionDefinition], str]:
-    """The mention definitions and format example of a dataset."""
+) -> typing.Tuple[typing.List[autoannotate.MentionDefinition], typing.Dict[str, str]]:
+    """The mention definitions of a dataset and the other values of the mention template."""
     mentions = _read(dataset.name)["mentions"]
+    where = f"prompts/{dataset.name}.yaml, mentions"
     if dataset.name == "medical":
         train = dataset.train()
         definitions = medical_mention_definitions(train, mentions)
-        return definitions, medical_mention_format_example(train, mentions)
-    types = _types(mentions, f"prompts/{dataset.name}.yaml, mentions")
+        example = medical_mention_format_example(train, mentions)
+        return definitions, _template_values({**mentions, "example": example}, where)
+    types = _types(mentions, where)
     definitions = [autoannotate.MentionDefinition(type=t, description=d) for t, d in types.items()]
-    return definitions, mentions["example"]
+    return definitions, _template_values(mentions, where)
 
 
 def relation_prompt(
         dataset: datasets.Dataset
-) -> typing.Tuple[typing.List[autoannotate.RelationDefinition], str]:
-    """The relation definitions and format example of a dataset; only PET has relations."""
+) -> typing.Tuple[typing.List[autoannotate.RelationDefinition], typing.Dict[str, str]]:
+    """The relation definitions of a dataset and the other values of the relation template.
+
+    Only PET has relations.
+    """
     relations = _read(dataset.name).get("relations")
     if relations is None:
         raise ValueError(f"prompts/{dataset.name}.yaml defines no relations.")
-    types = _types(relations, f"prompts/{dataset.name}.yaml, relations")
+    where = f"prompts/{dataset.name}.yaml, relations"
+    types = _types(relations, where)
     definitions = [autoannotate.RelationDefinition(type=t, description=d) for t, d in types.items()]
-    return definitions, relations["example"]
+    return definitions, _template_values(relations, where)
 
 
 def _mentions(row: Row) -> typing.List[typing.Tuple[str, str]]:
@@ -133,7 +148,7 @@ def medical_mention_format_example(
         candidates.remove(best)
         shown |= {t for _, t in _mentions(best)}
     return autoannotate.Prompt(text=settings["example"])(
-        sentences="\n".join(f"Sentence {i}: {' '.join(r['tokens'])}" for i, r in enumerate(chosen)),
+        sentences="\n".join(f"{i}: {' '.join(r['tokens'])}" for i, r in enumerate(chosen)),
         mentions="\n".join(
             f"{text}\t{tag_type}\t{i}"
             for i, r in enumerate(chosen)
