@@ -1,6 +1,6 @@
 # llm-annotation-eval
 
-Uses LLMs to annotate business process descriptions from the [PET dataset](https://huggingface.co/datasets/patriziobellan/PET) with process element mentions and the relations between them, then scores the predictions against the gold annotations. Mention detection also runs on the two other datasets of [uq-pet-token](../uq-pet-token), [Quishpi](https://github.com/PADS-UPC/atdp-extractor/tree/bpm2020/input) and [MedicalProcessInstruks](https://huggingface.co/datasets/dagrat/MedicalProcessInstruks) (see [Datasets](#datasets)).
+Uses LLMs to annotate business process descriptions from the [PET dataset](https://huggingface.co/datasets/patriziobellan/PET) with process element mentions and the relations between them, then scores the predictions against the gold annotations. Mention detection also runs on the two other datasets of [uq-pet-token](../README.md), the repository this folder is part of: [Quishpi](https://github.com/PADS-UPC/atdp-extractor/tree/bpm2020/input) and [MedicalProcessInstruks](https://huggingface.co/datasets/dagrat/MedicalProcessInstruks) (see [Datasets](#datasets)).
 
 ## Setup
 
@@ -68,7 +68,7 @@ uv run marimo edit notebooks/eval_table.py
 
 The notebook scores every `pet.jsonl` in `res/pred/` against the gold annotations, including predictions from before the configs (`res/pred/<folder>/<task>/pet.jsonl`), and shows one row per folder and task: precision, recall and F1 for mentions (`md`) and, where predicted, relations (`re`), and output tokens per sentence. Scores are macro-averaged over documents; a dropdown switches ± between the standard deviation over runs and over documents. Only runs with all their documents are included.
 
-A dropdown chooses the dataset, another what to evaluate on: all documents as above (for PET its 45 gold documents), or the test split of [uq-pet-token](../uq-pet-token), for which these LLMs are a baseline (see below). Two more tables compare, on the test split, whole-document with single-sentence input for each model and reasoning effort, and, for whole-document runs, the scores on all 417 PET v1.1 sentences with those on the 84 test sentences (same tags and scoring), which shows how representative the test split is.
+A dropdown chooses the dataset, another what to evaluate on: all documents as above (for PET its 45 gold documents), or the test split of [uq-pet-token](../README.md), for which these LLMs are a baseline (see below). Two more tables compare, on the test split, whole-document with single-sentence input for each model and reasoning effort, and, for whole-document runs, the scores on all 417 PET v1.1 sentences with those on the 84 test sentences (same tags and scoring), which shows how representative the test split is.
 
 ### Datasets
 
@@ -83,10 +83,10 @@ uq-pet-token runs its experiments on PET, Quishpi and MedicalProcessInstruks, ea
 `res/gold/<dataset>.jsonl` holds every sentence and `res/gold/<dataset>-test.jsonl` the test split, in uq-pet-token's format and order. They are written with uq-pet-token's own code, which also checks that PET's files are unchanged:
 
 ```bash
-uv run --project ../uq-pet-token python scripts/uq-pet-token-splits.py
+uv run --project .. python scripts/uq-pet-token-splits.py
 ```
 
-MedicalProcessInstruks is gated, so its files are not tracked by git: accept its conditions on the Hub, log in with `uv run --project ../uq-pet-token hf auth login`, and run the script before the first medical run.
+MedicalProcessInstruks is gated, so its files are not tracked by git: accept its conditions on the Hub, log in with `uv run --project .. hf auth login`, and run the script before the first medical run.
 
 Before reporting results next to uq-pet-token's, check that both are on the same data and scored the same way, with "Check the data" in `notebooks/run_experiments.py`, or:
 

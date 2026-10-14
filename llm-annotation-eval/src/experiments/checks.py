@@ -35,7 +35,8 @@ from experiments import definitions
 
 REPO_DIR = pathlib.Path(__file__).resolve().parent.parent.parent
 PRED_DIR = REPO_DIR / "res" / "pred"
-UQ_PET_TOKEN_DIR = REPO_DIR.parent / "uq-pet-token"
+# this project is the llm-annotation-eval/ folder of uq-pet-token
+UQ_PET_TOKEN_DIR = REPO_DIR.parent
 
 # the metrics uq-pet-token's results.csv has per model seed, as eval.test_split.evaluate names them
 METRICS = (

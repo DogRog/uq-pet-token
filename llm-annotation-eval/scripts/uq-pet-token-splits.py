@@ -1,9 +1,10 @@
 """Writes the sentences, test splits and bootstrap sentences of uq-pet-token's datasets.
 
-Runs in uq-pet-token's environment, so the sentences are cut and split by its own code
+uq-pet-token is the repository root, this project its llm-annotation-eval/ folder. The script runs
+in uq-pet-token's environment, so the sentences are cut and split by its own code
 (``uq_pet.data_prep``) with its pinned datasets version:
 
-    uv run --project ../uq-pet-token python scripts/uq-pet-token-splits.py
+    uv run --project .. python scripts/uq-pet-token-splits.py
 
 For each dataset it writes ``res/gold/<dataset>.jsonl`` (every sentence, in the dataset's order),
 ``res/gold/<dataset>-test.jsonl`` (the test split, in the split's order) and
@@ -11,7 +12,7 @@ For each dataset it writes ``res/gold/<dataset>.jsonl`` (every sentence, in the 
 sentences uq-pet-token's token classifiers start from, in its order; the prompts' examples), one
 sentence per line with BIO tags, in the format of PETv1.1-entities.jsonl. PET's files are named
 ``pet-v1.1*.jsonl``. MedicalProcessInstruks is gated, so its files are not tracked by git; log in
-with ``uv run --project ../uq-pet-token hf auth login`` first. PET's sentences and test split are
+with ``uv run --project .. hf auth login`` first. PET's sentences and test split are
 checked, not written: they must equal what uq-pet-token splits now.
 
 With ``--check`` nothing is written: every dataset's files are compared with what uq-pet-token

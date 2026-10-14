@@ -46,7 +46,7 @@ def problems(configs: typing.List[run_config.RunConfig]) -> typing.List[str]:
             if not path.exists():
                 found.append(
                     f"{path.name} is missing, needed by {c.name}; generate it with uv run "
-                    "--project ../uq-pet-token python scripts/uq-pet-token-splits.py"
+                    "--project .. python scripts/uq-pet-token-splits.py"
                 )
     return found
 

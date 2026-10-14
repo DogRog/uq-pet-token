@@ -5,6 +5,12 @@ acquisition of the same number of words, on PET (default) or CoNLL-2003. Sentenc
 LLM selection lives in the separate `DogRog/uq-pet` repository; never port code between
 the two.
 
+`llm-annotation-eval/` holds the LLM baseline for the same paper: a separate uv project with
+its own environment, `pyproject.toml`, and `CLAUDE.md`; run its commands from that folder. It
+reads this project's splits (through `scripts/uq-pet-token-splits.py`, run with
+`uv run --project ..`) and `results/supervised/`, so changes to `data_prep` splits or that
+results layout must keep its `--check` passing.
+
 - Terms: `GLOSSARY.md`. Use its words in code, docs, and conversation.
 - Decisions and their reasons: `docs/adr/`. Read the ADR before changing what it covers.
 - Protocol and its invariants: the Protocol section of `README.md`.

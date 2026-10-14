@@ -160,7 +160,7 @@ Every evaluation scores entities two ways:
   `entity_partial_precision`, `entity_partial_recall`): an entity counts if a gold entity
   of the same type shares at least one word with it. Within each sentence, predicted
   entities match in order and each gold entity matches at most once, as in
-  `llm-annotation-eval`.
+  `llm-annotation-eval/`.
 
 Exact entity F1 stays the tuning objective and the headline gap; partial match is
 reported beside it (`docs/adr/0010-partial-entity-match-is-reported-not-tuned.md`).
@@ -791,6 +791,7 @@ recorded in [docs/adr/](docs/adr/).
 | `scripts/run_random_search_all_models.sh` | exploratory random sweep for every dataset and checkpoint |
 | `scripts/run_oracle_random_all_models.sh` | appendix test-tuned random oracle sweeps for all five checkpoints |
 | `notebooks/bert_token_uq.py` | controls, experiment run, tables, and plots |
+| `llm-annotation-eval/` | the LLM baseline: a separate uv project with its own environment and `CLAUDE.md` |
 | `notebooks/paper_results.py` | chaptered cross-dataset view of the paper rerun |
 | `notebooks/best_uq_analysis.py` | best-config UQ comparisons against random and the supervised bound |
 | `notebooks/random_search_analysis.py` | random-sweep summaries and per-configuration drill-downs |

@@ -348,7 +348,8 @@ def _(json, mo, pd):
     # tuned on validation, trained on all training sentences and scored once on the test split
     # per model seed. results/supervised/<sweep>/test/pool_100pct/<run>/results.csv has a row per
     # seed, with the metric names test_split.evaluate copies
-    UQ_PET_TOKEN_DIR = mo.notebook_dir().parent.parent / "uq-pet-token"
+    # this project is the llm-annotation-eval/ folder of uq-pet-token
+    UQ_PET_TOKEN_DIR = mo.notebook_dir().parent.parent
     _results = []
     for _config_file in sorted(UQ_PET_TOKEN_DIR.glob("results/supervised/*/run_config.json")):
         _sweep = _config_file.parent
