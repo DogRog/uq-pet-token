@@ -11,7 +11,6 @@ import argparse
 import json
 import math
 import multiprocessing
-import os
 import random
 from collections.abc import Iterator
 from concurrent.futures import Executor, ProcessPoolExecutor, as_completed
@@ -19,17 +18,19 @@ from pathlib import Path
 
 import polars as pl
 import torch
-from datasets.utils import logging as datasets_logging
-from dotenv import load_dotenv
 from rich.console import Console
 from transformers.utils import logging as transformers_logging
 
 from uq_pet.active_learning import full_sentence_items, write_run
 from uq_pet.config import SupervisedConfig, omit_implicit_defaults
 from uq_pet.data_prep import DATASET_TAGS, PROJECT_ROOT, TokenKey, load_splits, split_tuning_pool
-from uq_pet.search import (
-    LEARNING_RATE_BOUNDS,
+from uq_pet.sweeps import (
+    learning_rate_space,
+    mark_complete,
+    open_sweep,
     preserve_json,
+    quiet_library_progress,
+    record_failure,
     run_status,
     sample_learning_rate,
     write_json,
@@ -44,11 +45,7 @@ from uq_pet.token_model import (
     set_seed,
     train_items,
 )
-from uq_pet.utils.wandb_logging import (
-    login_quietly,
-    require_wandb_credentials,
-    wandb_supervised_logging,
-)
+from uq_pet.utils.wandb_logging import connect_wandb, wandb_supervised_logging
 from uq_pet.utils.wandb_tuning import ensure_supervised_sweep, publish_supervised_trial
 
 CONSOLE = Console()
@@ -91,11 +88,7 @@ def sample_plan(config: SupervisedConfig) -> dict:
         "search_space": {
             "batch_size": config.batch_sizes,
             "weight_decay": config.weight_decays,
-            "learning_rate": {
-                "distribution": "log_uniform",
-                "low": LEARNING_RATE_BOUNDS[0],
-                "high": LEARNING_RATE_BOUNDS[1],
-            },
+            "learning_rate": learning_rate_space(),
         },
         "configurations": [
             {"config_id": f"config_{index:04d}", "parameters": parameters}
@@ -326,10 +319,6 @@ def write_summary(root: Path, plan: dict) -> dict:
     return summary
 
 
-def _record_failure(slot: Path, error: BaseException) -> None:
-    write_json(slot / "failure.json", {"error": f"{type(error).__name__}: {error}"})
-
-
 def tune(
     config: SupervisedConfig,
     root: Path,
@@ -412,21 +401,13 @@ def tune(
                 gold=gold_tags(validation_examples, training["labels"]),
                 predictions=[finished[seed][1] for seed in config.model_seeds],
             )
-            write_json(
-                slot / "completed.json",
-                {
-                    "run_dir": str(run_dir.relative_to(root)),
-                    "score": stats["mean_entity_f1"],
-                    **stats,
-                },
-            )
-            (slot / "failure.json").unlink(missing_ok=True)
+            mark_complete(root, slot, run_dir, {"score": stats["mean_entity_f1"], **stats})
             CONSOLE.print(
                 f"[bold cyan]tune {label}[/] · {format_parameters(entry['parameters'])} · "
                 f"validation entity F1 {seed_line(rows, stats)}"
             )
         except BaseException as error:
-            _record_failure(slot, error)
+            record_failure(slot, error)
             raise
         finally:
             write_summary(root, plan)
@@ -543,16 +524,13 @@ def run_test(
                 gold=gold_tags(test_examples, training["labels"]),
                 predictions=[finished[seed][1] for seed in config.model_seeds],
             )
-            write_json(
-                slot / "completed.json", {"run_dir": str(run_dir.relative_to(root)), **stats}
-            )
-            (slot / "failure.json").unlink(missing_ok=True)
+            mark_complete(root, slot, run_dir, stats)
             CONSOLE.print(
                 f"[bold magenta]test {percent:g}% pool sentences[/] · "
                 f"test entity F1 {seed_line(rows, stats)}"
             )
         except BaseException as error:
-            _record_failure(slot, error)
+            record_failure(slot, error)
             raise
         finally:
             write_summary(root, plan)
@@ -607,37 +585,26 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         )
         return
     root = config.sweeps_dir / config.sweep_name
-    plan_path = root / "plan.json"
-    if plan_path.exists():
-        if json.loads(plan_path.read_text()) != plan:
-            parser.error("Existing supervised sweep has a different plan; choose a new sweep_name")
-    else:
-        if root.exists() and any(root.iterdir()):
-            parser.error("Sweep directory is nonempty but has no plan; choose a new sweep_name")
-        root.mkdir(parents=True, exist_ok=True)
-        write_json(plan_path, plan)
+    try:
+        plan = open_sweep(root, plan)
+    except ValueError as error:
+        parser.error(str(error))
     write_json(root / "run_config.json", config.model_dump(mode="json"))
     write_summary(root, plan)
     if args.stage == "test" and not (root / "best_config.json").is_file():
         parser.error("The test stage requires best_config.json; run the tune stage first")
     publication = None
-    if config.wandb_enabled:
-        load_dotenv(PROJECT_ROOT / ".env", override=False)
-        require_wandb_credentials(os.environ)
-        if os.environ.get("WANDB_MODE", "").strip().lower() == "offline":
-            CONSOLE.print("W&B offline: logging locally; no online sweep or chart is created.")
-        else:
-            login_quietly(os.environ["WANDB_API_KEY"])
-            # Trials completed before the sweep existed are published on the next launch.
-            publication = ensure_supervised_sweep(config, plan, root)
-            for entry in plan["configurations"]:
-                publish_supervised_trial(config, root, entry, publication)
-            record = publication[1][publication[2]]
-            CONSOLE.print(
-                f"W&B {record['entity']}/{record['project']} · sweep {record['sweep_id']} · "
-                f"chart {record['workspace_url']}",
-                markup=False,
-            )
+    if config.wandb_enabled and connect_wandb(PROJECT_ROOT / ".env", CONSOLE):
+        # Trials completed before the sweep existed are published on the next launch.
+        publication = ensure_supervised_sweep(config, plan, root)
+        for entry in plan["configurations"]:
+            publish_supervised_trial(config, root, entry, publication)
+        record = publication[1][publication[2]]
+        CONSOLE.print(
+            f"W&B {record['entity']}/{record['project']} · sweep {record['sweep_id']} · "
+            f"chart {record['workspace_url']}",
+            markup=False,
+        )
 
     precision = plan["effective_precision"]
     seed_workers = min(config.seed_workers, len(config.model_seeds))
@@ -647,25 +614,18 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         f"{config.epochs} epochs · {precision.upper()} on {device}"
     )
     splits, _ = load_splits(config.dataset, config.dataset_percent)
-    model_bars = transformers_logging.is_progress_bar_enabled()
-    data_bars = datasets_logging.is_progress_bar_enabled()
-    transformers_logging.disable_progress_bar()
-    datasets_logging.disable_progress_bar()
-    executor = seed_executor(seed_workers)
-    try:
-        stage_settings = {"device": device, "precision": precision, "executor": executor}
-        if args.stage in {"tune", "all"}:
-            tune(config, root, plan, splits, **stage_settings, publication=publication)
-        if args.stage in {"test", "all"}:
-            run_test(config, root, plan, splits, **stage_settings)
-    finally:
-        if executor is not None:
-            # Cancels queued seeds; running siblings finish their current seed.
-            executor.shutdown(cancel_futures=True)
-        if model_bars:
-            transformers_logging.enable_progress_bar()
-        if data_bars:
-            datasets_logging.enable_progress_bar()
+    with quiet_library_progress():
+        executor = seed_executor(seed_workers)
+        try:
+            stage_settings = {"device": device, "precision": precision, "executor": executor}
+            if args.stage in {"tune", "all"}:
+                tune(config, root, plan, splits, **stage_settings, publication=publication)
+            if args.stage in {"test", "all"}:
+                run_test(config, root, plan, splits, **stage_settings)
+        finally:
+            if executor is not None:
+                # Cancels queued seeds; running siblings finish their current seed.
+                executor.shutdown(cancel_futures=True)
     CONSOLE.print(f"Supervised results: {root / 'summary.json'}")
 
 

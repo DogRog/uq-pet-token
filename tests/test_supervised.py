@@ -15,7 +15,7 @@ from analysis.charts import make_variance_chart
 from uq_pet import supervised
 from uq_pet.config import SupervisedConfig
 from uq_pet.data_prep import NER_TAGS
-from uq_pet.search import LEARNING_RATE_BOUNDS
+from uq_pet.sweeps import LEARNING_RATE_BOUNDS
 
 
 def invoke(config, *extra):
@@ -384,11 +384,13 @@ def test_supervised_workspace_plots_parameters_against_validation_f1():
     ]
 
 
-def test_wandb_missing_credentials_fails_before_loading_data(fake_supervised, monkeypatch):
+def test_wandb_missing_credentials_fails_before_loading_data(
+    fake_supervised, monkeypatch, tmp_path
+):
     config, _, _ = fake_supervised
     monkeypatch.delenv("WANDB_API_KEY", raising=False)
     monkeypatch.delenv("WANDB_MODE", raising=False)
-    monkeypatch.setattr(supervised, "load_dotenv", lambda *a, **kw: None)
+    monkeypatch.setattr(supervised, "PROJECT_ROOT", tmp_path)  # No .env to load.
     monkeypatch.setattr(supervised, "load_splits", lambda *_: pytest.fail("loaded data"))
     with pytest.raises(ValueError, match="WANDB_API_KEY is missing"):
         invoke(config.model_copy(update={"wandb_enabled": True}))

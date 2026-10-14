@@ -3,7 +3,9 @@
 import os
 from collections.abc import Mapping
 from contextlib import ExitStack, contextmanager
+from pathlib import Path
 
+from dotenv import load_dotenv
 from rich.console import Console
 
 _WANDB_ARMS = ("uncertainty", "random")
@@ -46,6 +48,20 @@ def login_quietly(api_key: str) -> None:
 
     wandb.setup(wandb.Settings(show_info=False))
     wandb.login(key=api_key, verify=True)
+
+
+def connect_wandb(env_file: Path, console: Console) -> bool:
+    """Load W&B settings from `env_file`, check credentials, and log in unless offline.
+
+    Returns whether W&B is online; offline runs log locally and create no sweep or chart.
+    """
+    load_dotenv(env_file, override=False)
+    require_wandb_credentials(os.environ)
+    if os.environ.get("WANDB_MODE", "").strip().lower() == "offline":
+        console.print("W&B offline: logging locally; no online sweep or chart is created.")
+        return False
+    login_quietly(os.environ["WANDB_API_KEY"])
+    return True
 
 
 def configure_wandb_metrics(wandb_run, uq_metric: str, *, random_only: bool = False) -> None:

@@ -734,9 +734,8 @@ not uploaded retroactively on resume.
 - Comparison sweeps use plan version 4, tuning plan version 3, and fixed comparisons
   plan version 1. Sweeps created with the earlier sampler need a new sweep name; their
   outputs stay readable and untouched.
-- Older two-stage tuning sweeps resume when their tuning settings match: `plan.v2.json`
-  keeps the original plan, and historical `final/` artifacts are left untouched.
-  Resuming never starts or resumes those historical UQ comparisons.
+- Older two-stage tuning sweeps (tuning plan version 2) no longer resume; rerun them under
+  a new sweep name. Their outputs, including `plan.v2.json` and `final/`, stay readable.
 - The Optuna workflow has been removed. Existing `results/optuna` artifacts contain
   validation evaluations and are excluded from test analysis.
 
@@ -776,6 +775,7 @@ recorded in [docs/adr/](docs/adr/).
 | `src/uq_pet/experiment.py` | one interactive-notebook run, persisted |
 | `src/uq_pet/search.py` | random sweep or baseline tuning, shared execution, resume, and summaries |
 | `src/uq_pet/supervised.py` | supervised random search, fixed-epoch test runs, resume, and summaries |
+| `src/uq_pet/sweeps.py` | what both sweeps share: the learning-rate range, plan locking, and run markers |
 | `src/uq_pet/utils/truncation.py` | word alignment and truncation checks |
 | `src/uq_pet/utils/wandb_logging.py` | W&B credentials, evaluation records, and comparison and supervised run lifecycles |
 | `src/uq_pet/utils/wandb_tuning.py` | tuning sweep publication and workspace charts |

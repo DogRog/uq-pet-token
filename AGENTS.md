@@ -51,5 +51,6 @@ experiment abstractions only for a concrete need.
 - `config.py`: validated experiment and search settings; UI controls stay in the notebook
 - `data_prep.py`, `token_model.py`, `active_learning.py`: data, model operations, rounds
 - `search.py`: search planning, resume handling, and summaries
+- `sweeps.py`: the learning-rate range and saved sweep files that search and supervised share
 - `supervised.py`: the supervised baseline's search, tuning, test runs, and resume
 - `utils/wandb_logging.py`: shared W&B logging
