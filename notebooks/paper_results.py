@@ -575,11 +575,18 @@ def _(
     return
 
 
+@app.cell
+def _(mo, pr):
+    coverage_model = mo.ui.dropdown(["all five", *pr.MODEL_ORDER], value="all five", label="Model")
+    return (coverage_model,)
+
+
 @app.cell(hide_code=True)
 def _(
     Path,
     acquisition,
     best_runs,
+    coverage_model,
     curve_dataset,
     curve_metric,
     json,
@@ -594,14 +601,20 @@ def _(
         "### What each arm acquired by the red line\n"
         f"How much of each gold tag each arm has acquired once {pool_percent.value}% of the "
         f"pool is labelled: {curve_dataset.value}, {curve_metric.value}, "
-        f"{acquisition.value} acquisition, averaged over the five models and their seeds. "
-        "The first chart counts each tag against its own tokens in the pool, which keeps "
+        f"{acquisition.value} acquisition, "
+        + (
+            "averaged over the five models and their seeds. "
+            if coverage_model.value == "all five"
+            else f"{coverage_model.value}, averaged over its seeds. "
+        )
+        + "The first chart counts each tag against its own tokens in the pool, which keeps "
         "rare tags visible; the second counts it against all scoreable pool tokens."
     )
     _runs = best_runs.filter(
         (pl.col("dataset") == curve_dataset.value)
         & (pl.col("acquisition") == acquisition.value)
         & (pl.col("uq_metric") == curve_metric.value)
+        & ((pl.col("model") == coverage_model.value) | (coverage_model.value == "all five"))
     )
     _frames, _label_order, _partial, _acquired = [], None, [], []
     for _model, _run_dir in _runs.select("model", "run_dir").iter_rows():
@@ -621,7 +634,13 @@ def _(
         )
     mo.stop(
         not _frames,
-        mo.vstack([_heading, mo.md("No completed run covers the whole pool for this choice.")]),
+        mo.vstack(
+            [
+                _heading,
+                coverage_model,
+                mo.md("No completed run covers the whole pool for this choice."),
+            ]
+        ),
     )
     # Every run of a dataset shares its pool, so the summaries average over models and seeds.
     _selections = pl.concat(_frames, how="diagonal_relaxed")
@@ -635,6 +654,7 @@ def _(
     mo.vstack(
         [
             _heading,
+            coverage_model,
             mo.md(_note),
             mo.ui.altair_chart(
                 make_tag_category_coverage_chart(
@@ -649,8 +669,9 @@ def _(
             mo.accordion(
                 {
                     "How to read this": mo.md("""
-    - Bars are means over every model and model seed of the chosen setting and include zero
-      counts. Both charts use full BIO tags, ordered by how many distinct pool words carry
+    - Bars are means over the model seeds of the chosen model, or over every model and seed
+      with **all five**, and include zero counts. The model choice drives these charts
+      only; the curves above always show all five. Both charts use full BIO tags, ordered by how many distinct pool words carry
       each tag.
     - Random acquisition sits near the red line's percentage on every tag in the first
       chart; bars far from it show what the uncertainty arm prioritizes or postpones.
