@@ -11,10 +11,9 @@ from pathlib import Path
 import polars as pl
 from seqeval.metrics.sequence_labeling import get_entities
 
-from analysis.oracle_analysis import curve_auc
 from uq_pet import data_prep
 from uq_pet.active_learning import read_predictions
-from uq_pet.token_model import UQ_METRICS
+from uq_pet.token_model import UQ_METRICS, evaluate_predictions
 
 MODELS = {
     "distilbert-base-cased": "DistilBERT",
@@ -185,6 +184,20 @@ def match_entities(
     )
 
 
+def curve_auc(results: pl.DataFrame, field: str = "entity_f1") -> dict[tuple[int, str], float]:
+    """Return normalized ``field`` AUC over acquired-pool percentage per (seed, arm)."""
+    aucs = {}
+    for (seed, arm), rows in results.group_by("seed", "arm"):
+        rows = rows.sort("round")
+        x = rows["percent_acquired"].to_list()
+        y = rows[field].to_list()
+        if len(x) < 2 or any(right <= left for left, right in zip(x, x[1:], strict=False)):
+            raise ValueError(f"seed={seed}, arm={arm} needs increasing acquisition points")
+        area = sum((x[i + 1] - x[i]) * (y[i] + y[i + 1]) / 2 for i in range(len(x) - 1))
+        aucs[int(seed), str(arm)] = area / (x[-1] - x[0])
+    return aucs
+
+
 def seed_scores(curves: pl.DataFrame, field: str) -> pl.DataFrame:
     """Per setting and model seed: both arms' normalized AUC and final score, and their gaps.
 
@@ -262,6 +275,79 @@ def supervised_scores(results_root: Path) -> pl.DataFrame:
                 )
             )
     return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+
+
+def read_llm_predictions(predictions_file: Path, dataset: str) -> list[list[str]]:
+    """Predicted tags of an LLM run's test-predictions.jsonl, one list per test sentence.
+
+    The file lists the test split's sentences in order; its words must match the rebuilt
+    split. Mention types outside the dataset's tags are kept, so they count as wrong.
+    """
+    rows = [json.loads(line) for line in predictions_file.read_text().splitlines()]
+    expected = [(s["document_name"], s["sentence_id"], s["tokens"]) for s in _test_split(dataset)]
+    if [(r["document name"], r["sentence-ID"], r["tokens"]) for r in rows] != expected:
+        raise ValueError(f"{predictions_file} does not follow the rebuilt {dataset} test split")
+    return [row["ner-tags"] for row in rows]
+
+
+def llm_test_scores(llm_root: Path, task: str = "md-test-sentences") -> pl.DataFrame:
+    """Test scores of every finished llm-annotation-eval run of `task`, one row per run.
+
+    Each run's exported test predictions are rescored with `evaluate_predictions`, so
+    exact and partial, micro and macro F1 mean the same as for the token classifiers.
+    """
+    rows = []
+    for manifest in sorted(llm_root.glob("*/run-*/run.json")):
+        run = json.loads(manifest.read_text())
+        settings = run["settings"]
+        predictions_file = manifest.parent / task / "test-predictions.jsonl"
+        if settings["task"] != task or not predictions_file.is_file():
+            continue
+        dataset = settings.get("dataset", "pet")
+        labels = data_prep.DATASET_TAGS[dataset]
+        gold = [[labels[tag] for tag in s["ner_tags"]] for s in _test_split(dataset)]
+        effort = settings.get("reasoning_effort") or "default"
+        name = run["config"].removeprefix(f"{dataset}-").split(f"-{task}")[0]
+        rows.append(
+            {
+                "dataset": DATASETS.get(dataset, dataset),
+                "config": name if effort == "none" else f"{name} · {effort}",
+                "llm": name,
+                "reasoning_effort": effort,
+                "llm_model": settings["model"],
+                "run": run["run"],
+                "predictions_file": str(predictions_file),
+                **evaluate_predictions(gold, read_llm_predictions(predictions_file, dataset)),
+            }
+        )
+    return pl.DataFrame(rows)
+
+
+def pool_to_match(curves: pl.DataFrame, field: str, targets: pl.DataFrame) -> pl.DataFrame:
+    """Pool percentage at which each arm's seed-mean curve first reaches its dataset's target.
+
+    `targets` has a `target` score per dataset. The random arm is shared by a model's UQ
+    metrics, so it appears once per model; a curve that never reaches the target gets a
+    null.
+    """
+    mean_curves = (
+        curves.with_columns(
+            series=pl.when(pl.col("arm") == "random").then(pl.lit("random")).otherwise("uq_metric")
+        )
+        .group_by("dataset", "model", "series", "round")
+        .agg(pl.col(field).mean(), pl.col("percent_acquired").mean())
+        .join(targets.select("dataset", "target"), on="dataset")
+    )
+    reached = (
+        mean_curves.filter(pl.col(field) >= pl.col("target"))
+        .group_by("dataset", "model", "series")
+        .agg(pl.col("percent_acquired").min().alias("pool"))
+    )
+    return (
+        mean_curves.select("dataset", "model", "series")
+        .unique()
+        .join(reached, on=["dataset", "model", "series"], how="left")
+    )
 
 
 def tuning_winners(results_root: Path) -> pl.DataFrame:

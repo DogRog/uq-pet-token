@@ -12,7 +12,8 @@ def _(mo):
     # Paper rerun results
 
     The full rerun from `scripts/run_all_experiments.sh`: five models on PET, Quishpi,
-    and MedicalProcessInstruks, read from `results/`. Each chapter answers one question
+    and MedicalProcessInstruks, read from `results/`, and the LLM baseline from
+    `llm-annotation-eval/res/pred/`. Each chapter answers one question
     and is listed in the outline. Positive gaps favour the uncertainty arm.
     """),
             mo.accordion(
@@ -30,12 +31,11 @@ def _(mo):
       them in proportion to their scores (ADR 0009).
     - The floating panel switches every chapter between exact match (headline, tuning
       objective) and partial match (reported only, ADR 0010), and picks the acquisition
-      shown in chapters 3–5. Chapter 9 marks unmatched entities by the chosen matching.
+      shown in chapters 3–6. Chapter 10 marks unmatched entities by the chosen matching.
     - **F1 average** switches every chapter between micro F1 (pooled over all entities,
       the headline) and macro F1 (the mean of per-type F1, so a rare type weighs as much
       as a common one; reported only). Precision and recall exist for micro F1 only.
-    - Nothing is downloaded or trained. Per-run diagnostics (tag coverage, timing,
-      selected words) are in `notebooks/best_uq_analysis.py`.
+    - Nothing is downloaded or trained.
     """)
                 }
             ),
@@ -62,6 +62,7 @@ def _():
 
     alt.data_transformers.disable_max_rows()
     results_root = Path(__file__).resolve().parents[1] / "results"
+    llm_root = results_root.parent / "llm-annotation-eval" / "res" / "pred"
     series_colors = {
         "entropy": "#F58518",
         "least_confidence": "#E45756",
@@ -88,6 +89,7 @@ def _():
         alt,
         html,
         json,
+        llm_root,
         make_tag_category_coverage_chart,
         make_tag_coverage_chart,
         mo,
@@ -109,7 +111,7 @@ def _(FloatingPanel, mo):
         label="Entity matching",
     )
     acquisition = mo.ui.dropdown(
-        ["Top-K", "Gumbel noise"], value="Top-K", label="Acquisition (ch. 3–5)"
+        ["Top-K", "Gumbel noise"], value="Top-K", label="Acquisition (ch. 3–6)"
     )
     f1_average = mo.ui.dropdown({"micro": "", "macro": "_macro"}, value="micro", label="F1 average")
     pool_percent = mo.ui.slider(
@@ -120,14 +122,15 @@ def _(FloatingPanel, mo):
 
 
 @app.cell
-def _(pr, refresh, results_root):
+def _(llm_root, pr, refresh, results_root):
     refresh.value
     status = pr.sweep_status(results_root)
     curves = pr.best_uq_curves(results_root)
     supervised = pr.supervised_scores(results_root)
     sizes = pr.dataset_sizes(results_root)
     winners = pr.tuning_winners(results_root)
-    return curves, sizes, status, supervised, winners
+    llm = pr.llm_test_scores(llm_root)
+    return curves, llm, sizes, status, supervised, winners
 
 
 @app.cell
@@ -337,7 +340,7 @@ def _(alt, headline_gap, mo, pl, pr, score_name, seeds):
       the last round's UQ-minus-random test entity F1, after both arms acquired the whole
       pool. The final gap is noisy on Quishpi (41 test sentences) and only reflects
       learning order. Gap AUC is the headline.
-    - Chapter 8 checks the same comparison at 30 sampled configurations instead of
+    - Chapter 9 checks the same comparison at 30 sampled configurations instead of
       one tuned configuration.
     """),
                 }
@@ -695,8 +698,7 @@ def _(
     - Only completed rounds at or below the red line count, without interpolation. Models
       with a larger K reach a given percentage in fewer, bigger rounds.
     - Tag totals come from the completed acquisition logs; this retrospective view does
-      not use gold labels to select words. Per-model, per-seed diagnostics are in
-      `notebooks/best_uq_analysis.py`.
+      not use gold labels to select words.
     """)
                 }
             ),
@@ -948,6 +950,222 @@ def _(
 
 
 @app.cell(hide_code=True)
+def _(
+    acquisition,
+    alt,
+    curves,
+    field,
+    llm,
+    mo,
+    pl,
+    pr,
+    score_name,
+    series_color,
+    supervised,
+):
+    mo.stop(
+        llm.is_empty(),
+        mo.md(
+            "## 6. Against LLM annotation\n"
+            "No finished LLM runs in `llm-annotation-eval/res/pred/`; run "
+            "`configs/<dataset>/md-test-sentences.yaml` there."
+        ),
+    )
+    _configs = (
+        llm.group_by("dataset", "config", "reasoning_effort", "llm_model")
+        .agg(
+            pl.col(field).mean().alias("f1"),
+            pl.col(field).std().alias("sd"),
+            pl.col(field.replace("f1", "precision")).mean().alias("precision")
+            if "macro" not in field
+            else pl.lit(None, pl.Float64).alias("precision"),
+            pl.col(field.replace("f1", "recall")).mean().alias("recall")
+            if "macro" not in field
+            else pl.lit(None, pl.Float64).alias("recall"),
+            pl.len().alias("runs"),
+        )
+        .with_columns(
+            low=pl.col("f1") - pl.col("sd").fill_null(0),
+            high=pl.col("f1") + pl.col("sd").fill_null(0),
+        )
+        .sort("dataset", "f1", descending=[False, True])
+    )
+    _best = _configs.group_by("dataset").agg(pl.all().sort_by("f1").last())
+    _sup = (
+        supervised.group_by("dataset", "model")
+        .agg(pl.col(field).mean().alias("f1"))
+        .group_by("dataset")
+        .agg(pl.col("f1").min().alias("low"), pl.col("f1").max().alias("high"))
+        if not supervised.is_empty()
+        else pl.DataFrame(schema={"dataset": pl.String, "low": pl.Float64, "high": pl.Float64})
+    )
+    _datasets = [d for d in pr.DATASET_ORDER if d in set(_configs["dataset"])]
+
+    def _panel(dataset):
+        rows = _configs.filter(pl.col("dataset") == dataset)
+        y = alt.Y(
+            "config:N",
+            title=None,
+            sort=rows["config"].to_list(),
+            axis=alt.Axis(labelLimit=240),
+        )
+        band = (
+            alt.Chart(_sup.filter(pl.col("dataset") == dataset))
+            .mark_rect(color="#54A24B", opacity=0.18)
+            .encode(
+                x="low:Q",
+                x2="high:Q",
+                tooltip=[alt.Tooltip("low:Q", format=".3f"), alt.Tooltip("high:Q", format=".3f")],
+            )
+        )
+        bars = alt.Chart(rows).mark_rule(color="gray").encode(x="low:Q", x2="high:Q", y=y)
+        points = (
+            alt.Chart(rows)
+            .mark_point(size=90, filled=True)
+            .encode(
+                x=alt.X("f1:Q", title=f"Test {score_name}", scale=alt.Scale(zero=False)),
+                y=y,
+                color=alt.Color(
+                    "reasoning_effort:N",
+                    title="Reasoning effort",
+                    sort=["none", "low", "medium", "high", "default"],
+                    legend=alt.Legend(orient="top"),
+                ),
+                tooltip=[
+                    "config",
+                    "llm_model",
+                    "runs",
+                    alt.Tooltip("f1:Q", format=".3f"),
+                    alt.Tooltip("sd:Q", format=".3f"),
+                ],
+            )
+        )
+        return (band + bars + points).properties(
+            title=dataset, width=380, height=max(80, 22 * rows.height)
+        )
+
+    _chart = alt.hconcat(*[_panel(d) for d in _datasets]).resolve_scale(x="independent")
+
+    _reach = pr.pool_to_match(
+        curves.filter(pl.col("acquisition") == acquisition.value),
+        field,
+        _best.select("dataset", target="f1"),
+    )
+    _series = ["random", *pr.UQ_METRICS]
+    _reach_table = (
+        _reach.pivot(on="series", index=["dataset", "model"], values="pool")
+        .select("dataset", "model", *[s for s in _series if s in set(_reach["series"])])
+        .sort(
+            pl.col("dataset").replace_strict(pr.DATASET_ORDER, [0, 1, 2]),
+            pl.col("model").replace_strict(pr.MODEL_ORDER, list(range(5))),
+        )
+    )
+    _reach_points = _reach.drop_nulls("pool")
+    _reach_chart = (
+        alt.Chart(_reach_points)
+        .mark_point(size=110, filled=True, opacity=0.9)
+        .encode(
+            x=alt.X(
+                "pool:Q",
+                title="Pool acquired (%) to match the best LLM",
+                scale=alt.Scale(domain=[0, 100]),
+            ),
+            y=alt.Y("model:N", title=None, sort=pr.MODEL_ORDER),
+            color=series_color(_reach_points["series"].to_list()),
+            shape=alt.Shape("series:N", title=None, legend=None),
+            tooltip=["dataset", "model", "series", alt.Tooltip("pool:Q", format=".1f")],
+        )
+        .properties(width=380, height=200)
+        .facet(column=alt.Column("dataset:N", title=None, sort=pr.DATASET_ORDER))
+    )
+
+    def _median_pool(dataset, series):
+        pools = _reach.filter((pl.col("dataset") == dataset) & pl.col("series").is_in(series))
+        reached = pools.drop_nulls("pool")
+        return (
+            f"{reached['pool'].median():.0f}%" if reached.height else "never",
+            pools.height - reached.height,
+        )
+
+    def _summary(dataset):
+        best = _best.filter(pl.col("dataset") == dataset).row(0, named=True)
+        sup = _sup.filter(pl.col("dataset") == dataset)
+        sup_text = (
+            f"; the supervised models score {sup['low'][0]:.3f}–{sup['high'][0]:.3f}"
+            if sup.height
+            else ""
+        )
+        if _reach.filter(pl.col("dataset") == dataset).is_empty():
+            return f"- **{dataset}**: best LLM {best['config']}, {best['f1']:.3f}{sup_text}."
+        random_pool, random_missed = _median_pool(dataset, ["random"])
+        uq_pool, uq_missed = _median_pool(dataset, pr.UQ_METRICS)
+        missed = (
+            f" ({random_missed} random and {uq_missed} UQ curves never get there)"
+            if random_missed or uq_missed
+            else ""
+        )
+        return (
+            f"- **{dataset}**: best LLM {best['config']}, {best['f1']:.3f}{sup_text}. "
+            f"Median pool to match it: UQ {uq_pool}, random {random_pool}{missed}."
+        )
+
+    mo.vstack(
+        [
+            mo.md(
+                "## 6. Against LLM annotation\n"
+                "Test score of LLMs that annotate each test sentence from instructions and "
+                "the 5 bootstrap sentences, with no training, next to the supervised "
+                "models (green band, lowest to highest model). Then how much of the pool a "
+                f"token classifier needs, {acquisition.value} acquisition, to match the "
+                "best LLM.\n\n" + "\n".join(_summary(d) for d in _datasets)
+            ),
+            mo.ui.altair_chart(_chart),
+            mo.ui.altair_chart(_reach_chart),
+            mo.accordion(
+                {
+                    "Pool acquired (%) to match the best LLM, per model": mo.ui.table(
+                        _reach_table,
+                        selection=None,
+                        format_mapping={s: "{:.1f}" for s in _series},
+                    ),
+                    "LLM configurations: models and test scores": mo.ui.table(
+                        _configs.select(
+                            "dataset",
+                            "config",
+                            "llm_model",
+                            "runs",
+                            "f1",
+                            "sd",
+                            "precision",
+                            "recall",
+                        ),
+                        selection=None,
+                        format_mapping={c: "{:.3f}" for c in ("f1", "sd", "precision", "recall")},
+                    ),
+                    "How to read this": mo.md("""
+    - The LLM runs are `llm-annotation-eval`'s `md-test-sentences` task: each test sentence
+      is sent on its own, without its document, to an open-weight model on the NHR@FAU
+      gateway. The prompt holds the dataset's type definitions, a procedure, and the
+      5 bootstrap sentences with their gold mentions as the format example, so the LLM
+      sees the same labelled sentences the token classifiers start from.
+    - Each configuration is one model at one reasoning effort, run 5 times; points are
+      the mean, grey bars ±1 SD over runs.
+    - Predictions are rescored here with `evaluate_predictions` on the rebuilt test
+      split, so the panel's matching and F1 average apply. Types outside the dataset's
+      schema count as wrong.
+    - The best LLM is picked on the test split, which favours the LLM; the pool share is
+      the first round where the seed-mean curve reaches its score, not interpolated. A
+      blank cell means the curve never gets there.
+    - Chapter 10 can show an LLM's predictions next to the token classifiers'.
+    """),
+                }
+            ),
+        ]
+    )
+    return
+
+
+@app.cell(hide_code=True)
 def _(alt, mo, pl, pr, seeds, stats):
     _paired = (
         seeds.group_by(pr.SETTING)
@@ -999,7 +1217,7 @@ def _(alt, mo, pl, pr, seeds, stats):
     mo.vstack(
         [
             mo.md(
-                "## 6. Top-K or Gumbel noise?\n"
+                "## 7. Top-K or Gumbel noise?\n"
                 "Each point is one dataset, model, and UQ metric at the validation winner. "
                 "Above the diagonal, Gumbel noise beat Top-K."
             ),
@@ -1107,7 +1325,7 @@ def _(alt, gap_names, metric_gap, mo, pl, pr, seeds, series_color):
     mo.vstack(
         [
             mo.md(
-                "## 7. Which UQ metric?\n"
+                "## 8. Which UQ metric?\n"
                 f"Bars are the mean {_name} over the five models; ticks are the individual "
                 "models. The table counts how often each metric gave a model its largest "
                 "gap (5 models × 2 acquisitions per dataset)."
@@ -1238,7 +1456,7 @@ def _(alt, gap_names, mo, pl, pr, score_name, status, sweep, sweep_gap):
     mo.vstack(
         [
             mo.md(
-                "## 8. Robustness: UQ (Top-K) against random at 30 sampled configurations\n"
+                "## 9. Robustness: UQ (Top-K) against random at 30 sampled configurations\n"
                 "The same 30 configurations, sampled from the tuning search space before any "
                 "results, run with both arms on the test split. This asks whether the "
                 "headline depends on tuning: a positive mean here means UQ helps across "
@@ -1445,7 +1663,7 @@ def _(mo, run_options):
         run_options, value=next(iter(run_options), None), label="Run", searchable=True
     )
     viewer_lines = mo.ui.multiselect(
-        ["Gold", "Uncertainty", "Random"],
+        ["Gold", "Uncertainty", "Random", "LLM"],
         value=["Gold", "Uncertainty", "Random"],
         label="Lines",
     )
@@ -1453,9 +1671,25 @@ def _(mo, run_options):
 
 
 @app.cell
-def _(Path, mo, pr, viewer_run):
+def _(Path, field, json, llm, mo, pl, pr, viewer_run):
     mo.stop(viewer_run.value is None)
     test_sentences, run_rows, run_predictions = pr.load_test_predictions(Path(viewer_run.value))
+    viewer_dataset = json.loads((Path(viewer_run.value) / "config.json").read_text())["dataset"]
+    # "config · run i" -> its test-predictions.jsonl, best configuration on the test split first.
+    _llm_runs = (
+        llm.filter(pl.col("dataset") == pr.DATASETS[viewer_dataset])
+        .with_columns(pl.col(field).mean().over("config").alias("config_score"))
+        .sort("config_score", "run", descending=[True, False])
+        if not llm.is_empty()
+        else llm
+    )
+    _llm_options = {
+        f"{row['config']} · run {row['run']}": row["predictions_file"]
+        for row in _llm_runs.iter_rows(named=True)
+    }
+    viewer_llm = mo.ui.dropdown(
+        _llm_options, value=next(iter(_llm_options), None), label="LLM", searchable=True
+    )
     entity_types = sorted(
         {
             tag[2:]
@@ -1482,7 +1716,9 @@ def _(Path, mo, pr, viewer_run):
         run_predictions,
         run_rows,
         test_sentences,
+        viewer_dataset,
         viewer_document,
+        viewer_llm,
         viewer_round,
         viewer_seed,
     )
@@ -1490,9 +1726,11 @@ def _(Path, mo, pr, viewer_run):
 
 @app.cell(hide_code=True)
 def _(
+    Path,
     entity_types,
     field,
     html,
+    llm,
     matching,
     mo,
     pl,
@@ -1501,8 +1739,10 @@ def _(
     run_rows,
     score_name,
     test_sentences,
+    viewer_dataset,
     viewer_document,
     viewer_lines,
+    viewer_llm,
     viewer_round,
     viewer_run,
     viewer_seed,
@@ -1518,14 +1758,23 @@ def _(
         name: _rows.filter(pl.col("arm") == arm).row(0, named=True)
         for name, arm in (("Uncertainty", "uncertainty"), ("Random", "random"))
     }
-    _shown = [line for line in ("Gold", "Uncertainty", "Random") if line in viewer_lines.value]
+    _predicted = {line: run_predictions[_arms[line]["index"]] for line in ("Uncertainty", "Random")}
+    if viewer_llm.value is not None:
+        _predicted["LLM"] = pr.read_llm_predictions(Path(viewer_llm.value), viewer_dataset)
+    _shown = [
+        line
+        for line in ("Gold", "Uncertainty", "Random", "LLM")
+        if line in viewer_lines.value and (line == "Gold" or line in _predicted)
+    ]
 
     def _render(tokens, entities):
         pieces = [html.escape(token) for token in tokens]
         for start, end, kind, matched in reversed(entities):
             outline = "" if matched else ";outline:1.5px dashed #E45756"
+            # Grey for types outside the dataset's schema, which only an LLM predicts.
+            color = _colors.get(kind, "hsl(0 0% 50% / 0.28)")
             pieces[start:end] = [
-                f'<span style="background:{_colors[kind]};border-radius:3px;'
+                f'<span style="background:{color};border-radius:3px;'
                 f'padding:1px 3px{outline}" title="{kind}">{" ".join(pieces[start:end])}'
                 f"<sub style='opacity:.7'> {kind}</sub></span>"
             ]
@@ -1536,7 +1785,7 @@ def _(
     def _sentence(index, sentence):
         tags = sentence["tags"]
         matches = {
-            line: pr.match_entities(tags, run_predictions[_arms[line]["index"]][index], matching)
+            line: pr.match_entities(tags, _predicted[line][index], matching)
             for line in _shown
             if line != "Gold"
         }
@@ -1576,18 +1825,26 @@ def _(
         for kind, color in _colors.items()
     )
     _uq, _random = _arms["Uncertainty"], _arms["Random"]
+    _llm_score = (
+        f", LLM ({viewer_llm.selected_key}) **"
+        f"{llm.filter(pl.col('predictions_file') == viewer_llm.value)[field][0]:.3f}**"
+        if "LLM" in _shown
+        else ""
+    )
     mo.vstack(
         [
             mo.md(
-                "## 9. Gold and predicted entities on the test split\n"
+                "## 10. Gold and predicted entities on the test split\n"
                 "Each best-UQ run saves the predicted tags behind every evaluation row, so "
                 "any round of either arm can be read sentence by sentence. Red dashed "
                 f"outlines mark entities with no {matching} match: on a predicted line, "
                 "spurious entities; on the gold line, entities the first predicted line "
-                "shown missed."
+                "shown missed. The LLM line shows one run of an LLM configuration from "
+                "chapter 6, which annotates the test sentences without training, so it does "
+                "not change with the round; grey spans are types outside the schema."
             ),
             mo.hstack(
-                [viewer_run, viewer_seed, viewer_round, viewer_document, viewer_lines],
+                [viewer_run, viewer_seed, viewer_round, viewer_document, viewer_lines, viewer_llm],
                 justify="start",
                 wrap=True,
             ),
@@ -1595,7 +1852,7 @@ def _(
                 f"Round {viewer_round.value} of {_uq['total_rounds']}, "
                 f"{_uq['percent_acquired']:.1f}% of the pool acquired. Test {score_name}: "
                 f"uncertainty **{_uq[field]:.3f}**, random "
-                f"**{_random[field]:.3f}**."
+                f"**{_random[field]:.3f}**{_llm_score}."
             ),
             mo.Html(f"<div>{_legend}</div><table style='width:100%'>{_table}</table>"),
         ]
@@ -1606,7 +1863,7 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md("""
-    ## 10. Caveats
+    ## 11. Caveats
 
     - **Test split sizes.** Quishpi tests on 41 sentences and PET on 84, so single-round
       scores move by several F1 points between seeds. Gap AUC averages over every round
@@ -1616,7 +1873,7 @@ def _(mo):
     - **Shared arms.** A model's three UQ metrics, and its Top-K and Gumbel runs, share one
       bootstrap and one random arm. They are not independent replications.
     - **One tuned configuration.** Chapter 2 tunes the random arm on the validation holdout
-      and gives UQ the same settings; chapter 8 is the check that the result does not
+      and gives UQ the same settings; chapter 9 is the check that the result does not
       hinge on that choice. The test-tuned random oracle is not part of this rerun.
     - **Partial match** is reported only (ADR 0010); tuning and the headline use exact match.
     - **Still running.** Chapter 1 lists unfinished sweeps; reload to include them.

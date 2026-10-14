@@ -29,5 +29,4 @@ bash scripts/run_oracle_random_all_models.sh
 
 Set `WANDB_API_KEY` in the environment or the project's `.env` first. Re-running resumes
 completed trials and comparisons. Expect roughly 28 hours for all five checkpoints on
-the GPU that ran the tuning sweeps. `notebooks/best_uq_analysis.py` draws the stage 2
-test curves; no notebook analyzes stage 1.
+the GPU that ran the tuning sweeps. No notebook analyzes either stage.

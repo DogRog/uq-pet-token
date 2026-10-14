@@ -76,8 +76,6 @@ at the project root (see [Weights & Biases](#weights--biases)).
 | Tune and train the fully supervised upper bound | `scripts/run_supervised_all_models.sh` |
 | Sample hyperparameters and compare UQ against random | `scripts/run_random_search_all_models.sh` |
 | Compare the paper rerun across datasets and models | `notebooks/paper_results.py` |
-| Inspect one best-config run: learning curves and selection diagnostics | `notebooks/best_uq_analysis.py` |
-| Inspect random-search test curves and selections | `notebooks/random_search_analysis.py` |
 | Check PET, Quishpi, and MedicalProcessInstruks preprocessing against the raw files and compare their lexical diversity | `notebooks/preprocessing_checks.py` |
 
 ## Protocol
@@ -449,32 +447,12 @@ Outputs under `results/supervised/<sweep-name>/`:
 
 ```bash
 uv run marimo edit notebooks/paper_results.py
-uv run marimo edit notebooks/best_uq_analysis.py
-uv run marimo edit notebooks/random_search_analysis.py
 ```
 
-These notebooks read saved files and do not train models.
-
-- `paper_results.py` compares every dataset and model across the stages, in numbered
-  chapters: progress and random-baseline validation winners, the headline gap, learning
-  curves, label efficiency, the supervised bound, top-K against Gumbel noise, UQ
-  metrics, the random sweep, and a test-split entity viewer.
-- `best_uq_analysis.py` compares the fixed comparisons in `results/best_uq/`. It draws
-  the supervised test rows for the selected checkpoint as a dashed reference line with a
-  ±1 SD band, plus the sentence-level curve when several percentages were run. The AL
-  arms use their own online recipe, so this line marks the value of labelling
-  everything rather than a matched-hyperparameter arm. Its **Entity matching** dropdown
-  switches every entity-F1 chart and table, including gaps, label efficiency, the oracle
-  appendix, and the random-search t-tests, between exact match (the headline) and
-  partial match (reported only,
-  [ADR 0010](docs/adr/0010-partial-entity-match-is-reported-not-tuned.md)). Runs saved
-  before partial match was scored are left out or marked when partial is selected.
-- `random_search_analysis.py` reads test sweep summaries under `results/random_search/`,
-  with aggregate metric results, pending or failed comparisons, and a per-configuration
-  drill-down. It plots seed means and standard-deviation bands for entity F1, macro
-  entity F1 (when available), and token accuracy, plus acquired NER-tag coverage and
-  selected words with sentence context. Sentence context is read from the local
-  `data/raw/PETv1.1-entities.jsonl`, so it covers PET sweeps only.
+The notebook reads saved files and does not train models. It compares every dataset and
+model across the stages, in numbered chapters: progress and random-baseline validation
+winners, the headline gap, learning curves, label efficiency, the supervised bound, top-K
+against Gumbel noise, UQ metrics, the random sweep, and a test-split entity viewer.
 
 ### 5. Appendix: test-tuned random oracle
 
@@ -507,9 +485,7 @@ All five checkpoints take roughly 28 hours. W&B logs each checkpoint to its own
 (see [Weights & Biases](#weights--biases)). See
 [configs/pet/oracle_random/README.md](configs/pet/oracle_random/README.md).
 
-The paper rerun leaves the oracle out. `notebooks/best_uq_analysis.py` draws the stage 2
-test curves in its appendix section when `results/oracle_random/uq/` holds a comparison
-for the selected checkpoint and UQ metric; no notebook analyzes stage 1.
+The paper rerun leaves the oracle out, and no notebook analyzes either stage.
 
 The oracle is biased against UQ twice: the random arm's test score carries the winner's
 curse, and UQ runs at random's best settings rather than its own. Oracle numbers are
@@ -795,10 +771,8 @@ recorded in [docs/adr/](docs/adr/).
 | `notebooks/bert_token_uq.py` | controls, experiment run, tables, and plots |
 | `llm-annotation-eval/` | the LLM baseline: a separate uv project with its own environment and `CLAUDE.md` |
 | `notebooks/paper_results.py` | chaptered cross-dataset view of the paper rerun |
-| `notebooks/best_uq_analysis.py` | best-config UQ comparisons against random and the supervised bound |
-| `notebooks/random_search_analysis.py` | random-sweep summaries and per-configuration drill-downs |
 | `notebooks/preprocessing_checks.py` | PET, Quishpi, and MedicalProcessInstruks preprocessing checks against the raw files, and their lexical diversity |
-| `notebooks/analysis/` | chart builders, acquisition diagnostics and label coverage, oracle selection, lexical diversity, and W&B comparison media |
+| `notebooks/analysis/` | chart builders, acquisition tag selections and label coverage, paper-rerun loaders, lexical diversity, and W&B comparison media |
 | `configs/<dataset>/tune_random/` | random-baseline tuning settings, one file per model |
 | `configs/<dataset>/best_uq/` | frozen validation winners for fixed UQ comparisons |
 | `configs/<dataset>/supervised/` | supervised baseline settings |
