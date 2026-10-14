@@ -1,0 +1,24 @@
+# Mention detection on uq-pet-token's 84 PET test sentences, each sent on its own.
+# One config per model and reasoning effort, see configs/README.md.
+task: md-test-sentences
+provider: nhr
+repeats: 5
+models:
+  - name: deepseek-v4.1-flash
+    model: deepseek-ai/DeepSeek-V4.1-Flash
+    reasoning_effort: [none, low, high]   # medium is rejected
+  - name: gemma-4-31b
+    model: RedHatAI/gemma-4-31B-it-FP8-block
+    reasoning_effort: [none, low, high]
+  - name: gemma-4-e4b
+    model: google/gemma-4-E4B-it
+    reasoning_effort: [none, low, high]
+  - name: gpt-oss-120b
+    model: gpt-oss-120b
+    reasoning_effort: [low, high]         # none is rejected
+  - name: magistral-small-2509
+    model: GaleneAI/Magistral-Small-2509-FP8-Dynamic
+    reasoning_effort: none                # low, medium and high are rejected
+  - name: qwen3.8-27b
+    model: Qwen/Qwen3.8-27B-FP8
+    reasoning_effort: [none, low, medium] # high is rejected
