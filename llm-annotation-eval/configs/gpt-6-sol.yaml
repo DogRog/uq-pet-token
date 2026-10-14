@@ -1,0 +1,4 @@
+provider: openai
+model: gpt-6-sol
+reasoning_effort: none
+repeats: 1

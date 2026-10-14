@@ -1,0 +1,43 @@
+# Quishpi's mention types, procedure, disambiguation hints and format example, filled into
+# mentions.txt (see README.md). Written after its annotations: mostly single verbs as actions, the
+# objects they act on as entities (not who performs them), and condition clauses.
+mentions:
+  types:
+    Action: >-
+      an activity or event of the process, usually only its verb, e.g. "checks", "sends", or
+      "informed" in "the customer is informed", without auxiliaries, the actor or the object.
+      Verbs joined by "and" that share their object can form one mention, e.g. "checks and
+      configures".
+    Entity: >-
+      the business object an Action is performed on, i.e. what is created, checked, sent or
+      changed, e.g. "invoice", "detailed problem report", "copy of the invoice". Usually
+      without the determiner. Who performs an Action, e.g. a role, person or department like
+      "the clerk", is not an Entity.
+    Condition: >-
+      the condition under which a part of the process is executed, usually the clause after
+      "if", "when" or "in case", without that word, e.g. "the part is available in-house" in
+      "if the part is available in-house"; also the word that starts the alternative path,
+      e.g. "otherwise".
+  # the steps to take, a chain of thought; the answer itself is only the mention lines
+  procedure: |-
+    Go through the text sentence by sentence, using the other sentences as context:
+
+    1. Find the Actions.
+    2. For each Action, find the Entity it is performed on.
+    3. Find the Conditions under which parts of the process are executed, and the words that start an alternative path.
+  # sentences with the mentions they contain, for types that are easily mistaken
+  disambiguation: |-
+    - In "the clerk sends the invoice .", "sends" is an Action and "invoice" an Entity; "the clerk" is no mention, as it performs the Action.
+    - In "if the part is available in-house", the Condition is "the part is available in-house", without "if".
+  # uq-pet-token's bootstrap sentences (res/gold/<dataset>-bootstrap.jsonl, the labelled sentences
+  # its token classifiers start from) with their mentions: sentences are "<i>: <words>" lines, as
+  # the documents are given; mentions one line per mention, text, type and sentence separated by
+  # a tab
+  example: |-
+    ### Input Example
+
+    {{sentences}}
+
+    ### Output Example
+
+    {{mentions}}

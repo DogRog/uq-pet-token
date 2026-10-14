@@ -1,0 +1,4 @@
+provider: nhr
+model: deepseek-ai/DeepSeek-V4.1-Flash
+# reasoning_effort is not sent, the model then reasons by default; "none" switches reasoning off
+repeats: 1
