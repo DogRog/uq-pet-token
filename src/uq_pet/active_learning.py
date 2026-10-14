@@ -18,7 +18,8 @@ from rich.console import Console
 from rich.table import Table
 from transformers.utils import logging as transformers_logging
 
-from uq_pet.data_prep import DATASET_TAGS, RESULTS_DIR, TokenKey
+from uq_pet.data_prep import DATASET_TAGS, TokenKey
+from uq_pet.paths import RESULTS_DIR
 from uq_pet.token_model import (
     UQ_METRICS,
     evaluate_model,

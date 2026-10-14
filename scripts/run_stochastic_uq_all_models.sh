@@ -8,7 +8,7 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-models=(distilbert bert_base roberta_base deberta_v3_base modernbert_base)
+source scripts/models.sh
 variants=(
   "--max-per-word-form 1"
   "--max-per-word-form 2"

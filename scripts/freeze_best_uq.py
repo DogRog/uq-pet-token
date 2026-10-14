@@ -11,8 +11,7 @@ import sys
 from pathlib import Path
 
 from uq_pet.config import ExperimentConfig, RandomBaselineSearchConfig
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+from uq_pet.paths import PROJECT_ROOT
 
 
 def freeze(tune_config: Path) -> Path | None:

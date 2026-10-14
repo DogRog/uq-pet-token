@@ -5,7 +5,8 @@ from pathlib import Path
 
 from uq_pet.active_learning import run_active_learning, write_run
 from uq_pet.config import ExperimentConfig
-from uq_pet.data_prep import DATASET_TAGS, RESULTS_DIR, load_splits
+from uq_pet.data_prep import DATASET_TAGS, load_splits
+from uq_pet.paths import RESULTS_DIR
 from uq_pet.token_model import get_device, gold_tags, resolve_precision
 
 

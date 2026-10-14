@@ -7,12 +7,12 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-models=(distilbert bert_base roberta_base deberta_v3_base modernbert_base)
+source scripts/models.sh
 
 for dataset in ${DATASETS:-pet quishpi medical}; do
   for model in "${models[@]}"; do
     config=configs/$dataset/tune_random/$model.json
     printf '\nRandom-only tuning: %s\n' "$config"
-    uv run scripts/bert_token_uq_search.py --config "$config" "$@"
+    uv run scripts/run_search.py --config "$config" "$@"
   done
 done

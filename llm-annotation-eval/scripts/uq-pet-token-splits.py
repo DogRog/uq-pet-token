@@ -25,7 +25,7 @@ import pathlib
 import subprocess
 import sys
 
-from uq_pet import data_prep
+from uq_pet import data_prep, paths
 
 GOLD_DIR = pathlib.Path(__file__).resolve().parent.parent / "res" / "gold"
 
@@ -134,7 +134,7 @@ def main():
     args = parser.parse_args()
     commit = subprocess.run(
         ["git", "rev-parse", "--short", "HEAD"],
-        cwd=data_prep.PROJECT_ROOT, capture_output=True, text=True, check=True,
+        cwd=paths.PROJECT_ROOT, capture_output=True, text=True, check=True,
     ).stdout.strip()
     if args.check:
         same = check()

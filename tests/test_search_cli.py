@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-SEARCH_PATH = Path(__file__).resolve().parents[1] / "scripts" / "bert_token_uq_search.py"
+SEARCH_PATH = Path(__file__).resolve().parents[1] / "scripts" / "run_search.py"
 
 
 @pytest.mark.parametrize(

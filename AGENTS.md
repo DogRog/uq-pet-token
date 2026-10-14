@@ -49,8 +49,12 @@ YAML configs, a CLI framework, registries, callbacks, checkpoint management, or 
 experiment abstractions only for a concrete need.
 
 - `config.py`: validated experiment and search settings; UI controls stay in the notebook
+- `paths.py`: the project root and results directory
 - `data_prep.py`, `token_model.py`, `active_learning.py`: data, model operations, rounds
+- `experiment.py`: one interactive-notebook run, persisted
 - `search.py`: search planning, resume handling, and summaries
 - `sweeps.py`: the learning-rate range and saved sweep files that search and supervised share
 - `supervised.py`: the supervised baseline's search, tuning, test runs, and resume
 - `utils/wandb_logging.py`: shared W&B logging
+- `utils/wandb_tuning.py`: W&B tuning sweeps and their workspace charts
+- `utils/truncation.py`: which words survive subword truncation

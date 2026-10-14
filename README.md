@@ -292,8 +292,8 @@ a subset, e.g. `DATASETS="quishpi medical" bash scripts/tune_random_all_models.s
 other launchers below take the same variable. To tune one model:
 
 ```bash
-uv run scripts/bert_token_uq_search.py --config configs/pet/tune_random/distilbert.json --dry-run
-uv run scripts/bert_token_uq_search.py --config configs/pet/tune_random/distilbert.json
+uv run scripts/run_search.py --config configs/pet/tune_random/distilbert.json --dry-run
+uv run scripts/run_search.py --config configs/pet/tune_random/distilbert.json
 ```
 
 Each `configs/<dataset>/tune_random/<model>.json` samples 100 configurations with five
@@ -524,14 +524,14 @@ shares the caveat.
 
 ## Random hyperparameter sweep
 
-In its default `--mode compare`, `scripts/bert_token_uq_search.py` samples a fixed
+In its default `--mode compare`, `scripts/run_search.py` samples a fixed
 set of configurations and runs entropy, least confidence, and margin against a matched
 random arm for each, evaluated on the **test** split after round 0 and every acquisition
 round. There is no validation holdout, optimization objective, pruning, or best-gap
 selection. Treat it as exploratory; the tuned workflow above is the main comparison.
 
 ```bash
-uv run scripts/bert_token_uq_search.py --config configs/pet/random_search/distilbert.json
+uv run scripts/run_search.py --config configs/pet/random_search/distilbert.json
 bash scripts/run_random_search_all_models.sh --dry-run
 bash scripts/run_random_search_all_models.sh
 ```
@@ -563,7 +563,7 @@ the **total fixed budget**, not an additional-run count. A valid command starts 
 training. For example:
 
 ```bash
-uv run scripts/bert_token_uq_search.py \
+uv run scripts/run_search.py \
   --num-configs 10 --sweep-name distilbert-random-10 \
   --config-json '{"checkpoint":"distilbert-base-cased","model_seeds":[0,1,2,3,4]}'
 ```
@@ -704,7 +704,7 @@ Resuming reuses the sweep and publishes any completed configurations not yet upl
 A completed search can be published without loading data or training:
 
 ```bash
-uv run scripts/bert_token_uq_search.py --config configs/pet/tune_random/distilbert.json --publish-wandb-only
+uv run scripts/run_search.py --config configs/pet/tune_random/distilbert.json --publish-wandb-only
 ```
 
 This requires an existing local plan and online W&B credentials. Offline mode keeps
@@ -749,7 +749,7 @@ uv run ruff check src tests notebooks scripts
 uv run ruff format --check src tests notebooks scripts
 uv run marimo check notebooks/bert_token_uq.py
 uv run notebooks/bert_token_uq.py
-uv run scripts/bert_token_uq_search.py --help
+uv run scripts/run_search.py --help
 uv run scripts/run_uq_metrics.py --help
 bash scripts/run_all_experiments.sh --dry-run
 bash scripts/run_best_uq_all_models.sh --dry-run
@@ -771,6 +771,7 @@ recorded in [docs/adr/](docs/adr/).
 | `src/uq_pet/data_prep.py` | dataset identity (PET, CoNLL-2003, Quishpi, MedicalProcessInstruks), download, stable splits, and private label lookup |
 | `src/uq_pet/token_model.py` | masking, training, UQ metrics, inference, and evaluation |
 | `src/uq_pet/active_learning.py` | acquisition rounds, replay, orchestration, and outputs |
+| `src/uq_pet/paths.py` | the project root and results directory |
 | `src/uq_pet/config.py` | shared validated experiment and search configuration |
 | `src/uq_pet/experiment.py` | one interactive-notebook run, persisted |
 | `src/uq_pet/search.py` | random sweep or baseline tuning, shared execution, resume, and summaries |
@@ -779,7 +780,7 @@ recorded in [docs/adr/](docs/adr/).
 | `src/uq_pet/utils/truncation.py` | word alignment and truncation checks |
 | `src/uq_pet/utils/wandb_logging.py` | W&B credentials, evaluation records, and comparison and supervised run lifecycles |
 | `src/uq_pet/utils/wandb_tuning.py` | tuning sweep publication and workspace charts |
-| `scripts/bert_token_uq_search.py` | CLI entry point for search and tuning |
+| `scripts/run_search.py` | CLI entry point for search and tuning |
 | `scripts/run_uq_metrics.py` | fixed multi-metric comparisons from one experiment configuration |
 | `scripts/run_supervised.py` | CLI entry point for the supervised baseline |
 | `scripts/run_all_experiments.sh` | every paper experiment, one parallel chain per dataset |
@@ -790,6 +791,7 @@ recorded in [docs/adr/](docs/adr/).
 | `scripts/run_supervised_all_models.sh` | supervised baseline for every dataset and checkpoint |
 | `scripts/run_random_search_all_models.sh` | exploratory random sweep for every dataset and checkpoint |
 | `scripts/run_oracle_random_all_models.sh` | appendix test-tuned random oracle sweeps for all five checkpoints |
+| `scripts/models.sh` | the checkpoints every `*_all_models.sh` launcher runs |
 | `notebooks/bert_token_uq.py` | controls, experiment run, tables, and plots |
 | `llm-annotation-eval/` | the LLM baseline: a separate uv project with its own environment and `CLAUDE.md` |
 | `notebooks/paper_results.py` | chaptered cross-dataset view of the paper rerun |

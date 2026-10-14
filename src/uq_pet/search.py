@@ -33,7 +33,8 @@ from uq_pet.config import (
     RandomSearchConfig,
     omit_implicit_defaults,
 )
-from uq_pet.data_prep import DATASET_TAGS, PROJECT_ROOT, load_splits, split_tuning_pool
+from uq_pet.data_prep import DATASET_TAGS, load_splits, split_tuning_pool
+from uq_pet.paths import PROJECT_ROOT
 from uq_pet.sweeps import (
     completed_run,
     learning_rate_space,

@@ -6,7 +6,7 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-models=(distilbert bert_base roberta_base deberta_v3_base modernbert_base)
+source scripts/models.sh
 
 for dataset in ${DATASETS:-pet quishpi medical}; do
   for model in "${models[@]}"; do

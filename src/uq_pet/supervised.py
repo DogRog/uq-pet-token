@@ -23,7 +23,8 @@ from transformers.utils import logging as transformers_logging
 
 from uq_pet.active_learning import full_sentence_items, write_run
 from uq_pet.config import SupervisedConfig, omit_implicit_defaults
-from uq_pet.data_prep import DATASET_TAGS, PROJECT_ROOT, TokenKey, load_splits, split_tuning_pool
+from uq_pet.data_prep import DATASET_TAGS, TokenKey, load_splits, split_tuning_pool
+from uq_pet.paths import PROJECT_ROOT
 from uq_pet.sweeps import (
     learning_rate_space,
     mark_complete,

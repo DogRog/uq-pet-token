@@ -8,13 +8,11 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-configs=(
-  configs/pet/oracle_random/distilbert.json
-  configs/pet/oracle_random/bert_base.json
-  configs/pet/oracle_random/roberta_base.json
-  configs/pet/oracle_random/deberta_v3_base.json
-  configs/pet/oracle_random/modernbert_base.json
-)
+source scripts/models.sh
+configs=()
+for model in "${models[@]}"; do
+  configs+=("configs/pet/oracle_random/$model.json")
+done
 
 header() {
   printf '\n=== [%d/%d] %s · %s ===\n' "$(($1 + 1))" "${#configs[@]}" \
@@ -23,7 +21,7 @@ header() {
 
 for index in "${!configs[@]}"; do
   header "$index" "stage 1: test-split random tuning"
-  uv run scripts/bert_token_uq_search.py --config "${configs[$index]}" "$@"
+  uv run scripts/run_search.py --config "${configs[$index]}" "$@"
 done
 
 for index in "${!configs[@]}"; do

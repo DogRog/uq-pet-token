@@ -11,6 +11,8 @@ from datasets import ClassLabel, Dataset, Features, Sequence, Value, load_datase
 from huggingface_hub import hf_hub_download
 from huggingface_hub.errors import GatedRepoError
 
+from uq_pet.paths import PROJECT_ROOT
+
 SEED = 3407
 TEST_SIZE = 0.2
 SEED_SPLIT_SEED = 42
@@ -98,10 +100,8 @@ def _sentence_features(tags: list[str]) -> Features:
 
 FEATURES = _sentence_features(NER_TAGS)
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RAW_DATA_PATH = PROJECT_ROOT / "data" / "raw" / "PETv1.1-entities.jsonl"
 QUISHPI_DIR = PROJECT_ROOT / "data" / "raw" / "quishpi"
-RESULTS_DIR = PROJECT_ROOT / "results"
 DATA_URL = (
     "https://raw.githubusercontent.com/patriziobellan86/PETv1.1/master/PETv1.1-entities.jsonl"
 )

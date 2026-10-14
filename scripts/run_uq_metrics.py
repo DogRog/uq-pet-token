@@ -6,9 +6,8 @@ from pathlib import Path
 
 from uq_pet import search
 from uq_pet.config import ExperimentConfig
+from uq_pet.paths import RESULTS_DIR
 from uq_pet.token_model import UQ_METRICS
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -35,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--sweep-name", help="Result group name (default: checkpoint[-dataset]-best-uq)."
     )
-    parser.add_argument("--sweeps-dir", type=Path, default=PROJECT_ROOT / "results" / "best_uq")
+    parser.add_argument("--sweeps-dir", type=Path, default=RESULTS_DIR / "best_uq")
     parser.add_argument("--dry-run", action="store_true", help="Print the plan without training.")
     args = parser.parse_args(argv)
     try:
