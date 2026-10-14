@@ -1,6 +1,9 @@
 import json
 
-from utils.paper_results import match_entities, tuning_winners
+import polars as pl
+import pytest
+
+from utils.paper_results import match_entities, random_sweep_comparisons, tuning_winners
 
 GOLD = ["B-Action", "O", "B-Entity", "I-Entity", "O", "B-Condition"]
 
@@ -55,3 +58,41 @@ def test_tuning_winners_lists_tuned_settings_of_finished_sweeps(tmp_path):
             "learning_rate": 3e-5,
         }
     ]
+
+
+def test_random_sweep_comparisons_compute_gaps_for_any_saved_score(tmp_path):
+    sweep = tmp_path / "random_search" / "pet-sweep"
+    run_dir = sweep / "runs" / "config_0003"
+    run_dir.mkdir(parents=True)
+    (sweep / "plan.json").write_text(json.dumps({"fixed_config": {"checkpoint": "roberta-base"}}))
+    comparison = {
+        "status": "complete",
+        "run_dir": "runs/config_0003",
+        "config_id": "config_0003",
+        "uq_metric": "margin",
+        "parameters": {"k": 32},
+    }
+    (sweep / "summary.json").write_text(json.dumps({"comparisons": [comparison]}))
+    # Two seeds; each arm runs two rounds over 0-100% of the pool.
+    pl.DataFrame(
+        {
+            "seed": [0, 0, 0, 0, 1, 1, 1, 1],
+            "arm": ["random", "random", "uncertainty", "uncertainty"] * 2,
+            "round": [0, 1] * 4,
+            "percent_acquired": [0.0, 100.0] * 4,
+            "entity_macro_f1": [0.2, 0.6, 0.4, 0.6, 0.2, 0.4, 0.2, 0.8],
+        }
+    ).write_csv(run_dir / "results.csv")
+    row = random_sweep_comparisons(tmp_path, "entity_macro_f1").row(0, named=True)
+    assert (row["dataset"], row["model"], row["config_id"], row["k"]) == (
+        "PET",
+        "RoBERTa",
+        "config_0003",
+        32,
+    )
+    # AUCs: random 0.4 and 0.3, uncertainty 0.5 and 0.5; finals 0.6/0.6 and 0.4/0.8.
+    assert row["gap_auc"] == pytest.approx(0.15)
+    assert row["final_gap"] == pytest.approx(0.2)
+    assert row["random_auc"] == pytest.approx(0.35)
+    assert row["random_final"] == pytest.approx(0.5)
+    assert random_sweep_comparisons(tmp_path, "entity_partial_macro_f1").is_empty()

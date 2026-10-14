@@ -31,6 +31,9 @@ def _(mo):
     - The floating panel switches every chapter between exact match (headline, tuning
       objective) and partial match (reported only, ADR 0010), and picks the acquisition
       shown in chapters 3–5. Chapter 9 marks unmatched entities by the chosen matching.
+    - **F1 average** switches every chapter between micro F1 (pooled over all entities,
+      the headline) and macro F1 (the mean of per-type F1, so a rare type weighs as much
+      as a common one; reported only). Precision and recall exist for micro F1 only.
     - Nothing is downloaded or trained. Per-run diagnostics (tag coverage, timing,
       selected words) are in `notebooks/best_uq_analysis.py`.
     """)
@@ -108,11 +111,12 @@ def _(FloatingPanel, mo):
     acquisition = mo.ui.dropdown(
         ["Top-K", "Gumbel noise"], value="Top-K", label="Acquisition (ch. 3–5)"
     )
+    f1_average = mo.ui.dropdown({"micro": "", "macro": "_macro"}, value="micro", label="F1 average")
     pool_percent = mo.ui.slider(
         start=0, stop=100, step=1, value=25, label="Pool acquired, % (ch. 3)", show_value=True
     )
-    FloatingPanel(mo.vstack([entity_matching, acquisition, pool_percent, refresh]))
-    return acquisition, entity_matching, pool_percent, refresh
+    FloatingPanel(mo.vstack([entity_matching, f1_average, acquisition, pool_percent, refresh]))
+    return acquisition, entity_matching, f1_average, pool_percent, refresh
 
 
 @app.cell
@@ -127,13 +131,15 @@ def _(pr, refresh, results_root):
 
 
 @app.cell
-def _(curves, entity_matching, pr, results_root):
-    field = entity_matching.value
+def _(curves, entity_matching, f1_average, pr, results_root):
+    # entity_f1 -> entity_macro_f1, entity_partial_f1 -> entity_partial_macro_f1.
+    field = entity_matching.value.replace("_f1", f"{f1_average.value}_f1")
     matching = entity_matching.selected_key
+    score_name = f"{matching}-match {'macro ' if f1_average.value else ''}entity F1"
     seeds = pr.seed_scores(curves, field)
     gaps = pr.gap_curves(curves, field)
     sweep = pr.random_sweep_comparisons(results_root, field)
-    return field, gaps, matching, seeds, sweep
+    return field, gaps, matching, score_name, seeds, sweep
 
 
 @app.cell(hide_code=True)
@@ -222,7 +228,7 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(alt, headline_gap, matching, mo, pl, pr, seeds):
+def _(alt, headline_gap, mo, pl, pr, score_name, seeds):
     _gap = headline_gap.value
     _other = "final_gap" if _gap == "gap_auc" else "gap_auc"
     _names = {"gap_auc": "gap AUC", "final_gap": "final F1 gap"}
@@ -304,7 +310,7 @@ def _(alt, headline_gap, matching, mo, pl, pr, seeds):
         [
             mo.md(
                 "## 2. Headline: UQ beats random at the validation winners\n"
-                f"Test {matching}-match entity-F1 {_names[_gap].replace(' F1', '')} for every model, UQ metric, "
+                f"Test {score_name} {_names[_gap].replace(' F1', '')} for every model, UQ metric, "
                 "and acquisition, each model at its validation winner with 5 model seeds. "
                 "Cells show the gap in pp and how many seeds favour UQ."
             ),
@@ -387,9 +393,20 @@ def _(
     pl,
     pool_percent,
     pr,
+    score_name,
     series_color,
     supervised,
 ):
+    mo.stop(
+        curve_view.value == "Precision & recall" and "_macro" in field,
+        mo.callout(
+            mo.md(
+                "Precision and recall are saved for micro F1 only; set **F1 average** to "
+                "micro in the floating panel."
+            ),
+            kind="warn",
+        ),
+    )
     _metrics = [curve_metric.value]
     _x = alt.X("percent:Q", title="Pool acquired (%)", scale=alt.Scale(domain=[0, 100]))
 
@@ -489,7 +506,7 @@ def _(
         _chart = (
             _base.mark_area(opacity=0.15).encode(
                 x=_x,
-                y=alt.Y("low:Q", title=f"{matching.capitalize()}-match entity F1"),
+                y=alt.Y("low:Q", title=score_name[0].upper() + score_name[1:]),
                 y2="high:Q",
                 color=_color,
             )
@@ -824,10 +841,10 @@ def _(
     acquisition,
     alt,
     field,
-    matching,
     mo,
     pl,
     pr,
+    score_name,
     seeds,
     series_color,
     supervised,
@@ -865,9 +882,7 @@ def _(
         alt.Chart(_points)
         .mark_point(size=110, filled=True, opacity=0.9)
         .encode(
-            x=alt.X(
-                "f1:Q", title=f"Final test {matching}-match entity F1", scale=alt.Scale(zero=False)
-            ),
+            x=alt.X("f1:Q", title=f"Final test {score_name}", scale=alt.Scale(zero=False)),
             y=alt.Y("model:N", title=None, sort=pr.MODEL_ORDER),
             color=series_color(_points["series"].to_list()),
             shape=alt.Shape("series:N", title=None, legend=None),
@@ -1127,7 +1142,7 @@ def _(alt, gap_names, metric_gap, mo, pl, pr, seeds, series_color):
 
 
 @app.cell(hide_code=True)
-def _(alt, gap_names, matching, mo, pl, pr, status, sweep, sweep_gap):
+def _(alt, gap_names, mo, pl, pr, score_name, status, sweep, sweep_gap):
     _name = gap_names[sweep_gap.value]
     _ttests = pr.config_gap_ttests(sweep, sweep_gap.value) if sweep.height else pl.DataFrame()
     _verdicts = {}
@@ -1227,7 +1242,7 @@ def _(alt, gap_names, matching, mo, pl, pr, status, sweep, sweep_gap):
                 "The same 30 configurations, sampled from the tuning search space before any "
                 "results, run with both arms on the test split. This asks whether the "
                 "headline depends on tuning: a positive mean here means UQ helps across "
-                f"typical settings, not just at the winner ({matching} match). The sweep ran "
+                f"typical settings, not just at the winner ({score_name}). The sweep ran "
                 "Top-K acquisition only, so the panel's acquisition choice does not apply."
             ),
             sweep_gap,
@@ -1484,6 +1499,7 @@ def _(
     pr,
     run_predictions,
     run_rows,
+    score_name,
     test_sentences,
     viewer_document,
     viewer_lines,
@@ -1577,8 +1593,8 @@ def _(
             ),
             mo.md(
                 f"Round {viewer_round.value} of {_uq['total_rounds']}, "
-                f"{_uq['percent_acquired']:.1f}% of the pool acquired. Test {matching} "
-                f"entity F1: uncertainty **{_uq[field]:.3f}**, random "
+                f"{_uq['percent_acquired']:.1f}% of the pool acquired. Test {score_name}: "
+                f"uncertainty **{_uq[field]:.3f}**, random "
                 f"**{_random[field]:.3f}**."
             ),
             mo.Html(f"<div>{_legend}</div><table style='width:100%'>{_table}</table>"),

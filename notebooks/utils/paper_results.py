@@ -291,36 +291,48 @@ def random_sweep_comparisons(results_root: Path, field: str) -> pl.DataFrame:
 
     Each score comes as an AUC and a final-round value, averaged over model seeds. The
     random arm is shared by the UQ metrics of one configuration, so its scores repeat.
+    Gaps are computed from each run's curves, as `seed_scores` does for best UQ, because
+    the saved summaries hold micro F1 gaps only; runs without `field` are left out.
     """
     rows = []
     for sweep_dir, _, summary, dataset, model in _sweeps(results_root / "random_search"):
         for comparison in (summary or {}).get("comparisons", []):
             if comparison["status"] != "complete":
                 continue
-            gap = comparison.get(f"mean_test_{field}_gap_auc")
-            if gap is None:
-                continue
             results = pl.read_csv(sweep_dir / comparison["run_dir"] / "results.csv")
+            if field not in results.columns or results[field].is_null().any():
+                continue
             aucs = curve_auc(results, field)
-            random_aucs = [auc for (_, arm), auc in aucs.items() if arm == "random"]
-            random_finals = results.filter(
-                (pl.col("arm") == "random")
-                & (pl.col("round") == pl.col("round").max().over("seed"))
-            )[field]
+            finals = {
+                (seed, arm): score
+                for seed, arm, score in results.filter(
+                    pl.col("round") == pl.col("round").max().over("seed", "arm")
+                )
+                .select("seed", "arm", field)
+                .iter_rows()
+            }
+            seeds = sorted({seed for seed, _ in aucs})
             rows.append(
                 {
                     "dataset": dataset,
                     "model": model,
                     "config_id": comparison["config_id"],
                     "uq_metric": comparison["uq_metric"],
-                    "gap_auc": gap,
-                    "final_gap": comparison[f"mean_final_test_{field}_gap"],
-                    "random_auc": sum(random_aucs) / len(random_aucs),
-                    "random_final": random_finals.mean(),
+                    "gap_auc": _mean(aucs[s, "uncertainty"] - aucs[s, "random"] for s in seeds),
+                    "final_gap": _mean(
+                        finals[s, "uncertainty"] - finals[s, "random"] for s in seeds
+                    ),
+                    "random_auc": _mean(aucs[s, "random"] for s in seeds),
+                    "random_final": _mean(finals[s, "random"] for s in seeds),
                     **comparison["parameters"],
                 }
             )
     return pl.DataFrame(rows)
+
+
+def _mean(values) -> float:
+    values = list(values)
+    return sum(values) / len(values)
 
 
 def dataset_sizes(results_root: Path) -> pl.DataFrame:
