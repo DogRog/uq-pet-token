@@ -734,9 +734,8 @@ not uploaded retroactively on resume.
 - Comparison sweeps use plan version 4, tuning plan version 3, and fixed comparisons
   plan version 1. Sweeps created with the earlier sampler need a new sweep name; their
   outputs stay readable and untouched.
-- Older two-stage tuning sweeps resume when their tuning settings match: `plan.v2.json`
-  keeps the original plan, and historical `final/` artifacts are left untouched.
-  Resuming never starts or resumes those historical UQ comparisons.
+- Older two-stage tuning sweeps (tuning plan version 2) no longer resume; rerun them under
+  a new sweep name. Their outputs, including `plan.v2.json` and `final/`, stay readable.
 - The Optuna workflow has been removed. Existing `results/optuna` artifacts contain
   validation evaluations and are excluded from test analysis.
 
@@ -773,9 +772,10 @@ recorded in [docs/adr/](docs/adr/).
 | `src/uq_pet/token_model.py` | masking, training, UQ metrics, inference, and evaluation |
 | `src/uq_pet/active_learning.py` | acquisition rounds, replay, orchestration, and outputs |
 | `src/uq_pet/config.py` | shared validated experiment and search configuration |
-| `src/uq_pet/experiment.py` | run execution and label coverage summaries |
+| `src/uq_pet/experiment.py` | one interactive-notebook run, persisted |
 | `src/uq_pet/search.py` | random sweep or baseline tuning, shared execution, resume, and summaries |
 | `src/uq_pet/supervised.py` | supervised random search, fixed-epoch test runs, resume, and summaries |
+| `src/uq_pet/sweeps.py` | what both sweeps share: the learning-rate range, plan locking, and run markers |
 | `src/uq_pet/utils/truncation.py` | word alignment and truncation checks |
 | `src/uq_pet/utils/wandb_logging.py` | W&B credentials, evaluation records, and comparison and supervised run lifecycles |
 | `src/uq_pet/utils/wandb_tuning.py` | tuning sweep publication and workspace charts |
@@ -796,7 +796,7 @@ recorded in [docs/adr/](docs/adr/).
 | `notebooks/best_uq_analysis.py` | best-config UQ comparisons against random and the supervised bound |
 | `notebooks/random_search_analysis.py` | random-sweep summaries and per-configuration drill-downs |
 | `notebooks/preprocessing_checks.py` | PET, Quishpi, and MedicalProcessInstruks preprocessing checks against the raw files, and their lexical diversity |
-| `notebooks/utils/` | chart builders, acquisition diagnostics, oracle selection, lexical diversity, and W&B comparison media |
+| `notebooks/analysis/` | chart builders, acquisition diagnostics and label coverage, oracle selection, lexical diversity, and W&B comparison media |
 | `configs/<dataset>/tune_random/` | random-baseline tuning settings, one file per model |
 | `configs/<dataset>/best_uq/` | frozen validation winners for fixed UQ comparisons |
 | `configs/<dataset>/supervised/` | supervised baseline settings |

@@ -3,10 +3,10 @@ from types import SimpleNamespace
 import pytest
 
 import uq_pet.experiment as experiment
+from analysis import charts
 from uq_pet.config import ExperimentConfig
 from uq_pet.experiment import execute_experiment
 from uq_pet.utils.wandb_logging import configure_wandb_metrics, make_wandb_evaluation_log
-from utils import charts
 
 
 def result_row(arm, round_idx, accuracy):

@@ -3,7 +3,7 @@ import json
 import polars as pl
 import pytest
 
-from utils.acquisition_analysis import (
+from analysis.acquisition_analysis import (
     acquisition_diagnostics,
     enrichment_at_budget,
     paired_performance,

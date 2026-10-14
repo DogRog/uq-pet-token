@@ -1,7 +1,10 @@
 import polars as pl
 import pytest
 
-from uq_pet.experiment import summarize_label_category_coverage, summarize_label_pool_share
+from analysis.acquisition_analysis import (
+    summarize_label_category_coverage,
+    summarize_label_pool_share,
+)
 
 
 def test_pool_share_uses_full_pool_and_includes_zero_counts():

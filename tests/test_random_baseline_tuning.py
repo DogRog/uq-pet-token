@@ -7,7 +7,6 @@ import random
 
 import pytest
 
-from test_random_search import fake_wandb as fake_wandb
 from uq_pet import search as tune
 from uq_pet.config import RandomBaselineSearchConfig
 from uq_pet.data_prep import split_tuning_pool
@@ -279,33 +278,19 @@ def test_tuning_wandb_missing_credentials_fails_before_loading_data(fake_search,
         run_tuning(config.model_copy(update={"wandb_enabled": True}))
 
 
-def test_legacy_sweep_resumes_without_touching_historical_final(fake_search, monkeypatch):
+def test_resume_keeps_saved_learning_rates_despite_roundoff(fake_search, monkeypatch):
     config, root, calls = fake_search
     run_tuning(config)
-    current = json.loads((root / "plan.json").read_text())
-    legacy = {
-        **current,
-        "version": 2,
-        "final_uq_metric": "entropy",
-        "final_evaluation_split": "test",
-        "final_pool": "original_328_sentences",
-    }
-    params = legacy["configurations"][0]["parameters"]
+    saved = json.loads((root / "plan.json").read_text())
+    params = saved["configurations"][0]["parameters"]
     params["learning_rate"] = math.nextafter(params["learning_rate"], math.inf)
-    tune.write_json(root / "plan.json", legacy)
-    (root / "final").mkdir()
-    historical = root / "final" / "completed.json"
-    historical.write_text('{"historical": true}')
+    tune.write_json(root / "plan.json", saved)
     frozen = (root / "best_config.json").read_bytes()
     monkeypatch.setattr(tune, "load_splits", lambda *_: pytest.fail("completed resume loaded data"))
     run_tuning(config)
     assert len(calls) == 2
     assert (root / "best_config.json").read_bytes() == frozen
-    assert historical.read_text() == '{"historical": true}'
-    assert json.loads((root / "plan.v2.json").read_text()) == legacy
-    assert (
-        json.loads((root / "plan.json").read_text())["configurations"] == legacy["configurations"]
-    )
+    assert json.loads((root / "plan.json").read_text()) == saved
     assert json.loads((root / "summary.json").read_text())["complete"]
 
 

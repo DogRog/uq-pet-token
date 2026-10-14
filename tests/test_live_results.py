@@ -5,7 +5,7 @@ import marimo as mo
 import polars as pl
 import pytest
 
-from utils.charts import make_learning_chart
+from analysis.charts import make_learning_chart
 
 
 def live_panel_builder(chart_function):

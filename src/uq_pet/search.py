@@ -7,15 +7,12 @@ for the appendix's test-tuned random oracle (ADR 0007).
 import argparse
 import json
 import math
-import os
 import random
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
 import polars as pl
-from datasets.utils import logging as datasets_logging
-from dotenv import load_dotenv
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -26,7 +23,6 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
-from transformers.utils import logging as transformers_logging
 
 from uq_pet import active_learning
 from uq_pet.active_learning import run_metric_comparisons, write_run
@@ -38,12 +34,20 @@ from uq_pet.config import (
     omit_implicit_defaults,
 )
 from uq_pet.data_prep import DATASET_TAGS, PROJECT_ROOT, load_splits, split_tuning_pool
-from uq_pet.token_model import UQ_METRICS, get_device, gold_tags, resolve_precision
-from uq_pet.utils.wandb_logging import (
-    login_quietly,
-    require_wandb_credentials,
-    wandb_comparison_logging,
+from uq_pet.sweeps import (
+    completed_run,
+    learning_rate_space,
+    mark_complete,
+    open_sweep,
+    preserve_json,
+    quiet_library_progress,
+    record_failure,
+    run_status,
+    sample_learning_rate,
+    write_json,
 )
+from uq_pet.token_model import UQ_METRICS, get_device, gold_tags, resolve_precision
+from uq_pet.utils.wandb_logging import connect_wandb, wandb_comparison_logging
 from uq_pet.utils.wandb_tuning import ensure_sweep, mark_winner, publish_trial
 
 CONSOLE = Console()
@@ -56,31 +60,18 @@ SEARCH_SPACE = {
     "replay_ratio": (0, 1.0, 2.0),
     "weight_decay": (0.0, 0.01),
 }
-LEARNING_RATE_BOUNDS = (1e-5, 5e-4)
-
-
-def sample_learning_rate(rng: random.Random) -> float:
-    """Draw a log-uniform learning rate within the shared bounds."""
-    return math.exp(rng.uniform(*(math.log(bound) for bound in LEARNING_RATE_BOUNDS)))
 
 
 @contextmanager
 def _quiet_search_output():
     """Suppress routine model output while retaining concise sweep progress."""
     quiet = active_learning.CONSOLE.quiet
-    model_bars = transformers_logging.is_progress_bar_enabled()
-    data_bars = datasets_logging.is_progress_bar_enabled()
     try:
         active_learning.CONSOLE.quiet = True
-        transformers_logging.disable_progress_bar()
-        datasets_logging.disable_progress_bar()
-        yield
+        with quiet_library_progress():
+            yield
     finally:
         active_learning.CONSOLE.quiet = quiet
-        if model_bars:
-            transformers_logging.enable_progress_bar()
-        if data_bars:
-            datasets_logging.enable_progress_bar()
 
 
 def mean_entity_f1_gap_auc(
@@ -186,11 +177,7 @@ def sample_plan(config: RandomSearchConfig) -> dict:
         "fixed_config": fixed,
         "search_space": {
             **{key: list(values) for key, values in SEARCH_SPACE.items()},
-            "learning_rate": {
-                "distribution": "log_uniform",
-                "low": LEARNING_RATE_BOUNDS[0],
-                "high": LEARNING_RATE_BOUNDS[1],
-            },
+            "learning_rate": learning_rate_space(),
         },
         "uq_metrics": list(UQ_METRICS),
         "configurations": [
@@ -209,13 +196,6 @@ def best_trial_text(scores: Mapping[str, float]) -> str:
         return ""
     best = min(scores, key=lambda config_id: (-scores[config_id], config_id))
     return f" · best {best} {scores[best]:.4f}"
-
-
-def write_json(path: Path, value: dict) -> None:
-    """Publish metadata atomically so an interrupted write is never considered complete."""
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(value, indent=2))
-    temporary.replace(path)
 
 
 def tuning_plan(config: RandomBaselineSearchConfig) -> dict:
@@ -275,26 +255,6 @@ def random_tuning_score(results: list[dict], objective: str) -> float:
     return sum(scores) / len(scores)
 
 
-def preserve_json(path: Path, value: dict) -> None:
-    """Refuse to mix scientific plans, dataset splits, or frozen winners across resumes."""
-    if path.exists():
-        if json.loads(path.read_text()) != value:
-            raise ValueError(f"Saved {path.name} differs; choose a new sweep_name")
-    else:
-        write_json(path, value)
-
-
-def completed_run(root: Path, slot: Path) -> dict | None:
-    marker = slot / "completed.json"
-    if not marker.exists():
-        return None
-    completed = json.loads(marker.read_text())
-    for name in ("config.json", "results.csv", "selections.json"):
-        if not (root / completed["run_dir"] / name).is_file():
-            raise ValueError(f"Completed run is missing {name}: {marker}")
-    return completed
-
-
 def scientific_plan(plan: dict) -> dict:
     """Ignore logging and last-bit rate roundoff when comparing saved scientific plans.
 
@@ -332,15 +292,6 @@ def paired_summary(results: list[dict]) -> dict:
         summary[f"mean_test_{field}_gap_auc"] = mean_entity_f1_gap_auc(results, field)
         summary[f"mean_final_test_{field}_gap"] = sum(final_gaps) / len(seeds)
     return summary
-
-
-def run_status(root: Path, slot: Path) -> dict:
-    completed = completed_run(root, slot)
-    if completed is not None:
-        return {**completed, "status": "complete"}
-    if (slot / "failure.json").exists():
-        return {**json.loads((slot / "failure.json").read_text()), "status": "failed"}
-    return {"status": "pending"}
 
 
 def write_summary(root: Path, plan: dict) -> dict:
@@ -466,126 +417,270 @@ def load_search_config(
         parser.error(str(error))
 
 
-@_quiet_search_output()
-def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
-    config = load_search_config(args, parser)
-    tuning = config.mode == "tune-random"
-    if args.publish_wandb_only and (not tuning or not config.wandb_enabled):
-        parser.error("--publish-wandb-only requires tune-random and wandb_enabled=true")
-    plan = tuning_plan(config) if tuning else sample_plan(config)
-    device = get_device()
-    effective_precision = resolve_precision(config.precision, device)
-    plan["effective_precision"] = effective_precision
-    if args.dry_run:
-        print(json.dumps(plan, indent=2))
-        return
-    root = config.sweeps_dir / config.sweep_name
-    plan_path = root / "plan.json"
-    if args.publish_wandb_only and not plan_path.exists():
-        parser.error("--publish-wandb-only requires an existing saved tuning plan")
-    if plan_path.exists():
-        saved_plan = json.loads(plan_path.read_text())
-        if tuning and saved_plan.get("version") == 2:
-            # Retain completed random-only trials from the old two-stage workflow.
-            random_plan = {
-                key: value
-                for key, value in saved_plan.items()
-                if key not in {"final_uq_metric", "final_evaluation_split", "final_pool"}
-            }
-            random_plan["version"] = 3
-            if scientific_plan(random_plan) == scientific_plan(plan):
-                preserve_json(root / "plan.v2.json", saved_plan)
-                saved_plan = random_plan
-                write_json(plan_path, saved_plan)
-        if scientific_plan(saved_plan) != scientific_plan(plan):
-            parser.error(
-                "Existing sweep has a different plan; choose a new --sweep-name. The budget is fixed, not additional runs."
-            )
-        plan = saved_plan
-    else:
-        if root.exists() and any(root.iterdir()):
-            parser.error("Sweep directory is nonempty but has no plan; choose a new --sweep-name.")
-        root.mkdir(parents=True, exist_ok=True)
-        write_json(plan_path, plan)
-    write_json(root / "search_config.json", config.model_dump(mode="json"))
-    summary = write_summary(root, plan)
-    if summary["complete"] and not (tuning and config.wandb_enabled):
-        CONSOLE.print(f"Sweep already complete: {root}")
-        return
+def _same_scientific_plan(saved: dict, plan: dict) -> bool:
+    return scientific_plan(saved) == scientific_plan(plan)
 
-    publication = None
-    if config.wandb_enabled:
-        load_dotenv(PROJECT_ROOT / ".env", override=False)
-        require_wandb_credentials(os.environ)
-        if os.environ.get("WANDB_MODE", "").strip().lower() == "offline":
-            if args.publish_wandb_only:
-                parser.error("--publish-wandb-only requires online W&B mode")
-            CONSOLE.print("W&B offline: logging locally; no online sweep or chart is created.")
-        else:
-            login_quietly(os.environ["WANDB_API_KEY"])
-            CONSOLE.print(f"W&B enabled: {config.wandb_project} (project link at round 0).")
-            if tuning:
-                publication = ensure_sweep(config, plan, root)
-                for entry in plan["configurations"]:
-                    publish_trial(config, root, entry, publication, random_tuning_score)
-                mark_winner(publication, root)
-                CONSOLE.print(f"Tuning chart: {publication[1][publication[2]]['workspace_url']}")
-    if args.publish_wandb_only:
-        CONSOLE.print(f"Saved tuning results published; no training required: {root}")
-        return
-    if summary["complete"]:
-        CONSOLE.print(f"Sweep already complete: {root}")
-        return
-    CONSOLE.print(
-        f"[bold cyan]Compute precision:[/] [bold]{effective_precision.upper()}[/]"
-        f" · device: {device} · parameters/AdamW: FP32"
-    )
-    (seed_examples, pool_inputs, pool_gold, test_examples), identity = load_splits(
-        config.dataset, config.dataset_percent
-    )
-    if tuning and config.tuning_split == "validation":
-        tune_pool, tune_gold, tune_evaluation, manifest = split_tuning_pool(
-            pool_inputs,
-            pool_gold,
-            validation_sentences=config.validation_sentences,
-            validation_seed=config.validation_seed,
-        )
-        preserve_json(
-            root / "split.json",
-            {
-                **manifest,
-                **identity,
-                "seed_sentences": len(seed_examples),
-                "tuning_pool_sentences": len(tune_pool),
-                "validation_sentences": len(tune_evaluation),
-                "final_pool_sentences": len(pool_inputs),
-                "test_sentences": len(test_examples),
-            },
-        )
-    elif tuning:
+
+def _publish_tuning(config: RandomBaselineSearchConfig, plan: dict, root: Path) -> tuple:
+    """Create the W&B tuning sweep and chart, then publish every saved trial and the winner."""
+    publication = ensure_sweep(config, plan, root)
+    for entry in plan["configurations"]:
+        publish_trial(config, root, entry, publication, random_tuning_score)
+    mark_winner(publication, root)
+    CONSOLE.print(f"Tuning chart: {publication[1][publication[2]]['workspace_url']}")
+    return publication
+
+
+def _tuning_splits(
+    config: RandomBaselineSearchConfig, root: Path, splits: tuple, identity: dict
+) -> tuple:
+    """Return the seed, pool, gold, and evaluation sentences that random tuning trains on."""
+    seed_examples, pool_inputs, pool_gold, test_examples = splits
+    if config.tuning_split == "test":
         # The appendix oracle tunes on the full pool and scores the test split (ADR 0007).
-        tune_pool, tune_gold, tune_evaluation = pool_inputs, pool_gold, test_examples
         preserve_json(
             root / "split.json",
             {
                 **identity,
                 "tuning_split": "test",
                 "seed_sentences": len(seed_examples),
-                "tuning_pool_sentences": len(tune_pool),
+                "tuning_pool_sentences": len(pool_inputs),
                 "test_sentences": len(test_examples),
             },
         )
-    total = config.num_configs if tuning else config.num_configs * len(plan["uq_metrics"])
-    completed_runs = sum(
-        row["status"] == "complete" for row in summary["trials" if tuning else "comparisons"]
+        return splits
+    tune_pool, tune_gold, tune_evaluation, manifest = split_tuning_pool(
+        pool_inputs,
+        pool_gold,
+        validation_sentences=config.validation_sentences,
+        validation_seed=config.validation_seed,
     )
-    trial_scores = (
-        {row["config_id"]: row["score"] for row in summary["trials"] if row["status"] == "complete"}
-        if tuning
-        else {}
+    preserve_json(
+        root / "split.json",
+        {
+            **manifest,
+            **identity,
+            "seed_sentences": len(seed_examples),
+            "tuning_pool_sentences": len(tune_pool),
+            "validation_sentences": len(tune_evaluation),
+            "final_pool_sentences": len(pool_inputs),
+            "test_sentences": len(test_examples),
+        },
     )
-    label = f"{config.tuning_split.capitalize()} tuning" if tuning else "Comparisons"
-    project_announced = False
+    return seed_examples, tune_pool, tune_gold, tune_evaluation
+
+
+class _SweepProgress:
+    """The sweep's overall bar, labelled with the best tuning trial so far, and one per seed."""
+
+    def __init__(
+        self,
+        display: Progress,
+        label: str,
+        seeds: Sequence[int],
+        *,
+        total: int,
+        completed: int,
+        trial_scores: dict[str, float],
+    ):
+        self.display = display
+        self.label = label
+        self.completed = completed
+        self.trial_scores = trial_scores
+        self.overall = display.add_task(
+            f"{label}{best_trial_text(trial_scores)}", total=total, completed=completed
+        )
+        self.seeds = {
+            seed: display.add_task(f"Seed {seed} · waiting / bootstrap", total=1) for seed in seeds
+        }
+        self.description = label
+        self._base = completed
+        self._fractions: dict[tuple[str, int], float] = {}
+
+    def start(self, config_id: str, metrics: Sequence[str]) -> None:
+        self.description = f"{self.label} · {config_id}{best_trial_text(self.trial_scores)}"
+        self.display.update(self.overall, description=self.description)
+        for seed, task in self.seeds.items():
+            self.display.reset(task, total=1, description=f"Seed {seed} · waiting / bootstrap")
+        self._fractions = {(metric, seed): 0.0 for metric in metrics for seed in self.seeds}
+        self._base = self.completed
+
+    def round_done(self, metric: str, latest: dict, arm: str) -> None:
+        seed = latest["seed"]
+        self.display.update(
+            self.seeds[seed],
+            total=latest["total_rounds"],
+            completed=latest["round"],
+            description=f"Seed {seed} · {arm} rounds",
+        )
+        self._fractions[metric, seed] = (latest["round"] + 1) / (latest["total_rounds"] + 1)
+        self.display.update(
+            self.overall,
+            completed=self._base + sum(self._fractions.values()) / len(self.seeds),
+        )
+
+    def saving(self) -> None:
+        self.display.update(self.overall, description=f"{self.description} · saving")
+
+    def run_done(self, config_id: str, score: float | None) -> None:
+        self.completed += 1
+        if score is not None:
+            self.trial_scores[config_id] = score
+        self.display.update(
+            self.overall,
+            completed=self.completed,
+            description=f"{self.label} · {config_id} done{best_trial_text(self.trial_scores)}",
+        )
+
+
+def _write_progress(slot: Path, rows: list[dict]) -> None:
+    temporary = slot / "progress.tmp"
+    pl.DataFrame(rows).write_csv(temporary)
+    temporary.replace(slot / "progress.csv")
+
+
+def _run_metadata(
+    config: RandomSearchConfig,
+    plan: dict,
+    run_config: ExperimentConfig,
+    config_id: str,
+    splits: tuple,
+    *,
+    stage: str,
+    precision: str,
+) -> dict:
+    """Describe one saved run: its resolved settings, sweep, and sentence counts."""
+    tuning = config.mode == "tune-random"
+    seed_examples, pool, _, evaluation = splits
+    metadata = {
+        **run_config.resolved_dict(),
+        "effective_precision": precision,
+        "shared_bootstrap_and_random": not tuning,
+        "random_only": tuning,
+        "evaluation_split": stage,
+        "mode": "random_baseline_tuning" if tuning else plan.get("mode", "random_search"),
+        "sweep_name": config.sweep_name,
+        "config_id": config_id,
+        "seed_sentences": len(seed_examples),
+        "pool_sentences": len(pool),
+        "evaluation_sentences": len(evaluation),
+    }
+    metadata[f"{stage}_sentences"] = len(evaluation)
+    if tuning:
+        metadata.pop("uq_metric", None)
+        metadata["objective"] = config.objective
+    return metadata
+
+
+def _run_entry(
+    config: RandomSearchConfig,
+    plan: dict,
+    root: Path,
+    entry: dict,
+    metrics: list[str],
+    splits: tuple,
+    *,
+    stage: str,
+    device,
+    precision: str,
+    bars: _SweepProgress,
+    announce_project: bool,
+) -> None:
+    """Train one configuration for each pending metric and save every metric's run."""
+    tuning = config.mode == "tune-random"
+    config_id = entry["config_id"]
+    slots = {
+        metric: root / "tuning" / config_id if tuning else root / "runs" / config_id / metric
+        for metric in metrics
+    }
+    for slot in slots.values():
+        slot.mkdir(parents=True, exist_ok=True)
+        (slot / "progress.csv").unlink(missing_ok=True)
+    experiment = ExperimentConfig.model_validate(
+        {**config.experiment_config().model_dump(), **entry["parameters"]}
+    )
+    bars.start(config_id, metrics)
+
+    def update_progress(metric, rows):
+        _write_progress(slots[metric], rows)
+        if log_evaluation is not None:
+            log_evaluation(metric, rows)
+        bars.round_done(metric, rows[-1], "random" if tuning else metric)
+
+    try:
+        with wandb_comparison_logging(
+            config,
+            experiment,
+            config_id,
+            precision,
+            slots,
+            console=CONSOLE,
+            evaluation_split=stage,
+            random_only=tuning,
+            announce_project=announce_project,
+        ) as log_evaluation:
+            settings = experiment.active_learning_kwargs()
+            settings.pop("uq_metric")
+            comparisons = run_metric_comparisons(
+                *splits,
+                **{**settings, "precision": precision},
+                uq_metrics=metrics,
+                random_only=tuning,
+                device=device,
+                progress_callback=update_progress,
+            )
+            bars.saving()
+            for metric in metrics:
+                results, selections, predictions = comparisons[metric]
+                stats = (
+                    {"score": random_tuning_score(results, config.objective)}
+                    if tuning
+                    else paired_summary(results)
+                )
+                run_config = experiment.model_copy(update={"uq_metric": metric})
+                run_dir = write_run(
+                    _run_metadata(
+                        config,
+                        plan,
+                        run_config,
+                        config_id,
+                        splits,
+                        stage=stage,
+                        precision=precision,
+                    ),
+                    results,
+                    selections,
+                    results_dir=slots[metric],
+                    gold=gold_tags(splits[3], DATASET_TAGS[config.dataset]),
+                    predictions=predictions,
+                )
+                mark_complete(root, slots[metric], run_dir, stats)
+                bars.run_done(config_id, stats.get("score") if tuning else None)
+    except BaseException as error:
+        for slot in slots.values():
+            if not (slot / "completed.json").exists():
+                record_failure(slot, error)
+        raise
+    finally:
+        write_summary(root, plan)
+
+
+def _run_configurations(
+    config: RandomSearchConfig,
+    plan: dict,
+    root: Path,
+    summary: dict,
+    splits: tuple,
+    *,
+    device,
+    precision: str,
+    publication: tuple | None,
+) -> None:
+    """Train every planned configuration that has not completed, in plan order."""
+    tuning = config.mode == "tune-random"
+    rows = summary["trials" if tuning else "comparisons"]
+    stage = config.tuning_split if tuning else "test"
+    announced = False
     with Progress(
         TextColumn("{task.description}"),
         BarColumn(),
@@ -594,216 +689,154 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         TimeElapsedColumn(),
         TimeRemainingColumn(),
         console=CONSOLE,
-    ) as progress:
-        overall_task = progress.add_task(
-            f"{label}{best_trial_text(trial_scores)}", total=total, completed=completed_runs
+    ) as display:
+        bars = _SweepProgress(
+            display,
+            f"{config.tuning_split.capitalize()} tuning" if tuning else "Comparisons",
+            config.model_seeds,
+            total=config.num_configs if tuning else config.num_configs * len(plan["uq_metrics"]),
+            completed=sum(row["status"] == "complete" for row in rows),
+            trial_scores={
+                row["config_id"]: row["score"] for row in rows if row["status"] == "complete"
+            }
+            if tuning
+            else {},
         )
-        seed_tasks = {
-            seed: progress.add_task(f"Seed {seed} · waiting / bootstrap", total=1)
-            for seed in config.model_seeds
-        }
-
-        def execute(entry, pending_metrics, *, stage):
-            nonlocal completed_runs, project_announced
-            random_only = tuning
-            inputs, gold, evaluation = (
-                (tune_pool, tune_gold, tune_evaluation)
-                if random_only
-                else (pool_inputs, pool_gold, test_examples)
-            )
-            slots = {
-                metric: (
-                    root / "tuning" / entry["config_id"]
-                    if random_only
-                    else root / "runs" / entry["config_id"] / metric
-                )
-                for metric in pending_metrics
-            }
-            for slot in slots.values():
-                slot.mkdir(parents=True, exist_ok=True)
-                (slot / "progress.csv").unlink(missing_ok=True)
-            experiment = ExperimentConfig.model_validate(
-                {
-                    **config.experiment_config().model_dump(),
-                    **entry["parameters"],
-                }
-            )
-            description = f"{label} · {entry['config_id']}{best_trial_text(trial_scores)}"
-            progress.update(overall_task, description=description)
-            for seed, task in seed_tasks.items():
-                progress.reset(task, total=1, description=f"Seed {seed} · waiting / bootstrap")
-            seed_fractions = {
-                (metric, seed): 0.0 for metric in pending_metrics for seed in seed_tasks
-            }
-            base_completed = completed_runs
-
-            def update_progress(metric, rows):
-                slot = slots[metric]
-                temporary = slot / "progress.tmp"
-                pl.DataFrame(rows).write_csv(temporary)
-                temporary.replace(slot / "progress.csv")
-                if log_evaluation is not None:
-                    log_evaluation(metric, rows)
-                latest = rows[-1]
-                seed = latest["seed"]
-                progress.update(
-                    seed_tasks[seed],
-                    total=latest["total_rounds"],
-                    completed=latest["round"],
-                    description=f"Seed {seed} · {'random' if random_only else metric} rounds",
-                )
-                seed_fractions[metric, seed] = (latest["round"] + 1) / (latest["total_rounds"] + 1)
-                progress.update(
-                    overall_task,
-                    completed=base_completed + sum(seed_fractions.values()) / len(seed_tasks),
-                )
-
-            try:
-                with wandb_comparison_logging(
-                    config,
-                    experiment,
-                    entry["config_id"],
-                    effective_precision,
-                    slots,
-                    console=CONSOLE,
-                    evaluation_split=stage,
-                    random_only=random_only,
-                    announce_project=not project_announced,
-                ) as log_evaluation:
-                    settings = experiment.active_learning_kwargs()
-                    settings.pop("uq_metric")
-                    comparisons = run_metric_comparisons(
-                        seed_examples,
-                        inputs,
-                        gold,
-                        evaluation,
-                        **{**settings, "precision": effective_precision},
-                        uq_metrics=pending_metrics,
-                        random_only=random_only,
-                        device=device,
-                        progress_callback=update_progress,
-                    )
-                    progress.update(overall_task, description=f"{description} · saving")
-                    for metric in pending_metrics:
-                        results, selections, predictions = comparisons[metric]
-                        slot = slots[metric]
-                        run_config = experiment.model_copy(update={"uq_metric": metric})
-                        stats = (
-                            {"score": random_tuning_score(results, config.objective)}
-                            if random_only
-                            else paired_summary(results)
-                        )
-                        metadata = {
-                            **run_config.resolved_dict(),
-                            "effective_precision": effective_precision,
-                            "shared_bootstrap_and_random": not random_only,
-                            "random_only": random_only,
-                            "evaluation_split": stage,
-                            "mode": "random_baseline_tuning"
-                            if tuning
-                            else plan.get("mode", "random_search"),
-                            "sweep_name": config.sweep_name,
-                            "config_id": entry["config_id"],
-                            "seed_sentences": len(seed_examples),
-                            "pool_sentences": len(inputs),
-                            "evaluation_sentences": len(evaluation),
-                        }
-                        metadata[f"{stage}_sentences"] = len(evaluation)
-                        if tuning:
-                            metadata.pop("uq_metric", None)
-                            metadata["objective"] = config.objective
-                        run_dir = write_run(
-                            metadata,
-                            results,
-                            selections,
-                            results_dir=slot,
-                            gold=gold_tags(evaluation, DATASET_TAGS[config.dataset]),
-                            predictions=predictions,
-                        )
-                        write_json(
-                            slot / "completed.json",
-                            {"run_dir": str(run_dir.relative_to(root)), **stats},
-                        )
-                        (slot / "failure.json").unlink(missing_ok=True)
-                        completed_runs += 1
-                        if random_only:
-                            trial_scores[entry["config_id"]] = stats["score"]
-                        progress.update(
-                            overall_task,
-                            completed=completed_runs,
-                            description=f"{label} · {entry['config_id']} done"
-                            f"{best_trial_text(trial_scores)}",
-                        )
-                project_announced = project_announced or config.wandb_enabled
-                if random_only and publication is not None:
-                    publish_trial(config, root, entry, publication, random_tuning_score)
-            except BaseException as error:
-                for slot in slots.values():
-                    if not (slot / "completed.json").exists():
-                        write_json(
-                            slot / "failure.json", {"error": f"{type(error).__name__}: {error}"}
-                        )
-                raise
-            finally:
-                write_summary(root, plan)
-
         for entry in plan["configurations"]:
             if tuning:
                 # The shared engine requires a routing key; random_only disables UQ scoring.
-                pending_metrics = (
-                    [config.uq_metric]
-                    if completed_run(root, root / "tuning" / entry["config_id"]) is None
-                    else []
-                )
+                slot = root / "tuning" / entry["config_id"]
+                pending = [config.uq_metric] if completed_run(root, slot) is None else []
             else:
-                pending_metrics = [
+                pending = [
                     row["uq_metric"]
-                    for row in summary["comparisons"]
+                    for row in rows
                     if row["config_id"] == entry["config_id"] and row["status"] != "complete"
                 ]
-            if pending_metrics:
-                execute(entry, pending_metrics, stage=config.tuning_split if tuning else "test")
+            if not pending:
+                continue
+            _run_entry(
+                config,
+                plan,
+                root,
+                entry,
+                pending,
+                splits,
+                stage=stage,
+                device=device,
+                precision=precision,
+                bars=bars,
+                announce_project=not announced,
+            )
+            announced = announced or config.wandb_enabled
+            if tuning and publication is not None:
+                publish_trial(config, root, entry, publication, random_tuning_score)
 
-        if tuning:
-            trials = write_summary(root, plan)["trials"]
-            if any(row["status"] != "complete" for row in trials):
-                raise ValueError("All tuning configurations must finish before selecting a winner")
-            best = min(trials, key=lambda row: (-row["score"], row["config_id"]))
-            frozen = {
-                **omit_implicit_defaults(
-                    config.experiment_config().model_dump(
-                        exclude={"seed_workers", "uq_metric", *WANDB_FIELDS}
-                    )
-                ),
-                **best["parameters"],
-            }
-            winner_path = root / winner_filename(plan)
-            if winner_path.exists():
-                saved = {
-                    key: value
-                    for key, value in json.loads(winner_path.read_text()).items()
-                    if key not in {*WANDB_FIELDS, "uq_metric"}
-                }
-                if saved != frozen:
-                    raise ValueError(f"Saved {winner_path.name} differs; choose a new sweep_name")
-            else:
-                write_json(winner_path, frozen)
-            preserve_json(
-                root / "selection.json",
-                {
-                    "config_id": best["config_id"],
-                    "objective": config.objective,
-                    f"{config.tuning_split}_score": best["score"],
-                    "selection_split": config.tuning_split,
-                },
+
+def _freeze_winner(
+    config: RandomBaselineSearchConfig, root: Path, plan: dict, publication: tuple | None
+) -> None:
+    """Save the best tuning trial's settings once every trial has finished."""
+    trials = write_summary(root, plan)["trials"]
+    if any(row["status"] != "complete" for row in trials):
+        raise ValueError("All tuning configurations must finish before selecting a winner")
+    best = min(trials, key=lambda row: (-row["score"], row["config_id"]))
+    frozen = {
+        **omit_implicit_defaults(
+            config.experiment_config().model_dump(
+                exclude={"seed_workers", "uq_metric", *WANDB_FIELDS}
             )
-            if publication is not None:
-                mark_winner(publication, root)
-            CONSOLE.print(
-                f"Frozen winner: {best['config_id']} · {config.tuning_split} score "
-                f"{best['score']:.6f} · {winner_path.name}"
-            )
-            write_summary(root, plan)
+        ),
+        **best["parameters"],
+    }
+    winner_path = root / winner_filename(plan)
+    if winner_path.exists():
+        saved = {
+            key: value
+            for key, value in json.loads(winner_path.read_text()).items()
+            if key not in {*WANDB_FIELDS, "uq_metric"}
+        }
+        if saved != frozen:
+            raise ValueError(f"Saved {winner_path.name} differs; choose a new sweep_name")
+    else:
+        write_json(winner_path, frozen)
+    preserve_json(
+        root / "selection.json",
+        {
+            "config_id": best["config_id"],
+            "objective": config.objective,
+            f"{config.tuning_split}_score": best["score"],
+            "selection_split": config.tuning_split,
+        },
+    )
+    if publication is not None:
+        mark_winner(publication, root)
+    CONSOLE.print(
+        f"Frozen winner: {best['config_id']} · {config.tuning_split} score "
+        f"{best['score']:.6f} · {winner_path.name}"
+    )
+    write_summary(root, plan)
+
+
+@_quiet_search_output()
+def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    config = load_search_config(args, parser)
+    tuning = config.mode == "tune-random"
+    if args.publish_wandb_only and (not tuning or not config.wandb_enabled):
+        parser.error("--publish-wandb-only requires tune-random and wandb_enabled=true")
+    plan = tuning_plan(config) if tuning else sample_plan(config)
+    device = get_device()
+    precision = resolve_precision(config.precision, device)
+    plan["effective_precision"] = precision
+    if args.dry_run:
+        print(json.dumps(plan, indent=2))
+        return
+    root = config.sweeps_dir / config.sweep_name
+    if args.publish_wandb_only and not (root / "plan.json").exists():
+        parser.error("--publish-wandb-only requires an existing saved tuning plan")
+    try:
+        plan = open_sweep(root, plan, same_plan=_same_scientific_plan)
+    except ValueError as error:
+        parser.error(str(error))
+    write_json(root / "search_config.json", config.model_dump(mode="json"))
+    summary = write_summary(root, plan)
+    if summary["complete"] and not (tuning and config.wandb_enabled):
+        CONSOLE.print(f"Sweep already complete: {root}")
+        return
+
+    publication = None
+    if config.wandb_enabled:
+        if connect_wandb(PROJECT_ROOT / ".env", CONSOLE):
+            CONSOLE.print(f"W&B enabled: {config.wandb_project} (project link at round 0).")
+            if tuning:
+                publication = _publish_tuning(config, plan, root)
+        elif args.publish_wandb_only:
+            parser.error("--publish-wandb-only requires online W&B mode")
+    if args.publish_wandb_only:
+        CONSOLE.print(f"Saved tuning results published; no training required: {root}")
+        return
+    if summary["complete"]:
+        CONSOLE.print(f"Sweep already complete: {root}")
+        return
+    CONSOLE.print(
+        f"[bold cyan]Compute precision:[/] [bold]{precision.upper()}[/]"
+        f" · device: {device} · parameters/AdamW: FP32"
+    )
+    splits, identity = load_splits(config.dataset, config.dataset_percent)
+    if tuning:
+        splits = _tuning_splits(config, root, splits, identity)
+    _run_configurations(
+        config,
+        plan,
+        root,
+        summary,
+        splits,
+        device=device,
+        precision=precision,
+        publication=publication,
+    )
+    if tuning:
+        _freeze_winner(config, root, plan, publication)
     CONSOLE.print(f"Search complete. Results: {root / 'summary.json'}")
 
 

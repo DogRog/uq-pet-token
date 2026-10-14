@@ -3,7 +3,7 @@ import json
 import polars as pl
 import pytest
 
-from utils.comparison_summaries import load_test_comparisons, uq_gap_ttests
+from analysis.comparison_summaries import load_test_comparisons, uq_gap_ttests
 
 
 def write_summary(root, name, comparisons, split="test"):

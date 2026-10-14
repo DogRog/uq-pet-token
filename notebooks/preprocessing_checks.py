@@ -59,8 +59,8 @@ def _():
     import marimo as mo
     import polars as pl
 
+    from analysis import lexical_diversity as ld
     from uq_pet import data_prep
-    from utils import lexical_diversity as ld
 
     return Counter, alt, data_prep, html, json, ld, mo, pl
 

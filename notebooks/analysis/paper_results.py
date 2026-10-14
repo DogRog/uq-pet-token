@@ -11,9 +11,10 @@ from pathlib import Path
 import polars as pl
 from seqeval.metrics.sequence_labeling import get_entities
 
+from analysis.oracle_analysis import curve_auc
 from uq_pet import data_prep
 from uq_pet.active_learning import read_predictions
-from utils.oracle_analysis import curve_auc
+from uq_pet.token_model import UQ_METRICS
 
 MODELS = {
     "distilbert-base-cased": "DistilBERT",
@@ -31,7 +32,6 @@ STAGES = {
     "supervised": "Supervised baseline",
     "random_search": "30-config random sweep",
 }
-UQ_METRICS = ["entropy", "least_confidence", "margin"]
 
 
 def _sweeps(stage_root: Path):

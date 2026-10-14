@@ -46,7 +46,7 @@ def _():
     import polars as pl
     from wigglystuff import FloatingPanel
 
-    from utils.acquisition_analysis import (
+    from analysis.acquisition_analysis import (
         acquisition_diagnostics,
         enrichment_at_budget,
         pet_sentences,
@@ -55,13 +55,13 @@ def _():
         timing_by_group,
         token_timing,
     )
-    from utils.charts import (
+    from analysis.charts import (
         make_tag_category_coverage_chart,
         make_tag_coverage_chart,
         make_variance_chart,
     )
-    from utils.comparison_summaries import load_test_comparisons, uq_gap_ttests
-    from utils.oracle_analysis import (
+    from analysis.comparison_summaries import load_test_comparisons, uq_gap_ttests
+    from analysis.oracle_analysis import (
         find_oracle_comparison,
         search_winner,
         validation_against_oracle,

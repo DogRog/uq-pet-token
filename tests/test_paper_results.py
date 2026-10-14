@@ -3,7 +3,7 @@ import json
 import polars as pl
 import pytest
 
-from utils.paper_results import match_entities, random_sweep_comparisons, tuning_winners
+from analysis.paper_results import match_entities, random_sweep_comparisons, tuning_winners
 
 GOLD = ["B-Action", "O", "B-Entity", "I-Entity", "O", "B-Condition"]
 

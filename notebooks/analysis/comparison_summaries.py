@@ -6,7 +6,8 @@ from pathlib import Path
 import polars as pl
 from scipy import stats
 
-UQ_METRICS = ("entropy", "least_confidence", "margin")
+from uq_pet.token_model import UQ_METRICS
+
 COMPARISON_SCHEMA = {
     "model_run": pl.String,
     "config_id": pl.String,
