@@ -1,0 +1,30 @@
+# MedicalProcessInstruks' mention types, filled into mentions.txt (see README.md). The dataset
+# names none of its types (T03 ... T43), so the descriptions and the example are generated from
+# its training sentences (never the test split), with the texts and settings below. {{name}}
+# marks a value filled in for each type.
+mentions:
+  # how many of a type's most frequent texts its description lists
+  texts_per_type: 10
+  # for a type with training mentions; mention_count is e.g. "163 mentions" or "1 mention", texts
+  # the most frequent texts in quotes, separated by commas
+  description: >-
+    a type the dataset does not name. Its most frequent texts among the {{mention_count}} in the
+    training sentences: {{texts}}
+  # for a type without training mentions
+  description_unseen: >-
+    a type the dataset does not name. It does not occur in the training sentences.
+  # the example shows the training sentences that together have the most types, up to this many
+  # sentences of at most this many words
+  example_sentences: 3
+  example_max_words: 30
+  # sentences: "Sentence <i>: <words>" lines; mentions: one tab-separated line per mention
+  example: |-
+    **Examples for the format given the input text:**
+
+    *Input*:
+
+    {{sentences}}
+
+    *Output*:
+
+    {{mentions}}

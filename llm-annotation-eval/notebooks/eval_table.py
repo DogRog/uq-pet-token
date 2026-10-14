@@ -73,9 +73,14 @@ def _(JsonImporter, PRED_DIR, datasets, json, pd, runner, scoring, test_split):
         _gold = gold[_dataset]
         _types = datasets.DATASETS[_dataset].types
         _documents = JsonImporter(_predictions).do_import()
+        # scored both ways up front, so switching the matching doesn't rescore every run
         _metrics = {"documents": len(_documents)}
+        _exact_metrics = None
         if _scored[_task]:
             _metrics = scoring.score(_gold["documents"], _documents, _scored[_task])
+            _exact_metrics = scoring.score(
+                _gold["documents"], _documents, _scored[_task], exact=True
+            )
         _planned = _manifest["documents_planned"] if _manifest else len(_gold["documents"])
         _row = {
             "dataset": _dataset,
@@ -85,13 +90,27 @@ def _(JsonImporter, PRED_DIR, datasets, json, pd, runner, scoring, test_split):
             # md-test-sentences documents are single sentences, so token costs are per sentence
             "sentences": sum(len(_d.sentences) for _d in _documents),
             "complete": _metrics["documents"] == _planned,
-            "output_tokens": _manifest["totals"]["all"]["completion_tokens"] if _manifest else None,
+            # a run still in its first session has no totals yet
+            "output_tokens": (
+                _manifest["totals"]["all"]["completion_tokens"]
+                if _manifest and "totals" in _manifest
+                else None
+            ),
             "reasoning_effort": _manifest["settings"]["reasoning_effort"] if _manifest else None,
+            # the model is the folder name before "-md" without the dataset, e.g. "gemma-4-31b"
+            # for gemma-4-31b-md-reasoning-low and quishpi-gemma-4-31b-md-reasoning-low
+            "model": (_run_dir.parent.name if _is_run else _run_dir.name)
+            .removeprefix(f"{_dataset}-")
+            .split("-md")[0],
         }
-        for _s in _scored[_task]:
-            for _name in ("precision", "recall", "f1"):
-                _row[f"{_s}_{_name}"] = _metrics[_s]["macro"][_name]["mean"]
-                _row[f"{_s}_{_name}_sd_docs"] = _metrics[_s]["macro"][_name]["std"]
+        _effort = _row["reasoning_effort"]
+        _row["reasoning"] = {"none": "off"}.get(_effort, _effort or "default")
+        # md_f1 etc. with overlapping mentions matching, exact_md_f1 etc. with exact ones
+        for _prefix, _m in (("", _metrics), ("exact_", _exact_metrics)):
+            for _s in _scored[_task]:
+                for _name in ("precision", "recall", "f1"):
+                    _row[f"{_prefix}{_s}_{_name}"] = _m[_s]["macro"][_name]["mean"]
+                    _row[f"{_prefix}{_s}_{_name}_sd_docs"] = _m[_s]["macro"][_name]["std"]
         # mentions on the test sentences, scored like uq-pet-token's models
         _test_predicted, _ = test_split.predict_test_split(_gold["test"], _documents, _types)
         if _task != "re" and _task != "isolated-re" and _test_predicted is not None:
@@ -100,6 +119,8 @@ def _(JsonImporter, PRED_DIR, datasets, json, pd, runner, scoring, test_split):
             _row["test_recall"] = _test_scores["entity_recall"]
             _row["test_f1"] = _test_scores["entity_f1"]
             _row["test_macro_f1"] = _test_scores["entity_macro_f1"]
+            for _name in ("precision", "recall", "f1", "macro_f1"):
+                _row[f"test_partial_{_name}"] = _test_scores[f"entity_partial_{_name}"]
         # the same scoring on all the dataset's sentences, for runs that annotated whole documents
         _all_predicted, _ = test_split.predict_test_split(_gold["sentences"], _documents, _types)
         if _task != "re" and _task != "isolated-re" and _all_predicted is not None:
@@ -120,7 +141,7 @@ def _(gold, mo):
 def _(dataset, gold, mo):
     _documents = len(gold[dataset.value]["documents"])
     _sentences = len(gold[dataset.value]["test"])
-    _all = f"all {_documents} documents (overlapping mentions match)"
+    _all = f"all {_documents} documents"
     evaluation = mo.ui.dropdown(
         options={
             _all: "all",
@@ -130,6 +151,18 @@ def _(dataset, gold, mo):
         label="Evaluate on",
     )
     return (evaluation,)
+
+
+@app.cell
+def _(mo):
+    # only for scores on all documents: the test split is scored with seqeval, always exact
+    matching = mo.ui.radio(
+        options={"partial (tokens overlap)": "partial", "exact (same tokens)": "exact"},
+        value="partial (tokens overlap)",
+        label="Mentions match",
+        inline=True,
+    )
+    return (matching,)
 
 
 @app.cell
@@ -143,7 +176,7 @@ def _(evaluation, mo):
 
 
 @app.cell
-def _(dataset, evaluation, mo, pd, runs, spread):
+def _(dataset, evaluation, matching, mo, pd, runs, spread):
     mo.stop(runs.empty, mo.md("No predictions in `res/pred/` yet."))
     runs_of_dataset = runs[runs["dataset"] == dataset.value]
 
@@ -163,8 +196,11 @@ def _(dataset, evaluation, mo, pd, runs, spread):
         _complete = runs_of_dataset[runs_of_dataset["complete"] & _scored_on_documents]
         # relation columns only if some run extracted relations
         _scored = [s for s in ("md", "re") if _complete.get(f"{s}_f1", pd.Series()).notna().any()]
+        _prefix = "exact_" if matching.value == "exact" else ""
         _columns = {
-            f"{s} {name}": f"{s}_{name}" for s in _scored for name in ("precision", "recall", "f1")
+            f"{s} {name}": f"{_prefix}{s}_{name}"
+            for s in _scored
+            for name in ("precision", "recall", "f1")
         }
 
     def _mean_sd(group, column):
@@ -196,7 +232,7 @@ def _(dataset, evaluation, mo, pd, runs, spread):
 
 
 @app.cell
-def _(dataset, datasets, evaluation, gold, mo, spread, table):
+def _(dataset, datasets, evaluation, gold, matching, mo, spread, table):
     _dataset = datasets.DATASETS[dataset.value]
     _gold_file = _dataset.gold_file.relative_to(_dataset.gold_file.parents[2])
     _test_file = _dataset.test_file.relative_to(_dataset.test_file.parents[2])
@@ -207,12 +243,13 @@ def _(dataset, datasets, evaluation, gold, mo, spread, table):
         ),
         "medical": f"`{_gold_file}` (MedicalProcessInstruks' sentences, grouped into documents)",
     }
+    _match = {"partial": "their tokens overlap", "exact": "they cover the same tokens"}
     _notes = {
         "all": f"""
         Scored against {_sources[dataset.value]}, macro-averaged over documents. A
-        predicted mention is correct if its type matches a gold mention and their tokens overlap,
-        a relation if its type matches and both its head and tail overlap; each gold annotation
-        matches once.
+        predicted mention is correct if its type matches a gold mention and
+        {_match[matching.value]}, a relation if its type matches and both its head and tail
+        match that way; each gold annotation matches once.
         """,
         "test": f"""
         Scored only on uq-pet-token's {len(gold[dataset.value]["test"])} test sentences against
@@ -231,7 +268,11 @@ def _(dataset, datasets, evaluation, gold, mo, spread, table):
         as mean ± standard deviation over runs or over documents.
         {_notes[evaluation.value]}
         """),
-        mo.hstack([dataset, evaluation, spread], justify="start", gap=2),
+        mo.hstack(
+            [dataset, evaluation, spread] + ([matching] if evaluation.value == "all" else []),
+            justify="start",
+            gap=2,
+        ),
         mo.ui.table(table, selection=None, pagination=False),
     ])
     return
@@ -239,21 +280,12 @@ def _(dataset, datasets, evaluation, gold, mo, spread, table):
 
 
 @app.cell
-def _(dataset, pd, runs_of_dataset):
-    # mention detection configs, one row per model and reasoning effort: the model is the folder
-    # name before "-md" without the dataset, e.g. "gemma-4-31b" for gemma-4-31b-md-reasoning-low
-    # and quishpi-gemma-4-31b-md-reasoning-low
-    _reasoning_names = {"none": "off"}
+def _(pd, runs_of_dataset):
+    # mention detection configs, one row per model and reasoning effort
     _reasoning_order = ["off", "minimal", "low", "medium", "high"]
     _md = runs_of_dataset[
         runs_of_dataset["complete"] & runs_of_dataset["task"].isin(["md", "md-test-sentences"])
-    ].copy()
-    _md["model"] = (
-        _md["folder"].str.removeprefix(f"{dataset.value}-").str.split("-md").str[0]
-    )
-    _md["reasoning"] = _md["reasoning_effort"].map(
-        lambda effort: _reasoning_names.get(effort, effort or "default")
-    )
+    ]
 
     def _mean_sd(values):
         if len(values) < 2:
@@ -306,6 +338,148 @@ def _(dataset, gold, mo, test_table):
         whole documents on the test split, in points.
         """),
         mo.ui.table(test_table, selection=None, pagination=False),
+    ])
+    return
+
+
+@app.cell
+def _(json, mo, pd):
+    # uq-pet-token's fully supervised baseline (its README, "Supervised upper bound"): each model is
+    # tuned on validation, trained on all training sentences and scored once on the test split
+    # per model seed. results/supervised/<sweep>/test/pool_100pct/<run>/results.csv has a row per
+    # seed, with the metric names test_split.evaluate copies
+    UQ_PET_TOKEN_DIR = mo.notebook_dir().parent.parent / "uq-pet-token"
+    _results = []
+    for _config_file in sorted(UQ_PET_TOKEN_DIR.glob("results/supervised/*/run_config.json")):
+        _sweep = _config_file.parent
+        _config = json.loads(_config_file.read_text(encoding="utf8"))
+        _summary = json.loads((_sweep / "summary.json").read_text(encoding="utf8"))
+        for _test_run in _summary.get("test_runs", []):
+            if _test_run["slot"] != "test/pool_100pct" or _test_run["status"] != "complete":
+                continue
+            _seeds = pd.read_csv(_sweep / _test_run["run_dir"] / "results.csv")
+            _seeds = _seeds[(_seeds["arm"] == "supervised") & (_seeds["sentence_percent"] == 100)]
+            _results.append(_seeds.assign(
+                dataset=_config["dataset"], model=_config["checkpoint"].split("/")[-1]
+            ))
+    supervised = pd.concat(_results, ignore_index=True) if _results else pd.DataFrame()
+    return UQ_PET_TOKEN_DIR, supervised
+
+
+@app.cell
+def _(mo):
+    # uq-pet-token tunes on exact match and reports partial match beside it (its ADR 0010)
+    comparison_matching = mo.ui.radio(
+        options={"exact (same span)": "exact", "partial (tokens overlap)": "partial"},
+        value="exact (same span)",
+        label="Mentions match",
+        inline=True,
+    )
+    return (comparison_matching,)
+
+
+@app.cell
+def _(comparison_matching, dataset, pd, runs_of_dataset, supervised):
+    # uq-pet-token's supervised models and the LLM runs on the same test sentences, scored the same
+    _metrics = {"precision": "P", "recall": "R", "f1": "F1", "macro_f1": "macro F1"}
+    _partial = "partial_" if comparison_matching.value == "partial" else ""
+
+    def _mean_sd(values):
+        if values.isna().any():
+            # runs saved before a metric was added
+            return ""
+        if len(values) < 2:
+            return f"{100 * values.mean():.1f}"
+        return f"{100 * values.mean():.1f} ± {100 * values.std():.1f}"
+
+    def _scores(group, column):
+        return {
+            label: _mean_sd(group[column.format(name)])
+            if column.format(name) in group
+            else ""
+            for name, label in _metrics.items()
+        }
+
+    _rows = []
+    _supervised = supervised[supervised["dataset"] == dataset.value] if len(supervised) else supervised
+    for _model, _group in (_supervised.groupby("model") if len(_supervised) else []):
+        _rows.append({
+            "approach": "fine-tuned (uq-pet-token)",
+            "model": _model,
+            "reasoning": "",
+            "input": "single sentences",
+            "training sentences": int(_group["n_sentences"].iloc[0]),
+            "runs": len(_group),
+            **_scores(_group, f"entity_{_partial}{{}}"),
+            "_f1": _group[f"entity_{_partial}f1"].mean(),
+        })
+    _test_f1 = runs_of_dataset.get(f"test_{_partial}f1", pd.Series(dtype=float))
+    _llm = runs_of_dataset[runs_of_dataset["complete"] & _test_f1.notna()]
+    for (_folder, _task), _group in _llm.groupby(["folder", "task"]):
+        _rows.append({
+            "approach": "LLM (prompted)",
+            "model": _group["model"].iloc[0],
+            "reasoning": _group["reasoning"].iloc[0],
+            "input": "single sentences" if _task == "md-test-sentences" else "whole documents",
+            "training sentences": 0,
+            "runs": len(_group),
+            **_scores(_group, f"test_{_partial}{{}}"),
+            "_f1": _group[f"test_{_partial}f1"].mean(),
+        })
+    # fine-tuned models first, each approach by F1
+    comparison_table = (
+        pd.DataFrame(
+            _rows,
+            columns=[
+                "approach", "model", "reasoning", "input", "training sentences", "runs",
+                *_metrics.values(), "_f1",
+            ],
+        )
+        .sort_values(
+            ["approach", "_f1"],
+            ascending=False,
+            key=lambda c: c.str.startswith("fine-tuned") if c.name == "approach" else c,
+        )
+        .drop(columns="_f1")
+        .reset_index(drop=True)
+    )
+    return (comparison_table,)
+
+
+@app.cell
+def _(
+    UQ_PET_TOKEN_DIR, comparison_matching, comparison_table, dataset, gold, mo, supervised
+):
+    _test = len(gold[dataset.value]["test"])
+    _missing = ""
+    if not len(supervised) or not (supervised["dataset"] == dataset.value).any():
+        _missing = (
+            f"**No supervised results of uq-pet-token for {dataset.value} in "
+            f"`{UQ_PET_TOKEN_DIR}/results/supervised/`.**"
+        )
+    _match = {
+        "exact": "only if its type and both span boundaries match (seqeval)",
+        "partial": (
+            "if its type matches and it shares a token with a gold mention, each gold mention "
+            "matched once (uq-pet-token's `partial_entity_scores`)"
+        ),
+    }
+    mo.vstack([
+        mo.md(f"""
+        ## Comparison with uq-pet-token
+
+        Mention detection on uq-pet-token's {_test} test sentences of {dataset.value}, both
+        projects scored the same way on the same BIO tags: a predicted mention is correct
+        {_match[comparison_matching.value]}. P, R and F1 are micro over all mentions, macro F1
+        averages the F1 of the mention types; in percent, mean ± standard deviation over model
+        seeds (fine-tuned) or runs (LLMs). Fine-tuned: uq-pet-token's fully supervised baseline,
+        tuned on its validation holdout and trained on all its training sentences. LLMs: no
+        training beyond the prompt's format example; given whole documents (only their test
+        sentences scored) or each test sentence on its own like the fine-tuned models.
+        {_missing}
+        """),
+        comparison_matching,
+        mo.ui.table(comparison_table, selection=None, pagination=False),
     ])
     return
 

@@ -232,21 +232,24 @@ def annotate_run(
         example=mention_example,
         mention_definitions=mention_definitions,
         reasoning_effort=config.reasoning_effort,
-        instruction_role=provider.instruction_role,
-        extra_body=provider.extra_body,
-    )
-    relation_annotator = autoannotate.LLMRelationsAnnotator(
-        client=client,
-        language_model=config.model,
-        example=definitions.relation_format_example,
-        type_definitions=definitions.relation_definitions,
-        reasoning_effort=config.reasoning_effort,
+        template=definitions.mention_template(),
         instruction_role=provider.instruction_role,
         extra_body=provider.extra_body,
     )
     with_relations = config.task == "end-to-end"
     prompts = {"mentions": mention_annotator.get_instruction()}
     if with_relations:
+        relation_definitions, relation_example = definitions.relation_prompt(dataset)
+        relation_annotator = autoannotate.LLMRelationsAnnotator(
+            client=client,
+            language_model=config.model,
+            example=relation_example,
+            type_definitions=relation_definitions,
+            reasoning_effort=config.reasoning_effort,
+            template=definitions.relation_template(),
+            instruction_role=provider.instruction_role,
+            extra_body=provider.extra_body,
+        )
         prompts["relations"] = relation_annotator.get_instruction()
     manifest = _load_manifest(directory, config, run, prompts)
 

@@ -6,7 +6,8 @@ import typing
 class MentionDefinition:
     type: str
     description: str
-    priority: int
+    # not used in the prompts
+    priority: int = 0
 
     def for_llm(self):
         return f"**{self.type}**: {self.description}"

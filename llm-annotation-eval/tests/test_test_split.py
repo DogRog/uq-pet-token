@@ -125,6 +125,25 @@ def test_evaluate_needs_exact_spans(make_doc):
     # per type F1: actor 0, activity 1, activity data 1
     assert scores["entity_macro_f1"] == pytest.approx(2 / 3)
     assert scores["token_accuracy"] == pytest.approx(3 / 5)
+    # partially, the shortened actor matches too
+    assert scores["entity_partial_precision"] == 1
+    assert scores["entity_partial_recall"] == 1
+    assert scores["entity_partial_f1"] == 1
+    assert scores["entity_partial_macro_f1"] == 1
+
+
+def test_partial_scores_match_each_gold_mention_once():
+    # "the clerk and the manager": one gold actor over the whole sentence, two predicted actors inside it, and a wrong type
+    gold = [["B-Actor", "I-Actor", "I-Actor", "I-Actor", "I-Actor"]]
+    tags = [["B-Actor", "I-Actor", "B-Activity", "B-Actor", "I-Actor"]]
+
+    scores = test_split.partial_scores(gold, tags)
+
+    assert scores["entity_partial_precision"] == pytest.approx(1 / 3)
+    assert scores["entity_partial_recall"] == 1
+    assert scores["entity_partial_f1"] == pytest.approx(0.5)
+    # per type F1: actor 2/3, activity 0
+    assert scores["entity_partial_macro_f1"] == pytest.approx(1 / 3)
 
 
 def test_evaluate_rejects_predictions_in_another_order(make_doc):

@@ -82,7 +82,7 @@ uv run --project ../uq-pet-token python scripts/uq-pet-token-splits.py
 
 MedicalProcessInstruks is gated, so its files are not tracked by git: accept its conditions on the Hub, log in with `uv run --project ../uq-pet-token hf auth login`, and run the script before the first medical run.
 
-The prompts differ per dataset (`src/experiments/definitions.py`). PET's and Quishpi's mention definitions are written by hand; Quishpi's follow its annotations, which mark mostly single verbs as actions, the objects they act on as entities (not who performs them), and condition clauses. MedicalProcessInstruks names none of its types, and uq-pet-token does not guess names, so each type is described by its 10 most frequent texts in the training sentences, and the format example is the 3 training sentences that together show the most types. No test sentence appears in a prompt.
+The prompts differ per dataset ([prompts/](prompts/README.md)). PET's and Quishpi's mention definitions are written by hand; Quishpi's follow its annotations, which mark mostly single verbs as actions, the objects they act on as entities (not who performs them), and condition clauses. MedicalProcessInstruks names none of its types, and uq-pet-token does not guess names, so each type is described by its 10 most frequent texts in the training sentences, and the format example is the 3 training sentences that together show the most types. No test sentence appears in a prompt.
 
 ### Test split of uq-pet-token
 
@@ -107,8 +107,9 @@ uv run pytest
 - `configs/`: experiment configs
 - `notebooks/eval_table.py`: marimo notebook with the results table
 - `src/run-configs.py`: runs configs
-- `src/experiments/`: config loading, the run loop and its logs, reporting; `definitions.py` holds the mention and relation definitions and few-shot examples used in the prompts
-- `src/autoannotate/`: annotators, response parsers, prompt templates and provider configs
+- `prompts/`: everything in the prompts: the instructions, and each dataset's type descriptions and format examples (see [prompts/README.md](prompts/README.md))
+- `src/experiments/`: config loading, prompt loading (`definitions.py`), the run loop and its logs, reporting
+- `src/autoannotate/`: annotators, response parsers and provider configs
 - `src/eval/`: matching and metrics; `datasets.py` lists the datasets with their files and mention types
 - `scripts/uq-pet-token-splits.py`: writes the Quishpi and medical sentence files with uq-pet-token's code
 - `res/gold/pet.jsonl`: gold annotations

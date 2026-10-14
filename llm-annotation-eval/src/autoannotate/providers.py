@@ -15,12 +15,16 @@ class Provider:
     instruction_role: typing.Literal["developer", "system"]
     # added to the body of every request
     extra_body: typing.Optional[typing.Dict[str, typing.Any]] = None
+    # seconds to wait for a response; None: the openai client's default (10 minutes)
+    timeout: typing.Optional[float] = None
 
     def client(self) -> openai.OpenAI:
         api_key = os.environ.get(self.api_key_env)
         if not api_key:
             raise RuntimeError(f"Set {self.api_key_env} (e.g., in .env) to use the {self.name} provider.")
-        return openai.OpenAI(base_url=self.base_url, api_key=api_key)
+        if self.timeout is None:
+            return openai.OpenAI(base_url=self.base_url, api_key=api_key)
+        return openai.OpenAI(base_url=self.base_url, api_key=api_key, timeout=self.timeout)
 
 
 PROVIDERS: typing.Dict[str, Provider] = {
@@ -39,6 +43,9 @@ PROVIDERS: typing.Dict[str, Provider] = {
         # the gateway (LiteLLM) caches responses, an identical request would return the same
         # answer again within milliseconds, which makes repeated runs copies of the first
         extra_body={"cache": {"no-cache": True}},
+        # with high reasoning, e.g. gpt-oss-120b takes over 10 minutes on the longest medical
+        # guidelines, which the client's default timeout gives up on
+        timeout=1800,
     ),
 }
 

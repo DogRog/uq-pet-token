@@ -1,5 +1,6 @@
 import csv
 import json
+import shutil
 
 import httpx
 import openai
@@ -250,7 +251,11 @@ def test_resuming_with_other_prompts_fails(tmp_path, gold_file, client, monkeypa
     directory = runner.run_dir(tmp_path, CONFIG, 1)
     runner.annotate_run(CONFIG, 1, directory, gold_file, client)
     (directory / "end-to-end" / "pet.jsonl").unlink()
-    monkeypatch.setattr(runner.definitions, "mention_format_example", "another example")
+    prompt_dir = tmp_path / "prompts"
+    shutil.copytree(runner.definitions.PROMPT_DIR, prompt_dir)
+    pet = prompt_dir / "pet.yaml"
+    pet.write_text(pet.read_text().replace("some time passes", "some days pass"))
+    monkeypatch.setattr(runner.definitions, "PROMPT_DIR", prompt_dir)
 
     with pytest.raises(RuntimeError, match="prompts of test-config changed"):
         runner.annotate_run(CONFIG, 1, directory, gold_file, client)

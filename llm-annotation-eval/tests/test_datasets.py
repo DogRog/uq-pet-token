@@ -4,7 +4,6 @@ import pytest
 
 from autoannotate import JsonExporter, data
 from eval import datasets, test_split
-from experiments import definitions
 
 
 def row(document, sentence_id, words_and_tags):
@@ -128,37 +127,3 @@ def test_dataset_files(name, sentences, test_sentences):
     predicted, dropped = test_split.predict_test_split(everything, documents, dataset.types)
     assert dropped == 0
     assert test_split.evaluate(everything, predicted)["entity_f1"] == 1.0
-
-
-def test_quishpi_prompt():
-    mention_definitions, example = definitions.mention_prompt(datasets.DATASETS["quishpi"])
-    assert [d.type for d in mention_definitions] == ["Action", "Entity", "Condition"]
-    assert "otherwise\tCondition\t2" in example
-
-
-class TestMedicalPrompt:
-    TRAIN = [
-        row("a", 0, "Observe/B-T03 the/B-T41 patient/I-T41"),
-        row("a", 1, "If/B-T37 needed/B-T09 ,/O give/B-T03 insulin/B-T43 and/B-T23 water/B-T43"),
-        row("b", 0, "observe/B-T03 closely/B-T17"),
-    ]
-
-    def test_types_are_described_by_their_training_texts(self):
-        by_type = {
-            d.type: d.description for d in definitions.medical_mention_definitions(self.TRAIN)
-        }
-
-        assert list(by_type) == list(datasets.DATASETS["medical"].types)
-        assert by_type["T03"].endswith(
-            'the 3 mentions in the training sentences: "Observe", "give", "observe"'
-        )
-        assert by_type["T41"].endswith('the 1 mention in the training sentences: "the patient"')
-        assert "does not occur" in by_type["T05"]
-
-    def test_example_shows_the_most_types(self):
-        example = definitions.medical_mention_format_example(self.TRAIN)
-
-        assert "Sentence 0: If needed , give insulin and water" in example
-        assert "Sentence 1: Observe the patient" in example
-        assert "Sentence 2: observe closely" in example
-        assert "the patient\tT41\t1" in example and "closely\tT17\t2" in example

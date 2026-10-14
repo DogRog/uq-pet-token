@@ -35,6 +35,21 @@ def test_relation_stats_per_type(make_doc):
     }
 
 
+def test_exact_mentions_need_the_same_tokens(make_doc):
+    gold = doc(make_doc, ("actor", (0, 1)), ("activity", (2,)))
+    pred = doc(make_doc, ("actor", (1,)), ("activity", (2,)))
+
+    assert scoring.total(scoring.mention_stats(gold, pred, exact=True)) == Stats(2, 2, 1)
+
+
+def test_exact_relations_need_exact_head_and_tail(make_doc):
+    gold = doc(make_doc, ("actor", (0, 1)), ("activity", (2,)), relations=[data.Relation("actor performer", 1, 0)])
+    pred = doc(make_doc, ("actor", (1,)), ("activity", (2,)), relations=[data.Relation("actor performer", 1, 0)])
+
+    assert scoring.total(scoring.relation_stats(gold, pred)) == Stats(1, 1, 1)
+    assert scoring.total(scoring.relation_stats(gold, pred, exact=True)) == Stats(1, 1, 0)
+
+
 def test_total():
     assert scoring.total({"a": Stats(1, 2, 1), "b": Stats(3, 0, 0)}) == Stats(4, 2, 1)
 

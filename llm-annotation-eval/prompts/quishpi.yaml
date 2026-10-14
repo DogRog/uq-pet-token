@@ -1,0 +1,39 @@
+# Quishpi's mention types, filled into mentions.txt (see README.md). Written after its
+# annotations: mostly single verbs as actions, the objects they act on as entities (not who
+# performs them), and condition clauses.
+mentions:
+  types:
+    Action: >-
+      an activity or event of the process, usually only its verb, e.g. "checks", "sends", or
+      "informed" in "the customer is informed", without auxiliaries, the actor or the object.
+      Verbs joined by "and" that share their object can form one mention, e.g. "checks and
+      configures".
+    Entity: >-
+      the business object an Action is performed on, i.e. what is created, checked, sent or
+      changed, e.g. "invoice", "detailed problem report", "copy of the invoice". Usually
+      without the determiner. Who performs an Action, e.g. a role, person or department like
+      "the clerk", is not an Entity.
+    Condition: >-
+      the condition under which a part of the process is executed, usually the clause after
+      "if", "when" or "in case", without that word, e.g. "the part is available in-house" in
+      "if the part is available in-house"; also the word that starts the alternative path,
+      e.g. "otherwise".
+  # the output lines separate text, type and sentence with a tab
+  example: |-
+    **Examples for the format given the input text:**
+
+    *Input*:
+
+    Sentence 0: the clerk checks the invoice .
+    Sentence 1: if the invoice is correct , the clerk pays it .
+    Sentence 2: otherwise the invoice is returned .
+
+    *Output*:
+
+    checks	Action	0
+    invoice	Entity	0
+    the invoice is correct	Condition	1
+    pays	Action	1
+    otherwise	Condition	2
+    invoice	Entity	2
+    returned	Action	2

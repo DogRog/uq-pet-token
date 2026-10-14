@@ -1,9 +1,9 @@
 """Scores predicted mentions and relations against the gold annotations.
 
-A predicted mention matches a gold mention of the same type if their tokens overlap at all.
-A predicted relation matches a gold relation of the same type if both its head and its tail
-overlap the gold head and tail. Matching is greedy in prediction order, and every gold
-annotation can be matched only once.
+A predicted mention matches a gold mention of the same type if their tokens overlap at all
+(or, with exact=True, are the same tokens). A predicted relation matches a gold relation of
+the same type if both its head and its tail match the gold head and tail that way. Matching is
+greedy in prediction order, and every gold annotation can be matched only once.
 """
 import collections
 import typing
@@ -18,6 +18,10 @@ def _tokens(document: data.Document, mention_index: int) -> typing.Set[data.Toke
     return set(document.tokens[i] for i in document.mentions[mention_index].token_document_indices)
 
 
+def _match(gold: typing.Set[data.Token], predicted: typing.Set[data.Token], exact: bool) -> bool:
+    return gold == predicted if exact else bool(gold & predicted)
+
+
 def _stats_by_type(
         predicted_types: typing.List[str], gold_types: typing.List[str], num_ok: typing.Counter[str]
 ) -> typing.Dict[str, Stats]:
@@ -29,21 +33,26 @@ def _stats_by_type(
     }
 
 
-def mention_stats(gold: data.Document, predicted: data.Document) -> typing.Dict[str, Stats]:
+def mention_stats(
+        gold: data.Document, predicted: data.Document, exact: bool = False
+) -> typing.Dict[str, Stats]:
     """:return: stats per mention type"""
     unmatched = list(range(len(gold.mentions)))
     num_ok: typing.Counter[str] = collections.Counter()
     for p, p_mention in enumerate(predicted.mentions):
         p_tokens = _tokens(predicted, p)
         for g in unmatched:
-            if gold.mentions[g].type == p_mention.type and _tokens(gold, g) & p_tokens:
+            g_mention = gold.mentions[g]
+            if g_mention.type == p_mention.type and _match(_tokens(gold, g), p_tokens, exact):
                 num_ok[p_mention.type] += 1
                 unmatched.remove(g)
                 break
     return _stats_by_type([m.type for m in predicted.mentions], [m.type for m in gold.mentions], num_ok)
 
 
-def relation_stats(gold: data.Document, predicted: data.Document) -> typing.Dict[str, Stats]:
+def relation_stats(
+        gold: data.Document, predicted: data.Document, exact: bool = False
+) -> typing.Dict[str, Stats]:
     """:return: stats per relation type"""
     unmatched = list(gold.relations)
     num_ok: typing.Counter[str] = collections.Counter()
@@ -53,9 +62,9 @@ def relation_stats(gold: data.Document, predicted: data.Document) -> typing.Dict
         for g_relation in unmatched:
             if g_relation.type != p_relation.type:
                 continue
-            if not _tokens(gold, g_relation.head_mention_index) & p_head:
+            if not _match(_tokens(gold, g_relation.head_mention_index), p_head, exact):
                 continue
-            if not _tokens(gold, g_relation.tail_mention_index) & p_tail:
+            if not _match(_tokens(gold, g_relation.tail_mention_index), p_tail, exact):
                 continue
             num_ok[p_relation.type] += 1
             unmatched.remove(g_relation)
@@ -104,11 +113,12 @@ def summarize(per_document: typing.List[typing.Dict[str, Stats]]) -> typing.Dict
 
 def score(
         gold_documents: typing.List[data.Document], predicted_documents: typing.List[data.Document],
-        tasks: typing.Sequence[str] = ("md", "re"),
+        tasks: typing.Sequence[str] = ("md", "re"), exact: bool = False,
 ) -> typing.Dict[str, typing.Any]:
     """Scores mentions ("md") and/or relations ("re") of the predicted documents.
 
-    The predicted documents must all be in the gold data.
+    The predicted documents must all be in the gold data. Mentions match if their tokens
+    overlap, or with exact=True only if they are the same tokens.
     """
     gold_by_id = {d.id: d for d in gold_documents}
     unknown = [d.id for d in predicted_documents if d.id not in gold_by_id]
@@ -118,5 +128,5 @@ def score(
     stats_by_type = {"md": mention_stats, "re": relation_stats}
     return {
         "documents": len(pairs),
-        **{task: summarize([stats_by_type[task](g, p) for g, p in pairs]) for task in tasks},
+        **{task: summarize([stats_by_type[task](g, p, exact) for g, p in pairs]) for task in tasks},
     }

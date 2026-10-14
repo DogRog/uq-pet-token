@@ -17,13 +17,17 @@ Predictions come either from annotating whole documents, of which only the menti
 sentences are scored, or from annotating each test sentence on its own (the md-test-sentences
 task, see ``sentence_documents``), the input uq-pet-token's models get. Both are scored with
 seqeval's entity-level micro scores like uq-pet-token: a mention counts only if its type and both
-span boundaries match exactly.
+span boundaries match exactly. Like uq-pet-token (its ADR 0010), ``evaluate`` also reports
+partial-match scores, where a mention counts if its type matches and it shares a token with a gold
+mention.
 """
+import collections
 import json
 import pathlib
 import typing
 
 from seqeval import metrics
+from seqeval.metrics.sequence_labeling import get_entities
 
 from autoannotate import data
 
@@ -130,6 +134,48 @@ def predict_test_split(
     return predicted, dropped
 
 
+def _f1(precision: float, recall: float) -> float:
+    return 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+
+
+def partial_scores(
+    gold: typing.List[typing.List[str]], tags: typing.List[typing.List[str]]
+) -> typing.Dict[str, float]:
+    """Scores like uq-pet-token's ``partial_entity_scores``, with the same keys.
+
+    A predicted mention matches a gold one of the same type if they share a token; greedily per
+    sentence in predicted order, each gold mention at most once.
+    """
+    n_gold, n_predicted, n_matched = (collections.Counter() for _ in range(3))
+    for gold_sentence, predicted_sentence in zip(gold, tags, strict=True):
+        unmatched = get_entities(gold_sentence)
+        n_gold.update(entity_type for entity_type, _, _ in unmatched)
+        for entity_type, start, end in get_entities(predicted_sentence):
+            n_predicted[entity_type] += 1
+            for entity in unmatched:
+                if entity[0] == entity_type and entity[1] <= end and start <= entity[2]:
+                    unmatched.remove(entity)
+                    n_matched[entity_type] += 1
+                    break
+    predicted, matched, total = (sum(c.values()) for c in (n_predicted, n_matched, n_gold))
+    precision = matched / predicted if predicted else 0.0
+    recall = matched / total if total else 0.0
+    # like seqeval, macro F1 averages over every type in gold or predictions
+    type_f1 = [
+        _f1(
+            n_matched[t] / n_predicted[t] if n_predicted[t] else 0.0,
+            n_matched[t] / n_gold[t] if n_gold[t] else 0.0,
+        )
+        for t in n_gold.keys() | n_predicted.keys()
+    ]
+    return {
+        "entity_partial_f1": _f1(precision, recall),
+        "entity_partial_macro_f1": sum(type_f1) / len(type_f1) if type_f1 else 0.0,
+        "entity_partial_precision": precision,
+        "entity_partial_recall": recall,
+    }
+
+
 def evaluate(test: typing.List[Row], predicted: typing.List[Row]) -> typing.Dict[str, float]:
     """Scores like uq-pet-token's ``evaluate_predictions``, with the same keys."""
     for gold_row, predicted_row in zip(test, predicted, strict=True):
@@ -150,6 +196,7 @@ def evaluate(test: typing.List[Row], predicted: typing.List[Row]) -> typing.Dict
         "entity_macro_f1": score(metrics.f1_score, "macro"),
         "entity_precision": score(metrics.precision_score, "micro"),
         "entity_recall": score(metrics.recall_score, "micro"),
+        **partial_scores(gold, tags),
         "token_accuracy": correct / total if total else 0.0,
     }
 

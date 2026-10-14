@@ -4,9 +4,14 @@ import typing
 
 
 class Prompt:
-    def __init__(self, template_path: pathlib.Path):
-        with open(template_path, "r", encoding="utf8") as f:
-            self.template = f.read()
+    """A template with {{name}} placeholders, read from a file or given as text."""
+
+    def __init__(self, template_path: typing.Optional[pathlib.Path] = None, text: typing.Optional[str] = None):
+        assert (template_path is None) != (text is None), "Give either a template file or its text."
+        if template_path is not None:
+            with open(template_path, "r", encoding="utf8") as f:
+                text = f.read()
+        self.template = text
         self.template_params = self.find_params(self.template)
 
     @staticmethod

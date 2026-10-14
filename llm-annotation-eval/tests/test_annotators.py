@@ -1,3 +1,5 @@
+import pathlib
+
 import openai
 import pytest
 
@@ -6,19 +8,20 @@ from autoannotate import data
 
 MENTION_DEFS = [autoannotate.MentionDefinition(type="Actor", description="who does it", priority=1)]
 RELATION_DEFS = [autoannotate.RelationDefinition(type="uses", description="what is used")]
+PROMPT_DIR = pathlib.Path(__file__).parent.parent / "prompts"
 
 
 def mention_annotator(client, **kwargs):
     return autoannotate.LLMMentionAnnotator(
         client=client, language_model="test-model", mention_definitions=MENTION_DEFS,
-        example="EXAMPLE", **{"reasoning_effort": None, **kwargs},
+        example="EXAMPLE", template=PROMPT_DIR / "mentions.txt", **{"reasoning_effort": None, **kwargs},
     )
 
 
 def relation_annotator(client, **kwargs):
     return autoannotate.LLMRelationsAnnotator(
         client=client, language_model="test-model", type_definitions=RELATION_DEFS,
-        example=None, **{"reasoning_effort": None, **kwargs},
+        example=None, template=PROMPT_DIR / "relations.txt", **{"reasoning_effort": None, **kwargs},
     )
 
 

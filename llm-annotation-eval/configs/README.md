@@ -41,7 +41,7 @@ Its configs are named `<name>-<task>`, followed by `-reasoning-<effort>` unless 
 | `max_documents` | no | only annotate the first n gold documents (or test sentences), e.g. for a quick test. Left out: all |
 | `repeats` | no | number of runs, default 1. Each run goes to `run-<i>/`, and `summary.csv` reports mean ± SD over runs |
 
-The mention definitions and few-shot examples are the same for all configs of a dataset, in `src/experiments/definitions.py`.
+The prompts are the same for all configs of a dataset, in [prompts/](../prompts/README.md).
 
 A run can't be resumed with a different `dataset`, `task`, `provider`, `model`, `reasoning_effort` or prompt. Rename the config (or the model's `name`) for a new experiment, or delete its folder to start over. Raising `max_documents` or `repeats` is fine and continues where the runs left off.
 
