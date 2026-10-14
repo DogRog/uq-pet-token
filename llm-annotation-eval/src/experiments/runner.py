@@ -10,7 +10,8 @@ A run folder (res/pred/<config>/run-<i>/) contains:
 - metrics.json: the scores, written by experiments.report
 
 Starting a run again resumes it: documents already in pet.jsonl are skipped. Every start that has
-documents left adds a session to run.json.
+documents left adds a session to run.json. A run is not resumed with other settings or prompts
+(``resume_problem`` says why).
 
 Documents are annotated in parallel by several workers. A document whose request fails temporarily
 (timeout, server error, rate limit, after the client's own retries) is skipped and left for the next
@@ -29,7 +30,6 @@ import typing
 from concurrent import futures
 
 import openai
-from rich.progress import track
 
 import autoannotate
 from autoannotate import data
@@ -76,15 +76,30 @@ def _display_path(path: pathlib.Path) -> str:
         return str(path.resolve())
 
 
+# workers append to the same files
+_write_lock = threading.Lock()
+
+
 def _read_jsonl(path: pathlib.Path) -> typing.List[typing.Dict[str, typing.Any]]:
     if not path.exists():
         return []
-    with open(path, encoding="utf8") as f:
+    # not while a worker appends a line
+    with _write_lock, open(path, encoding="utf8") as f:
         return [json.loads(line) for line in f if line.strip()]
 
 
-# workers append to the same files
-_write_lock = threading.Lock()
+def read_predictions(directory: pathlib.Path, task: str) -> typing.List[data.Document]:
+    """The documents predicted so far in a run, also while it runs."""
+    out_file = predictions_file(directory, task)
+    if not out_file.exists():
+        return []
+    with _write_lock:
+        return autoannotate.JsonImporter(out_file).do_import()
+
+
+def read_calls(directory: pathlib.Path) -> typing.List[typing.Dict[str, typing.Any]]:
+    """The LLM calls of a run so far, see calls.jsonl."""
+    return _read_jsonl(directory / "calls.jsonl")
 
 
 def _append_jsonl(path: pathlib.Path, entry: typing.Dict[str, typing.Any]) -> None:
@@ -100,6 +115,16 @@ def write_json(path: pathlib.Path, value: typing.Any) -> None:
 def manifest_settings(manifest: typing.Dict[str, typing.Any]) -> typing.Dict[str, typing.Any]:
     """The settings in a run.json; runs from before there were other datasets annotated PET."""
     return {"dataset": "pet", **manifest["settings"]}
+
+
+def resume_problem(directory: pathlib.Path, config: RunConfig, run: int) -> typing.Optional[str]:
+    """Why the run in directory can't be resumed with config and today's prompts, or None."""
+    prompts = {name: a.get_instruction() for name, a in build_annotators(config, None).items()}
+    try:
+        _load_manifest(directory, config, run, prompts)
+    except RuntimeError as e:
+        return str(e)
+    return None
 
 
 def _load_manifest(
@@ -167,9 +192,8 @@ def totals(directory: pathlib.Path, task: str) -> typing.Dict[str, typing.Any]:
     A document that was interrupted and annotated again when resuming only counts with the calls
     whose results were kept.
     """
-    out_file = predictions_file(directory, task)
-    done_ids = {d.id for d in autoannotate.JsonImporter(out_file).do_import()} if out_file.exists() else set()
-    calls = _read_jsonl(directory / "calls.jsonl")
+    done_ids = {d.id for d in read_predictions(directory, task)}
+    calls = read_calls(directory)
     latest = {}
     for call in calls:
         if "error" not in call:
@@ -214,33 +238,30 @@ def input_documents(task: str, input_file: pathlib.Path) -> typing.List[data.Doc
     return datasets.read_documents(input_file)
 
 
-def annotate_run(
-        config: RunConfig, run: int, directory: pathlib.Path, gold_file: pathlib.Path, client, workers: int = 1
-) -> None:
-    """Annotates the gold documents that are not yet in the run's predictions.
+def build_annotators(config: RunConfig, client) -> typing.Dict[str, autoannotate.BaseAnnotator]:
+    """The annotators of a run by step, "mentions" and for end-to-end runs "relations".
 
-    :param gold_file: the gold documents of the config's dataset, or for md-test-sentences its
-        test split, see eval.datasets.Dataset.input_file
-    :param workers: number of documents annotated at the same time
+    The prompt preview builds them without a client (None), as get_instruction and get_messages
+    don't call the LLM.
     """
     provider = autoannotate.get_provider(config.provider)
     dataset = datasets.DATASETS[config.dataset]
     mention_definitions, mention_values = definitions.mention_prompt(dataset)
-    mention_annotator = autoannotate.LLMMentionAnnotator(
-        client=client,
-        language_model=config.model,
-        template_values=mention_values,
-        mention_definitions=mention_definitions,
-        reasoning_effort=config.reasoning_effort,
-        template=definitions.mention_template(),
-        instruction_role=provider.instruction_role,
-        extra_body=provider.extra_body,
-    )
-    with_relations = config.task == "end-to-end"
-    prompts = {"mentions": mention_annotator.get_instruction()}
-    if with_relations:
+    annotators: typing.Dict[str, autoannotate.BaseAnnotator] = {
+        "mentions": autoannotate.LLMMentionAnnotator(
+            client=client,
+            language_model=config.model,
+            template_values=mention_values,
+            mention_definitions=mention_definitions,
+            reasoning_effort=config.reasoning_effort,
+            template=definitions.mention_template(),
+            instruction_role=provider.instruction_role,
+            extra_body=provider.extra_body,
+        )
+    }
+    if config.task == "end-to-end":
         relation_definitions, relation_values = definitions.relation_prompt(dataset)
-        relation_annotator = autoannotate.LLMRelationsAnnotator(
+        annotators["relations"] = autoannotate.LLMRelationsAnnotator(
             client=client,
             language_model=config.model,
             template_values=relation_values,
@@ -250,12 +271,32 @@ def annotate_run(
             instruction_role=provider.instruction_role,
             extra_body=provider.extra_body,
         )
-        prompts["relations"] = relation_annotator.get_instruction()
+    return annotators
+
+
+# called after each document of a run: its id, and the error if it failed and was skipped
+OnDocument = typing.Callable[[str, typing.Optional[BaseException]], None]
+
+
+def annotate_run(
+        config: RunConfig, run: int, directory: pathlib.Path, gold_file: pathlib.Path, client,
+        workers: int = 1, on_document: typing.Optional[OnDocument] = None,
+) -> None:
+    """Annotates the gold documents that are not yet in the run's predictions.
+
+    :param gold_file: the gold documents of the config's dataset, or for md-test-sentences its
+        test split, see eval.datasets.Dataset.input_file
+    :param workers: number of documents annotated at the same time
+    :param on_document: called in the calling thread after each document, once its prediction is
+        saved; e.g. to show the scores so far
+    """
+    annotators = build_annotators(config, client)
+    prompts = {step: annotator.get_instruction() for step, annotator in annotators.items()}
     manifest = _load_manifest(directory, config, run, prompts)
 
     documents = input_documents(config.task, gold_file)[:config.max_documents]
     out_file = predictions_file(directory, config.task)
-    done_ids = {d.id for d in autoannotate.JsonImporter(out_file).do_import()} if out_file.exists() else set()
+    done_ids = {d.id for d in read_predictions(directory, config.task)}
     todo = [d for d in documents if d.id not in done_ids]
     if not todo:
         print(f"{config.name} run {run}: all {len(documents)} documents are done.")
@@ -291,9 +332,8 @@ def annotate_run(
     def annotate_document(document: data.Document) -> None:
         print(f"Annotating {document.name}...")
         document = document.copy(clear=["mentions", "relations", "entities"])
-        document = _call(mention_annotator, "mentions", document, calls_file)
-        if with_relations:
-            document = _call(relation_annotator, "relations", document, calls_file)
+        for step, annotator in annotators.items():
+            document = _call(annotator, step, document, calls_file)
         with _write_lock:
             exporter.append(document)
 
@@ -301,14 +341,18 @@ def annotate_run(
     try:
         pending = {pool.submit(annotate_document, d): d for d in todo}
         consecutive_failures = 0
-        for future in track(futures.as_completed(pending), total=len(pending), description=f"{config.name} run {run}"):
+        for future in futures.as_completed(pending):
             try:
                 future.result()
                 consecutive_failures = 0
+                if on_document is not None:
+                    on_document(pending[future].id, None)
             except TRANSIENT_ERRORS as e:
                 print(f"Skipping {pending[future].id}, it is left for the next start: {type(e).__name__}: {e}")
                 session["failed_documents"].append(pending[future].id)
                 consecutive_failures += 1
+                if on_document is not None:
+                    on_document(pending[future].id, e)
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     raise RuntimeError(f"{consecutive_failures} documents in a row failed, last with {e}") from e
         session["outcome"] = "incomplete" if session["failed_documents"] else "completed"

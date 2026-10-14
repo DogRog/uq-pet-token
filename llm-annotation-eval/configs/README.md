@@ -2,14 +2,15 @@
 
 Each `*.yaml` (or `*.yml`) file here holds one experiment or several. Each experiment ("config") has a name, which is also the name of its output folder, `res/pred/<name>/`.
 
+They are run from `notebooks/run_experiments.py` (`uv run marimo edit notebooks/run_experiments.py`), which also shows the runs of a file and previews their prompts, or as a script:
+
 ```bash
-uv run python src/run-configs.py configs/deepseek-v4.1-flash.yaml
-uv run python src/run-configs.py configs/          # all files in the folder (not subfolders)
-uv run python src/run-configs.py configs/pet/md.yaml --workers 8
-uv run python src/run-configs.py configs/quishpi/ --only 'quishpi-gemma-4-31b-*'
+uv run python notebooks/run_experiments.py --config configs/deepseek-v4.1-flash.yaml
+uv run python notebooks/run_experiments.py --config configs/pet/md.yaml --workers 8
+uv run python notebooks/run_experiments.py --config configs/quishpi/md.yaml --only 'quishpi-gemma-4-31b-*'
 ```
 
-`--workers` sets how many documents of a run are annotated at the same time (default 4). Each session in `run.json` records it, as parallel requests can slow down each call. `--only` runs just the configs whose names match one of the given patterns (`*` for any text).
+`--workers` sets how many documents of a run are annotated at the same time (default 4). Each session in `run.json` records it, as parallel requests can slow down each call. `--only` runs just the configs whose names match one of the given patterns (`*` for any text); it can be repeated.
 
 A file with `model` is one config, named after the file, like the end-to-end configs in this folder. A file with `models` lists models with their reasoning efforts, and every model and effort is a config; the other keys apply to all of them:
 

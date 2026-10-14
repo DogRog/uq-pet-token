@@ -138,3 +138,14 @@ def test_none_is_the_reasoning_effort_not_a_missing_value(write_config):
 def test_comments_and_quotes(write_config):
     config = load_config(write_config('# a comment\nprovider: "nhr"  # inline\nmodel: \'org/Model-1\'\n'))
     assert (config.provider, config.model) == ("nhr", "org/Model-1")
+
+
+def test_config_from_text_is_named_like_its_file(write_config):
+    from experiments.config import parse_configs
+
+    text = "provider: nhr\nmodel: org/Model-1\ntask: md"
+    [config] = parse_configs(text, "my-run")
+
+    assert config == load_config(write_config(text))
+    with pytest.raises(ValueError, match="^edited: 'provider' is required"):
+        parse_configs("model: m", "my-run", where="edited")

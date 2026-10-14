@@ -63,41 +63,51 @@ def load_configs(path: pathlib.Path) -> typing.List[RunConfig]:
     each with a short "name", its "model" ID and one reasoning effort or a list of them; the
     other keys apply to all of them, and each model and effort is a config named by run_name.
     """
-    with open(path, encoding="utf8") as f:
-        values = yaml.safe_load(f)
+    return parse_configs(path.read_text(encoding="utf8"), path.stem, str(path))
+
+
+def parse_configs(text: str, name: str, where: str = "config") -> typing.List[RunConfig]:
+    """Reads the YAML text of a config file, see load_configs.
+
+    Args:
+        text: the file's content
+        name: the name of a config with "model", for a file its name without .yaml
+        where: what error messages call the text, e.g. the file
+    """
+    values = yaml.safe_load(text)
     if not isinstance(values, dict):
-        raise ValueError(f"{path}: expected keys like 'provider: nhr', one per line.")
+        raise ValueError(f"{where}: expected keys like 'provider: nhr', one per line.")
     if "models" not in values:
-        return [_validated(path, path.stem, values)]
+        return [_validated(where, name, values)]
 
     if "model" in values or "reasoning_effort" in values:
-        raise ValueError(f"{path}: give 'model' and 'reasoning_effort' per entry under 'models'.")
+        raise ValueError(f"{where}: give 'model' and 'reasoning_effort' per entry under 'models'.")
     models = values.pop("models")
     if not isinstance(models, list) or not models:
-        raise ValueError(f"{path}: 'models' must be a list of entries with name, model and reasoning_effort.")
+        raise ValueError(f"{where}: 'models' must be a list of entries with name, model and reasoning_effort.")
     configs = []
     for i, entry in enumerate(models):
-        where = f"{path}, models entry {i + 1}"
+        entry_where = f"{where}, models entry {i + 1}"
         if not isinstance(entry, dict):
-            raise ValueError(f"{where}: expected keys name, model and reasoning_effort.")
+            raise ValueError(f"{entry_where}: expected keys name, model and reasoning_effort.")
         unknown = entry.keys() - MODEL_KEYS
         if unknown:
-            raise ValueError(f"{where}: unknown keys {sorted(unknown)}, expected some of {sorted(MODEL_KEYS)}.")
+            raise ValueError(f"{entry_where}: unknown keys {sorted(unknown)}, expected some of {sorted(MODEL_KEYS)}.")
         if not isinstance(entry.get("name"), str):
-            raise ValueError(f"{where}: 'name' is required and must be text, it names the output folders.")
+            raise ValueError(f"{entry_where}: 'name' is required and must be text, it names the output folders.")
         efforts = entry.get("reasoning_effort")
         if efforts == []:
-            raise ValueError(f"{where}: 'reasoning_effort' is an empty list, leave it out for the default.")
+            raise ValueError(f"{entry_where}: 'reasoning_effort' is an empty list, leave it out for the default.")
         for effort in efforts if isinstance(efforts, list) else [efforts]:
             run_values = {**values, "reasoning_effort": effort}
             if "model" in entry:
                 run_values["model"] = entry["model"]
             name = run_name(values.get("dataset", "pet"), entry["name"], values.get("task", "end-to-end"), effort)
-            configs.append(_validated(where, name, run_values))
+            configs.append(_validated(entry_where, name, run_values))
     return configs
 
 
-def _validated(where: typing.Union[pathlib.Path, str], name: str, values: typing.Dict[str, typing.Any]) -> RunConfig:
+def _validated(where: str, name: str, values: typing.Dict[str, typing.Any]) -> RunConfig:
     fields = {f.name for f in dataclasses.fields(RunConfig)} - {"name"}
     unknown = values.keys() - fields
     if unknown:

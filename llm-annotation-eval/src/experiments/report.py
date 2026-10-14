@@ -3,8 +3,11 @@
 - <run folder>/metrics.json: scores of one run, see eval.scoring.score
 - res/pred/runs.csv: one row per run, with scores, token usage and parser issues
 - res/pred/summary.csv: one row per config, mean and standard deviation over its complete runs
+- <run folder>/<task>/test-predictions.jsonl: the run's predictions on the test sentences, for
+  uq-pet-token, see export_test_predictions
 
 The tables are rebuilt from every run folder in res/pred/, not only the configs run last.
+``scores_so_far`` scores a run that is still going, for the notebook's live view.
 """
 import csv
 import json
@@ -65,6 +68,86 @@ def score_run(
         metrics["test"] = {**test_scores, "dropped_overlapping": dropped}
     runner.write_json(directory / "metrics.json", metrics)
     return metrics
+
+
+def scores_so_far(
+    directory: pathlib.Path, task: str, gold: typing.List[autoannotate.Document],
+    test: typing.List[test_split.Row], types: typing.Sequence[str],
+) -> typing.Dict[str, typing.Any]:
+    """The scores of the documents a run has predicted so far, also while it runs.
+
+    Like score_run, but on the test sentences of the predicted documents only, and without
+    writing metrics.json; with the tokens and dropped answer lines of every call so far.
+
+    Args:
+        directory: the run folder
+        task: the config's task
+        gold: the gold documents, see eval.datasets.read_documents
+        test: uq-pet-token's test sentences of the dataset
+        types: the dataset's mention types
+    """
+    predicted = runner.read_predictions(directory, task)
+    calls = [c for c in runner.read_calls(directory) if "error" not in c]
+    reasoning = [c["reasoning_tokens"] for c in calls if c["reasoning_tokens"] is not None]
+    scores: typing.Dict[str, typing.Any] = {
+        "documents": len(predicted),
+        "calls": len(calls),
+        "prompt_tokens": sum(c["prompt_tokens"] for c in calls),
+        "completion_tokens": sum(c["completion_tokens"] for c in calls),
+        "reasoning_tokens": sum(reasoning) if reasoning else None,
+        "truncated_answers": sum(c["finish_reason"] == "length" for c in calls),
+        "dropped_lines": sum(i["kind"].startswith("dropped") for c in calls for i in c["issues"]),
+    }
+    if not predicted:
+        return scores
+    if task != "md-test-sentences":
+        tasks = ("md", "re") if task == "end-to-end" else ("md",)
+        metrics = scoring.score(gold, predicted, tasks)
+        for t in tasks:
+            scores[f"{t}_f1"] = metrics[t]["macro"]["f1"]["mean"]
+            scores[f"{t}_micro_f1"] = metrics[t]["micro"]["f1"]
+    ids = {d.id for d in predicted}
+    covered = [
+        r for r in test if test_split.sentence_id(r) in ids or r["document name"] in ids
+    ]
+    scores["test_sentences"] = len(covered)
+    if covered:
+        test_predicted, _ = test_split.predict_test_split(covered, predicted, types)
+        test_scores = test_split.evaluate(covered, test_predicted)
+        scores["test_f1"] = test_scores["entity_f1"]
+        scores["test_partial_f1"] = test_scores["entity_partial_f1"]
+    return scores
+
+
+def export_test_predictions(
+    pred_dir: pathlib.Path,
+) -> typing.Tuple[typing.List[pathlib.Path], typing.List[pathlib.Path]]:
+    """Writes test-predictions.jsonl next to every pet.jsonl in pred_dir, for uq-pet-token.
+
+    Each file holds the test split of uq-pet-token for the run's dataset (e.g. the 84 sentences
+    of res/gold/pet-v1.1-test.jsonl for PET) in the same format and order, with the predicted BIO
+    tags; see eval.test_split.export. Runs export theirs when they are scored (batch.run_config).
+
+    Returns:
+        The written files, and the predictions skipped as they don't cover the test split.
+    """
+    tests: typing.Dict[str, typing.List[test_split.Row]] = {}
+    # runs of a config: <folder>/run-<i>/<task>/pet.jsonl; earlier predictions: <folder>/<task>/
+    files = sorted(pred_dir.glob("*/run-*/*/pet.jsonl")) + sorted(pred_dir.glob("*/*/pet.jsonl"))
+    written, skipped = [], []
+    for predictions_file in files:
+        # predictions from before the configs have no run.json, they are PET's
+        manifest_file = predictions_file.parent.parent / "run.json"
+        name = "pet"
+        if manifest_file.exists():
+            manifest = json.loads(manifest_file.read_text(encoding="utf8"))
+            name = runner.manifest_settings(manifest)["dataset"]
+        dataset = datasets.DATASETS[name]
+        if name not in tests:
+            tests[name] = test_split.load_test_split(dataset.test_file)
+        out_file = test_split.export(predictions_file, tests[name], dataset.types)
+        (written if out_file is not None else skipped).append(out_file or predictions_file)
+    return written, skipped
 
 
 def _run_row(directory: pathlib.Path) -> typing.Dict[str, typing.Any]:

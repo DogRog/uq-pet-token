@@ -12,7 +12,7 @@ its files are not tracked by git; log in with ``uv run --project ../uq-pet-token
 first. PET's files are checked, not written: they must equal what uq-pet-token splits now.
 
 With ``--check`` nothing is written: every dataset's files are compared with what uq-pet-token
-splits now, and the exit code is 1 if one differs (``src/check-uq-pet-token-data.py`` runs this).
+splits now, and the exit code is 1 if one differs (experiments.checks runs this).
 A dataset whose files are missing is skipped then.
 """
 import argparse
