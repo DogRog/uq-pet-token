@@ -193,7 +193,8 @@ def train_items(
     return sum(losses) / len(losses)
 
 
-def load_token_classifier(checkpoint: str, device: torch.device, *, labels: list[str]):
+def load_tokenizer(checkpoint: str):
+    """Load the fast tokenizer that splits pre-split words for this checkpoint."""
     config = AutoConfig.from_pretrained(checkpoint)
     tokenizer_kwargs = {"use_fast": True}
     if config.model_type in {"roberta", "xlm-roberta"}:
@@ -204,6 +205,11 @@ def load_token_classifier(checkpoint: str, device: torch.device, *, labels: list
             f"checkpoint {checkpoint!r} did not provide a fast tokenizer; "
             "word-to-subword alignment requires one"
         )
+    return tokenizer
+
+
+def load_token_classifier(checkpoint: str, device: torch.device, *, labels: list[str]):
+    tokenizer = load_tokenizer(checkpoint)
     previous_verbosity = transformers_logging.get_verbosity()
     transformers_logging.set_verbosity_error()
     try:

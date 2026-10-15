@@ -76,7 +76,7 @@ at the project root (see [Weights & Biases](#weights--biases)).
 | Tune and train the fully supervised upper bound | `scripts/run_supervised_all_models.sh` |
 | Sample hyperparameters and compare UQ against random | `scripts/run_random_search_all_models.sh` |
 | Compare the paper rerun across datasets and models | `notebooks/paper_results.py` |
-| Check PET, Quishpi, and MedicalProcessInstruks preprocessing against the raw files and compare their lexical diversity | `notebooks/preprocessing_checks.py` |
+| Check PET, Quishpi, and MedicalProcessInstruks preprocessing against the raw files and compare their lexical diversity and difficulty | `notebooks/preprocessing_checks.py` |
 
 ## Protocol
 

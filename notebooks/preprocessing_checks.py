@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.25.0"
+__generated_with = "0.25.1"
 app = marimo.App(width="full")
 
 
@@ -38,9 +38,9 @@ def _(mo):
       The dataset is gated: accept its conditions on the Hub and run
       `uv run hf auth login` once.
     - **Splits and statistics** and the **Document viewer** switch between datasets;
-      **Lexical diversity** compares all of them at once.
-    - Raw files are downloaded only when missing. Nothing is trained, and the validation
-      holdout is not covered.
+      **Lexical diversity** and the **Difficulty profile** compare all of them at once.
+    - Raw files and the five models' tokenizers are downloaded only when missing.
+      Nothing is trained, and the validation holdout is not covered.
     """)
                 }
             ),
@@ -59,10 +59,11 @@ def _():
     import marimo as mo
     import polars as pl
 
+    from analysis import dataset_profile as dp
     from analysis import lexical_diversity as ld
     from uq_pet import data_prep
 
-    return Counter, alt, data_prep, html, json, ld, mo, pl
+    return Counter, alt, data_prep, dp, html, json, ld, mo, pl
 
 
 @app.cell
@@ -437,7 +438,7 @@ def _(
         check("Sentences", "", sum(row["sentences"] for row in quishpi_document_rows), "info"),
         *_split_checks,
     ]
-    return quishpi_checks, quishpi_split_of, quishpi_split_sentences
+    return quishpi_checks, quishpi_split_sentences
 
 
 @app.cell
@@ -541,19 +542,24 @@ def _(
         lambda: data_prep.load_medical_splits(medical_paths) if medical_paths else medical_splits,
     )
     medical_load_check = check("Files load", "loaded", medical_error or "loaded")
-    return medical_load_check, medical_sentences, medical_split_checks, medical_split_of
+    return (
+        medical_load_check,
+        medical_sentences,
+        medical_split_checks,
+        medical_split_of,
+    )
 
 
 @app.cell
 def _(
     Counter,
+    data_prep,
     decode_entities,
     medical_raw,
     medical_sentences,
     medical_split_of,
     raw_type,
     tag_names,
-    data_prep,
 ):
     _sentence_by_key = {(s["document_name"], s["sentence_id"]): s for s in medical_sentences}
     medical_document_rows = []
@@ -910,8 +916,26 @@ def _(datasets, mo):
     return (dataset_selector,)
 
 
+@app.cell
+def _(datasets):
+    profile_input = {
+        name: (dataset["sentences"], dataset["tags"]) for name, dataset in datasets.items()
+    }
+    return (profile_input,)
+
+
 @app.cell(hide_code=True)
-def _(alt, dataset_selector, datasets, decode_entities, mo, pl, tag_names):
+def _(
+    alt,
+    dataset_selector,
+    datasets,
+    decode_entities,
+    dp,
+    mo,
+    pl,
+    profile_input,
+    tag_names,
+):
     _dataset = datasets[dataset_selector.value]
     _sentences = pl.DataFrame(
         [
@@ -1000,7 +1024,13 @@ def _(alt, dataset_selector, datasets, decode_entities, mo, pl, tag_names):
 
     ADR 0008 splits every dataset by sentence, like PET, not by document, so one text can
     sit in both the pool and the test split. Rare types can miss the test split entirely.
+    The first table sets the datasets side by side; the rest follow the selector.
     """),
+            mo.ui.table(
+                dp.overview(profile_input),
+                selection=None,
+                format_mapping={"entity_words_pct": "{:.1f}"},
+            ),
             dataset_selector,
             mo.ui.table(_split_summary, selection=None),
             mo.md(
@@ -1015,10 +1045,8 @@ def _(alt, dataset_selector, datasets, decode_entities, mo, pl, tag_names):
 
 
 @app.cell
-def _(datasets, ld):
-    lexicon = ld.dataset_words(
-        {name: (dataset["sentences"], dataset["tags"]) for name, dataset in datasets.items()}
-    )
+def _(ld, profile_input):
+    lexicon = ld.dataset_words(profile_input)
     return (lexicon,)
 
 
@@ -1030,18 +1058,28 @@ def _(mo):
     return (ttr_window,)
 
 
-@app.cell(hide_code=True)
-def _(alt, datasets, ld, lexicon, mo, pl, ttr_window):
-    _order = list(datasets)
-    _sentences = ld.sentence_ttr(lexicon)
-    _windows = pl.concat(
+@app.cell
+def _(ld, lexicon, pl, ttr_window):
+    WORD_SETS = ("all words", "entity words", "entity contexts")
+    ttr_windows = pl.concat(
         [
             ld.window_ttr(lexicon, ttr_window.value).with_columns(words_kept=pl.lit("all words")),
             ld.window_ttr(lexicon, ttr_window.value, entity_only=True).with_columns(
                 words_kept=pl.lit("entity words")
             ),
+            ld.window_ttr(ld.entity_contexts(lexicon), ttr_window.value).with_columns(
+                words_kept=pl.lit("entity contexts")
+            ),
         ]
     )
+    return WORD_SETS, ttr_windows
+
+
+@app.cell(hide_code=True)
+def _(WORD_SETS, alt, datasets, ld, lexicon, mo, pl, ttr_window, ttr_windows):
+    _order = list(datasets)
+    _sentences = ld.sentence_ttr(lexicon)
+    _windows = ttr_windows
     _y = alt.Y("dataset:N", title=None, sort=_order)
     _color = alt.Color("dataset:N", sort=_order, legend=None)
 
@@ -1074,7 +1112,7 @@ def _(alt, datasets, ld, lexicon, mo, pl, ttr_window):
                     f"TTR per {ttr_window.value}-word window, {kept}",
                     [0, 1],
                 )
-                for kept in ("all words", "entity words")
+                for kept in WORD_SETS
             ]
         ),
     )
@@ -1106,6 +1144,7 @@ def _(alt, datasets, ld, lexicon, mo, pl, ttr_window):
         )
         .join(_window_means("all words", "all"), on="dataset", how="left")
         .join(_window_means("entity words", "entity"), on="dataset", how="left")
+        .join(_window_means("entity contexts", "context"), on="dataset", how="left")
         .sort(pl.col("dataset").replace_strict(_order, list(range(len(_order)))))
     )
     _tests = ld.pairwise_window_tests(_windows, _order)
@@ -1130,7 +1169,7 @@ def _(alt, datasets, ld, lexicon, mo, pl, ttr_window):
             _finding(row)
             for row in _tests.filter(pl.col("words_kept") == kept).iter_rows(named=True)
         )
-        for kept in ("all words", "entity words")
+        for kept in WORD_SETS
         if _tests.height and kept in _tests["words_kept"].to_list()
     ]
     mo.vstack(
@@ -1142,7 +1181,9 @@ def _(alt, datasets, ld, lexicon, mo, pl, ttr_window):
                 "falls as a text gets longer, so datasets of different sizes are compared "
                 "on windows of the same number of words (mean segmental TTR). **Entity "
                 "words** keeps only words inside gold entities, the vocabulary the model "
-                "has to tag."
+                "has to tag. **Entity contexts** counts each entity word together with its "
+                "neighbours, the Unique-Contextualized-Entity-Ratio of Schmidt (2022): low "
+                "means entities recur in the same phrasing."
             ),
             ttr_window,
             mo.ui.altair_chart(_charts),
@@ -1154,6 +1195,7 @@ def _(alt, datasets, ld, lexicon, mo, pl, ttr_window):
                     "sentence_ttr": "{:.3f}",
                     "window_ttr_all": "{:.3f}",
                     "window_ttr_entity": "{:.3f}",
+                    "window_ttr_context": "{:.3f}",
                 },
             ),
             mo.callout(mo.md("\n\n".join(_findings)), kind="neutral")
@@ -1185,7 +1227,158 @@ def _(alt, datasets, ld, lexicon, mo, pl, ttr_window):
       comes from clinical guidelines rather than business process descriptions.
     - 13 of Quishpi's 18 texts are also PET documents (ADR 0008), so their running text
       is largely the same; the datasets differ mainly in what is labelled.
+    - An entity context is the trigram of the previous word, the entity word, and the
+      next word after punctuation is dropped; sentence edges count as their own markers.
+      Its windows hold as many entity words as entity-word windows do.
     - TTR measures vocabulary repetition, not how hard the tags are to tell apart.
+    """),
+                }
+            ),
+        ]
+    )
+    return
+
+
+@app.cell
+def _(dp, profile_input):
+    PROFILE_DRAWS = 200
+    profile_pool_sentences = min(
+        sum(sentence["split"] == "pool" for sentence in sentences)
+        for sentences, _ in profile_input.values()
+    )
+    profile = dp.size_matched_profile(
+        profile_input, profile_pool_sentences, draws=PROFILE_DRAWS, seed=0
+    )
+    return PROFILE_DRAWS, profile, profile_pool_sentences
+
+
+@app.cell
+def _(dp, pl, profile_input):
+    from analysis.paper_results import MODELS
+    from uq_pet.token_model import load_tokenizer
+
+    _rows = []
+    for _checkpoint, _model in MODELS.items():
+        _tokenizer = load_tokenizer(_checkpoint)
+        _rows += [
+            {
+                "dataset": name,
+                "measure": f"fertility_{_model}",
+                "mean": dp.subword_fertility(sentences, _tokenizer),
+            }
+            for name, (sentences, _) in profile_input.items()
+        ]
+    fertility = pl.DataFrame(_rows)
+    return MODELS, fertility
+
+
+@app.cell(hide_code=True)
+def _(
+    MODELS,
+    PROFILE_DRAWS,
+    alt,
+    datasets,
+    dp,
+    fertility,
+    mo,
+    pl,
+    profile,
+    profile_input,
+    profile_pool_sentences,
+    ttr_window,
+    ttr_windows,
+):
+    _order = list(datasets)
+    _labels = {
+        **{measure: label.format(rare_below=10) for measure, label in dp.MEASURES.items()},
+        "window_ttr_context": f"Entity-context TTR per {ttr_window.value}-word window",
+        **{f"fertility_{model}": f"Subwords per word, {model}" for model in MODELS.values()},
+    }
+    _contexts = (
+        ttr_windows.filter(pl.col("words_kept") == "entity contexts")
+        .group_by("dataset")
+        .agg(pl.col("ttr").mean().alias("mean"))
+        .with_columns(measure=pl.lit("window_ttr_context"))
+    )
+
+    def _cell(mean, low, high):
+        if low is None or low == high:
+            return f"{mean:.3g}"
+        return f"{mean:.3g} [{low:.3g}, {high:.3g}]"
+
+    _long = pl.concat(
+        [
+            profile.select("dataset", "measure", "mean", "low", "high"),
+            _contexts.select("dataset", "measure", "mean").with_columns(
+                low=pl.lit(None, pl.Float64), high=pl.lit(None, pl.Float64)
+            ),
+            fertility.with_columns(low=pl.lit(None, pl.Float64), high=pl.lit(None, pl.Float64)),
+        ]
+    ).with_columns(
+        value=pl.struct("mean", "low", "high").map_elements(
+            lambda row: _cell(row["mean"], row["low"], row["high"]), return_dtype=pl.String
+        )
+    )
+    _table = (
+        _long.pivot(on="dataset", index="measure", values="value")
+        .with_columns(
+            order=pl.col("measure").replace_strict(list(_labels), list(range(len(_labels))))
+        )
+        .sort("order")
+        .with_columns(pl.col("measure").replace_strict(_labels))
+        .select("measure", *_order)
+    )
+    _ranks = dp.type_frequencies(profile_input)
+    _rank_chart = (
+        alt.Chart(_ranks.filter(pl.col("share") > 0))
+        .mark_line(point=True)
+        .encode(
+            x=alt.X("rank:Q", title="Type rank in the pool"),
+            y=alt.Y("share:Q", title="Share of pool entities", scale=alt.Scale(type="log")),
+            color=alt.Color("dataset:N", sort=_order, title="Dataset"),
+            tooltip=["dataset", "rank", "type", "mentions", alt.Tooltip("share:Q", format=".1%")],
+        )
+        .properties(width=420, height=240, title="Entity types by pool frequency")
+    )
+    _draws = profile.group_by("dataset").agg(pl.col("draws").first()).rows()
+    mo.vstack(
+        [
+            mo.md(
+                "## 7. Difficulty profile\n"
+                "What could make one dataset harder to learn than another, measured on its "
+                "pinned splits: how skewed the types are, how long the entities are, how "
+                "much the surface gives them away, and how far memorising the pool goes. "
+                f"Pools are compared at {profile_pool_sentences} sentences, the smallest "
+                f"pool, as the mean and 95% interval of {PROFILE_DRAWS} draws."
+            ),
+            mo.ui.table(_table, selection=None, page_size=30),
+            mo.ui.altair_chart(_rank_chart),
+            mo.accordion(
+                {
+                    "How to read this": mo.md(f"""
+    - **Label space.** Type entropy is the entropy of the pool entities' types divided by
+      its maximum for the tag set: 1 means every type is equally common. A type counts as
+      rare with fewer than 10 mentions in the drawn pool; types it never mentions count
+      too. Random acquisition seldom reaches rare types.
+    - **Entity shape.** Long entities are hard under exact match, which needs both
+      boundaries right (ADR 0010).
+    - **Surface cues.** The capital-letter share leaves out entities that open a sentence.
+      Name-like entities start with a capital; process phrases mostly do not.
+    - **Memorisability.** A test entity is unseen when its lowercased words never form an
+      entity in the drawn pool. A word's form is ambiguous when the pool tags it with
+      more than one type (O included); the entropy weighs every pool word by its form's
+      type distribution. Function words such as "the" open many entities and are O
+      elsewhere, so they make up much of the ambiguous share. The lookup baseline tags each test word with its form's most
+      frequent pool type, unknown words with O, and scores exact-match entity F1.
+    - **Context diversity** follows the window in chapter 6 and uses every split.
+    - **Subwords per word** splits every sentence of every split with each model's
+      tokenizer, without truncation; a word stands for its first subword (ADR 0001).
+    - Unseen rates, rare types, ambiguity, and the lookup baseline all grow or shrink with
+      pool size, which is why pools are drawn to one size; the drawn pools are read with
+      their labels, which the experiments reveal only on acquisition. Draws per dataset:
+      {", ".join(f"{name} {count}" for name, count in _draws)}; a pool already at the
+      smallest size is used whole.
+    - The type ranks use each whole pool.
     """),
                 }
             ),
@@ -1277,7 +1470,7 @@ def _(
         )
     mo.vstack(
         [
-            mo.md("## 7. Document viewer"),
+            mo.md("## 8. Document viewer"),
             mo.hstack([dataset_selector, document_selector], justify="start"),
             mo.Html(f"<div style='line-height:2'>{_legend}</div><table>{_rows}</table>"),
             *_extras,

@@ -1,7 +1,12 @@
 import polars as pl
 import pytest
 
-from analysis.lexical_diversity import dataset_words, pairwise_window_tests, window_ttr
+from analysis.lexical_diversity import (
+    dataset_words,
+    entity_contexts,
+    pairwise_window_tests,
+    window_ttr,
+)
 
 TAGS = ["O", "B-Actor", "I-Actor"]
 
@@ -42,6 +47,19 @@ def test_window_ttr_drops_the_short_final_window_and_can_keep_entity_words_only(
     )
     assert window_ttr(words, 2)["ttr"].to_list() == [0.5, 1.0]
     assert window_ttr(words, 2, entity_only=True)["ttr"].to_list() == [1.0, 0.5]
+
+
+def test_entity_contexts_keep_entity_words_with_neighbours_inside_their_sentence():
+    sentences = [
+        sentence("a", 0, ["Clerk", "Office", "signs", "."], [1, 2, 0, 0]),
+        sentence("a", 1, ["then", "Clerk"], [0, 1]),
+    ]
+    contexts = entity_contexts(dataset_words({"PET": (sentences, TAGS)}))
+    assert contexts["word"].to_list() == [
+        "<s> clerk office",
+        "clerk office signs",
+        "then clerk </s>",
+    ]
 
 
 def test_pairwise_window_tests_compare_every_pair_and_holm_adjust_within_a_word_set():

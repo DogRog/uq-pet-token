@@ -60,6 +60,26 @@ def window_ttr(words: pl.DataFrame, size: int, entity_only: bool = False) -> pl.
     )
 
 
+def entity_contexts(words: pl.DataFrame) -> pl.DataFrame:
+    """Entity words only, each replaced by its (previous, word, next) trigram.
+
+    The Unique-Contextualized-Entity-Ratio of Schmidt (2022): windows of these trigrams
+    count distinct entity words in distinct phrasings. Neighbours are taken after
+    punctuation is dropped; sentence edges read `<s>` and `</s>`.
+    """
+    sentence = ["dataset", "document", "sentence_id"]
+    return words.with_columns(
+        word=pl.concat_str(
+            [
+                pl.col("word").shift(1).over(sentence).fill_null("<s>"),
+                pl.col("word"),
+                pl.col("word").shift(-1).over(sentence).fill_null("</s>"),
+            ],
+            separator=" ",
+        )
+    ).filter(pl.col("entity"))
+
+
 def pairwise_window_tests(windows: pl.DataFrame, order: list[str]) -> pl.DataFrame:
     """Mann–Whitney tests of window TTR between every pair of datasets, per word set.
 
