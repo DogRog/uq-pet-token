@@ -17,6 +17,11 @@ class Provider:
     extra_body: typing.Optional[typing.Dict[str, typing.Any]] = None
     # seconds to wait for a response; None: the openai client's default (10 minutes)
     timeout: typing.Optional[float] = None
+    # mark the end of the instruction for the prompt cache, which some models only use with a
+    # marker (see BaseAnnotator.get_params)
+    cache_instruction: bool = False
+    # send a session id per run, so the calls of a run reach the same upstream server and its cache
+    session_routing: bool = False
 
     def client(self) -> openai.OpenAI:
         api_key = os.environ.get(self.api_key_env)
@@ -46,6 +51,19 @@ PROVIDERS: typing.Dict[str, Provider] = {
         # with high reasoning, e.g. gpt-oss-120b takes over 10 minutes on the longest medical
         # guidelines, which the client's default timeout gives up on
         timeout=1800,
+    ),
+    # routes each request to one of the upstream providers that serve the model, see
+    # https://openrouter.ai/docs/features/provider-routing; configs can pin them with "upstream"
+    "openrouter": Provider(
+        name="OpenRouter",
+        base_url="https://openrouter.ai/api/v1",
+        api_key_env="OPENROUTER_API_KEY",
+        instruction_role="system",
+        # only providers that don't store or train on prompts: the medical dataset is gated
+        extra_body={"provider": {"data_collection": "deny"}},
+        timeout=1800,
+        cache_instruction=True,
+        session_routing=True,
     ),
 }
 

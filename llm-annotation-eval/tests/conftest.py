@@ -51,13 +51,17 @@ class FakeClient:
                           them, like the NHR@FAU gateway
     :param cache_write_tokens: prompt tokens written to the cache, which OpenRouter reports next to
                                cached_tokens for some models
+    :param cost: what the call cost in USD, which OpenRouter reports in the usage
+    :param upstream_provider: who served the call, which OpenRouter reports as "provider"
     """
 
     def __init__(self, answer: typing.Union[str, typing.Callable[[typing.Dict], str]],
                  prompt_tokens: int = 11, completion_tokens: int = 7,
                  reasoning: typing.Optional[str] = None, reasoning_tokens: typing.Optional[int] = None,
                  finish_reason: str = "stop", cached_tokens: typing.Optional[int] = None,
-                 cache_write_tokens: typing.Optional[int] = None):
+                 cache_write_tokens: typing.Optional[int] = None,
+                 cost: typing.Optional[float] = None,
+                 upstream_provider: typing.Optional[str] = None):
         self.calls: typing.List[typing.Dict] = []
         self._answer = answer if callable(answer) else lambda params: answer
         details = types.SimpleNamespace(reasoning_tokens=reasoning_tokens) if reasoning_tokens is not None else None
@@ -71,7 +75,9 @@ class FakeClient:
             completion_tokens=completion_tokens,
             completion_tokens_details=details,
             prompt_tokens_details=prompt_details,
+            model_extra={"cost": cost} if cost is not None else {},
         )
+        self._response_extra = {} if upstream_provider is None else {"provider": upstream_provider}
         self._model_extra = {"reasoning_content": reasoning} if reasoning is not None else {}
         self._finish_reason = finish_reason
         self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=self._create))
@@ -80,7 +86,12 @@ class FakeClient:
         self.calls.append(params)
         message = types.SimpleNamespace(content=self._answer(params), model_extra=self._model_extra)
         choice = types.SimpleNamespace(message=message, finish_reason=self._finish_reason)
-        return types.SimpleNamespace(choices=[choice], usage=self._usage, model=params["model"] + "-2026-10-01")
+        return types.SimpleNamespace(
+            choices=[choice],
+            usage=self._usage,
+            model=params["model"] + "-2026-10-01",
+            model_extra=self._response_extra,
+        )
 
 
 @pytest.fixture

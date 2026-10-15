@@ -34,10 +34,11 @@ Its configs are named `<name>-<task>`, followed by `-reasoning-<effort>` unless 
 | Key | Required | Meaning |
 |---|---|---|
 | `dataset` | no | `pet` (default), `quishpi` or `medical`, see the README. Quishpi and medical only have the tasks `md` and `md-test-sentences` |
-| `provider` | yes | `openai` or `nhr` (NHR@FAU gateway), see `src/autoannotate/providers.py` |
+| `provider` | yes | `openai`, `nhr` (NHR@FAU gateway) or `openrouter`, see `src/autoannotate/providers.py` |
 | `model` | yes, or `models` | model ID, e.g. `gpt-6-sol` or `deepseek-ai/DeepSeek-V4.1-Flash` |
 | `models` | yes, or `model` | models to run, each with `name`, `model` and `reasoning_effort` (see above) |
 | `task` | no | `end-to-end` (default): mentions, then relations between them. `md`: mention detection only, no relation calls and no relation scores. `md-test-sentences`: mention detection on uq-pet-token's test sentences of the dataset (84 for PET), one sentence per request without its document (see the README) |
+| `upstream` | no | `openrouter` only: the upstream provider that serves the model, e.g. `alibaba` or `deepinfra/bf16`, or a list tried in order; no fallback to others. With `models`, given per model. Left out, OpenRouter picks one per run (see below) |
 | `reasoning_effort` | no | `none`, `minimal`, `low`, `medium` or `high`. Left out (or `null`), the parameter is not sent and the model uses its default. With `models`, given per model |
 | `max_documents` | no | only annotate the first n gold documents (or test sentences), e.g. for a quick test. Left out: all |
 | `repeats` | no | number of runs, default 1. Each run goes to `run-<i>/`, and `summary.csv` reports mean ± SD over runs |
@@ -45,6 +46,17 @@ Its configs are named `<name>-<task>`, followed by `-reasoning-<effort>` unless 
 The prompts are the same for all configs of a dataset, in [prompts/](../prompts/README.md).
 
 A run can't be resumed with a different `dataset`, `task`, `provider`, `model`, `reasoning_effort` or prompt. Rename the config (or the model's `name`) for a new experiment, or delete its folder to start over. Raising `max_documents` or `repeats` is fine and continues where the runs left off.
+
+## OpenRouter
+
+`provider: openrouter` sends requests to [OpenRouter](https://openrouter.ai), which forwards each to one of the upstream providers that serve the model (`OPENROUTER_API_KEY` in `.env`). One model is often served by many providers at different quantizations (fp4 to bf16) and prices; `https://openrouter.ai/api/v1/models/<model>/endpoints` lists them with their slugs.
+
+- **Pinning.** `upstream` fixes the provider (`provider.order` without fallbacks), so every run of a config uses the same weights and cache; the run fails with a 404 naming the reason if that provider is unavailable. `run.json` records it under `settings`, so a run can't resume with another one. Name pinned models after their provider (`qwen3.8-27b-alibaba`), which also keeps their folders apart from the NHR runs of the same model.
+- **Unpinned.** Every request carries the run's `session_id` (`<config>/run-<i>`), so OpenRouter keeps a run's calls on one provider and its cache; different runs may land on different ones. `upstream_providers` in the `run.json` totals counts which served the calls.
+- **Data policy.** Every request sends `provider.data_collection: deny`, so only providers that don't store or train on prompts are used, as the medical dataset is gated. This rules out some, e.g. DeepSeek's own endpoint.
+- **Failures mid-answer.** An upstream provider sometimes fails partway through an answer; OpenRouter then returns what was generated so far with the finish reason `error`. Such an answer is not used: the document is skipped like after a timeout and annotated again on the next start.
+- **Cost.** Each call's `cost` in USD, as OpenRouter charged it including the cache discount, is in `calls.jsonl`, and summed in the `run.json` totals and `runs.csv`.
+- **Prompt cache.** The instruction's text ends with `cache_control: {"type": "ephemeral"}`, which Anthropic's and Alibaba's models need to cache it; models that cache by themselves ignore it. Whether the cache is used still depends on the upstream provider: checked on 2026-10-15, `qwen/qwen3.8-27b` on `alibaba` wrote the 1,318 instruction tokens on the first call and read them on the next, while `deepseek/deepseek-v4.1-flash` on `deepinfra/fp8` reported no cached tokens.
 
 ## Response cache on the NHR@FAU gateway
 
@@ -54,7 +66,7 @@ The gateway caches responses: an identical request returns the earlier answer wi
 
 Every call of a run starts with the same instruction (the system or developer message; about 1,300 tokens for PET, 900 for Quishpi), and only the document after it differs, so a provider with a prompt cache can reuse its computation and bill it at a discount. A run annotates its first document alone before starting the other workers, so the instruction is cached by then. `calls.jsonl` records `cached_tokens` (part of `prompt_tokens` read from the cache) and `cache_write_tokens` (written to it) where the provider reports them, and `run.json` totals and `runs.csv` sum them.
 
-The NHR@FAU gateway reports neither (checked on 2026-10-15 with gemma-4-31b and gemma-4-e4b: `prompt_tokens_details` is null), so they stay empty for NHR runs; whether its servers cache the prefix can't be told from the responses. OpenAI caches prompts of 1,024 tokens or more by itself and reports `cached_tokens`. This prompt cache is unrelated to the gateway's response cache above, which stays off.
+The NHR@FAU gateway reports neither (checked on 2026-10-15 with gemma-4-31b and gemma-4-e4b: `prompt_tokens_details` is null), so they stay empty for NHR runs; whether its servers cache the prefix can't be told from the responses. OpenAI caches prompts of 1,024 tokens or more by itself and reports `cached_tokens`; for OpenRouter see above. This prompt cache is unrelated to the gateway's response cache above, which stays off.
 
 ## reasoning_effort on the NHR@FAU gateway
 

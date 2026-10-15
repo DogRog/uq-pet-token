@@ -419,6 +419,8 @@ def _(mo, selected):
       instruction every call starts with. The first document of a run is annotated alone so it
       can be cached before the others start. Empty if the provider doesn't report it, like the
       NHR@FAU gateway.
+    - **Cost** is what the calls so far cost in USD, as OpenRouter reports it with the cache
+      discount; empty for other providers.
     - **Dropped lines** are answer lines the parser could not use; **cut off** counts answers
       that hit the token limit.
     """)
@@ -473,6 +475,8 @@ def _(
             # empty if the provider doesn't report its prompt cache, like the NHR@FAU gateway
             "cached in": "" if scores.get("cached_tokens") is None else scores["cached_tokens"],
             "tokens out": scores.get("completion_tokens", 0),
+            # in USD, empty if the provider doesn't report it (only OpenRouter does)
+            "cost": "" if scores.get("cost") is None else f"${scores['cost']:.4f}",
             "dropped lines": scores.get("dropped_lines", 0),
             "cut off": scores.get("truncated_answers", 0),
         }

@@ -61,8 +61,12 @@ class LLMRelationsAnnotator(base.BaseAnnotator):
                  reasoning_effort: base.ReasoningEffort,
                  template: pathlib.Path,
                  instruction_role: typing.Literal["developer", "system"] = "developer",
-                 extra_body: typing.Optional[typing.Dict[str, typing.Any]] = None):
-        super().__init__(client, language_model, reasoning_effort, instruction_role, extra_body)
+                 extra_body: typing.Optional[typing.Dict[str, typing.Any]] = None,
+                 cache_instruction: bool = False):
+        super().__init__(
+            client, language_model, reasoning_effort, instruction_role, extra_body,
+            cache_instruction,
+        )
         self._prompt_template = prompts.Prompt(template)
         self._template_values = template_values
         self._defs = type_definitions

@@ -109,7 +109,23 @@ class TestProviders:
         assert isinstance(client, openai.OpenAI)
         assert str(client.base_url).startswith("https://hub.nhr.fau.de/api/llmgw/v1")
 
-    @pytest.mark.parametrize("name, role", [("openai", "developer"), ("nhr", "system")])
+    def test_openrouter(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+        provider = autoannotate.get_provider("openrouter")
+
+        assert str(provider.client().base_url).startswith("https://openrouter.ai/api/v1")
+        # the gated medical dataset must not reach providers that may store or train on prompts
+        assert provider.extra_body == {"provider": {"data_collection": "deny"}}
+        assert provider.cache_instruction and provider.session_routing
+
+    @pytest.mark.parametrize("name", ["openai", "nhr"])
+    def test_only_openrouter_marks_the_cache_and_routes_by_session(self, name):
+        provider = autoannotate.get_provider(name)
+        assert not provider.cache_instruction and not provider.session_routing
+
+    @pytest.mark.parametrize(
+        "name, role", [("openai", "developer"), ("nhr", "system"), ("openrouter", "system")]
+    )
     def test_instruction_roles(self, name, role):
         assert autoannotate.get_provider(name).instruction_role == role
 
@@ -146,6 +162,43 @@ def test_annotate_reports_prompt_cache_use(fake_client, make_doc):
     assert annotation.cache_write_tokens == 0
 
 
+def test_annotate_reports_cost_and_upstream_provider(fake_client, make_doc):
+    client = fake_client("clerk\tActor\t0", cost=0.0021, upstream_provider="Alibaba")
+
+    annotation = mention_annotator(client).annotate(make_doc(["the clerk works"]))
+
+    assert annotation.cost == 0.0021
+    assert annotation.upstream_provider == "Alibaba"
+
+
+def test_annotate_without_cost_or_upstream_provider(fake_client, make_doc):
+    annotator = mention_annotator(fake_client("clerk\tActor\t0"))
+
+    annotation = annotator.annotate(make_doc(["the clerk works"]))
+
+    assert annotation.cost is None and annotation.upstream_provider is None
+
+
+@pytest.mark.parametrize("make_annotator", [mention_annotator, relation_annotator])
+def test_cache_marker_ends_the_instruction_only(fake_client, make_doc, make_annotator):
+    # Anthropic and Alibaba models cache the prompt up to the marker, so it goes after the
+    # instruction every call shares and before the document, which differs
+    annotator = make_annotator(fake_client(""), cache_instruction=True)
+
+    instruction, user = annotator.get_params(make_doc(["a"]))["messages"]
+
+    assert instruction["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert all("cache_control" not in part for part in user["content"])
+    # the messages themselves are left as they are
+    messages = annotator.get_messages(make_doc(["a"]))
+    assert all("cache_control" not in part for m in messages for part in m["content"])
+
+
+def test_no_cache_marker_by_default(fake_client, make_doc):
+    params = mention_annotator(fake_client("")).get_params(make_doc(["a"]))
+    assert all("cache_control" not in part for m in params["messages"] for part in m["content"])
+
+
 def test_annotate_reports_cached_tokens_without_cache_writes(fake_client, make_doc):
     # OpenAI reports cache reads only
     client = fake_client("clerk\tActor\t0", prompt_tokens=1300, cached_tokens=0)
@@ -165,6 +218,14 @@ def test_annotate_handles_missing_answer(fake_client, make_doc):
     assert annotation.response == ""
     assert annotation.doc.mentions == []
     assert annotation.finish_reason == "length"
+
+
+def test_answer_cut_off_by_a_provider_error_is_not_used(fake_client, make_doc):
+    # OpenRouter passes on what an upstream provider generated before it failed
+    client = fake_client("The MPON\tActor\t0\nperform\t", finish_reason="error")
+
+    with pytest.raises(autoannotate.UpstreamError, match="stopped with an error"):
+        mention_annotator(client).annotate(make_doc(["the clerk works"]))
 
 
 def test_issues_are_reset_for_every_document(fake_client, make_doc):

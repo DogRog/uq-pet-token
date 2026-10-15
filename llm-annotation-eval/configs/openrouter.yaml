@@ -1,0 +1,11 @@
+# Example: mention detection on PET's 84 test sentences through OpenRouter, each sentence on its own.
+# Each model is pinned to one upstream provider (see configs/README.md, "OpenRouter"); its name
+# says which, and keeps the folders apart from the NHR runs of the same model.
+task: md-test-sentences
+provider: openrouter
+repeats: 5
+models:
+  - name: qwen3.8-27b-alibaba
+    model: qwen/qwen3.8-27b
+    upstream: alibaba
+    reasoning_effort: [none, low]

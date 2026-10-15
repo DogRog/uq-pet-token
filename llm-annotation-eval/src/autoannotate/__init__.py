@@ -1,4 +1,4 @@
-from .base import BaseAnnotator, BaseParser, LLMAnnotation, ReasoningEffort
+from .base import BaseAnnotator, BaseParser, LLMAnnotation, ReasoningEffort, UpstreamError
 from .data import (
     DictExporter,
     DictImporter,
@@ -23,6 +23,7 @@ __all__ = [
     "BaseParser",
     "LLMAnnotation",
     "ReasoningEffort",
+    "UpstreamError",
     "DictExporter",
     "DictImporter",
     "Document",

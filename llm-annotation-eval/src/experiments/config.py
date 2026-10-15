@@ -32,17 +32,24 @@ class RunConfig:
     # None: all gold documents
     max_documents: typing.Optional[int] = None
     repeats: int = 1
+    # OpenRouter only: the upstream providers that may serve the model, tried in this order with
+    # no fallback to others, e.g. ("deepinfra/bf16",); None: OpenRouter picks one per run
+    upstream: typing.Optional[typing.Tuple[str, ...]] = None
 
     def settings(self) -> typing.Dict[str, typing.Any]:
         """Settings that change the predictions, a run must not be resumed with different ones."""
-        return {
+        settings = {
             "dataset": self.dataset, "task": self.task, "provider": self.provider, "model": self.model,
             "reasoning_effort": self.reasoning_effort,
         }
+        # only if set, so runs from before it existed still resume
+        if self.upstream is not None:
+            settings["upstream"] = list(self.upstream)
+        return settings
 
 
 # the keys of each entry under "models" in a config file with several models
-MODEL_KEYS = {"name", "model", "reasoning_effort"}
+MODEL_KEYS = {"name", "model", "reasoning_effort", "upstream"}
 
 
 def run_name(dataset: str, name: str, task: str, reasoning_effort: autoannotate.ReasoningEffort) -> str:
@@ -100,8 +107,9 @@ def parse_configs(text: str, name: str, where: str = "config") -> typing.List[Ru
             raise ValueError(f"{entry_where}: 'reasoning_effort' is an empty list, leave it out for the default.")
         for effort in efforts if isinstance(efforts, list) else [efforts]:
             run_values = {**values, "reasoning_effort": effort}
-            if "model" in entry:
-                run_values["model"] = entry["model"]
+            for key in ("model", "upstream"):
+                if key in entry:
+                    run_values[key] = entry[key]
             name = run_name(values.get("dataset", "pet"), entry["name"], values.get("task", "end-to-end"), effort)
             configs.append(_validated(entry_where, name, run_values))
     return configs
@@ -119,9 +127,20 @@ def _validated(where: str, name: str, values: typing.Dict[str, typing.Any]) -> R
         if not isinstance(values[key], str):
             raise ValueError(f"{where}: '{key}' must be text, put it in quotes.")
 
+    upstream = values.get("upstream")
+    if upstream is not None:
+        upstream = [upstream] if isinstance(upstream, str) else upstream
+        slugs = isinstance(upstream, list) and all(isinstance(u, str) for u in upstream)
+        if not (upstream and slugs):
+            raise ValueError(
+                f"{where}: upstream must be a provider slug like 'deepinfra/bf16', or a list."
+            )
+        values = {**values, "upstream": tuple(upstream)}
     config = RunConfig(name=name, **values)
     if config.provider not in autoannotate.PROVIDERS:
         raise ValueError(f"{where}: unknown provider '{config.provider}', expected one of {list(autoannotate.PROVIDERS)}.")
+    if config.upstream is not None and config.provider != "openrouter":
+        raise ValueError(f"{where}: upstream only applies to provider openrouter.")
     if config.dataset not in datasets.DATASETS:
         raise ValueError(f"{where}: dataset must be one of {list(datasets.DATASETS)}.")
     if config.task not in TASKS:

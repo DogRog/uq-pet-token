@@ -41,7 +41,29 @@ def test_settings_are_what_changes_predictions(write_config):
     assert config.settings() == {"dataset": "pet", "task": "end-to-end", "provider": "nhr", "model": "m", "reasoning_effort": "low"}
 
 
+def test_upstream_pins_openrouter_providers(write_config):
+    config = load_config(write_config("provider: openrouter\nmodel: m\nupstream: alibaba"))
+
+    assert config.upstream == ("alibaba",)
+    # only pinned configs have it, so runs from before it existed still resume
+    assert config.settings()["upstream"] == ["alibaba"]
+    assert "upstream" not in load_config(write_config("provider: openrouter\nmodel: m")).settings()
+
+
+def test_upstream_per_model(write_config):
+    configs = load_configs(write_config(
+        "provider: openrouter\ntask: md\nmodels:\n"
+        "  - name: qwen\n    model: qwen/qwen3.8-27b\n    upstream: [deepinfra/bf16, alibaba]\n"
+        "  - name: oss\n    model: openai/gpt-oss-120b\n"
+    ))
+
+    assert [c.upstream for c in configs] == [("deepinfra/bf16", "alibaba"), None]
+
+
 @pytest.mark.parametrize("text, message", [
+    ("provider: nhr\nmodel: m\nupstream: alibaba", "upstream"),
+    ("provider: openrouter\nmodel: m\nupstream: []", "upstream"),
+    ("provider: openrouter\nmodel: m\nupstream: 3", "upstream"),
     ("model: m", "'provider' is required"),
     ("provider: nhr", "'model' is required"),
     ("provider: azure\nmodel: m", "unknown provider"),

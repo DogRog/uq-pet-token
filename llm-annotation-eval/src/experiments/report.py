@@ -38,7 +38,7 @@ RUN_VALUES = (
     + [f"{t}_micro_{s}" for t in TASKS for s in SCORES]
     + list(TEST_SCORES.values())
     + ["prompt_tokens", "cached_tokens", "cache_write_tokens"]
-    + ["completion_tokens", "reasoning_tokens", "llm_seconds"]
+    + ["completion_tokens", "reasoning_tokens", "llm_seconds", "cost"]
 )
 
 
@@ -96,6 +96,7 @@ def scores_so_far(
         "cached_tokens": runner.reported_sum(calls, "cached_tokens"),
         "completion_tokens": sum(c["completion_tokens"] for c in calls),
         "reasoning_tokens": runner.reported_sum(calls, "reasoning_tokens"),
+        "cost": runner.reported_sum(calls, "cost"),
         "truncated_answers": sum(c["finish_reason"] == "length" for c in calls),
         "dropped_lines": sum(i["kind"].startswith("dropped") for c in calls for i in c["issues"]),
     }
@@ -179,6 +180,8 @@ def _run_row(directory: pathlib.Path) -> typing.Dict[str, typing.Any]:
         # run.json totals from before cached tokens were logged don't have them
         "cached_tokens": totals["all"].get("cached_tokens"),
         "cache_write_tokens": totals["all"].get("cache_write_tokens"),
+        # in USD, where the provider reports it
+        "cost": totals["all"].get("cost"),
         "completion_tokens": totals["all"]["completion_tokens"],
         "reasoning_tokens": totals["all"]["reasoning_tokens"],
         "llm_seconds": totals["all"]["duration_s"],

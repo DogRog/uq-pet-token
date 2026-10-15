@@ -7,6 +7,7 @@ import httpx
 import openai
 import pytest
 
+import autoannotate
 from autoannotate import JsonExporter, JsonImporter, data
 from eval import datasets, test_split
 from experiments import report, runner
@@ -166,6 +167,22 @@ def test_temporary_failure_skips_the_document_until_the_next_start(tmp_path, gol
     assert manifest["totals"]["discarded_calls"] == 1
 
 
+def test_provider_error_mid_answer_skips_the_document(tmp_path, gold_file, fake_client):
+    def cut_off_for_doc_b(params):
+        if "doc-b" in params["messages"][1]["content"][0]["text"]:
+            raise autoannotate.UpstreamError("stopped with an error")
+        return answer(params)
+
+    directory = runner.run_dir(tmp_path, CONFIG, 1)
+
+    runner.annotate_run(CONFIG, 1, directory, gold_file, fake_client(cut_off_for_doc_b))
+
+    [session] = read_manifest(directory)["sessions"]
+    assert session["outcome"] == "incomplete" and session["failed_documents"] == ["doc-b"]
+    predicted = JsonImporter(runner.predictions_file(directory, "end-to-end")).do_import()
+    assert [d.id for d in predicted] == ["doc-a", "doc-c"]
+
+
 def test_rejected_request_stops_the_run(tmp_path, gold_file, fake_client):
     directory = runner.run_dir(tmp_path, CONFIG, 1)
     rejected = openai.BadRequestError(
@@ -208,6 +225,41 @@ def test_first_document_is_annotated_alone(tmp_path, gold_file, fake_client):
     started = [c["messages"][1]["content"][0]["text"] for c in client.calls]
     assert all("doc-a" in text for text in started[:2])
     assert len(started) == 6
+
+
+def test_openrouter_run(tmp_path, gold_file, fake_client):
+    config = RunConfig(name="routed", provider="openrouter", model="qwen/m", upstream=("alibaba",))
+    client = fake_client(answer, cached_tokens=90, cost=0.001, upstream_provider="Alibaba")
+    directory = runner.run_dir(tmp_path, config, 2)
+
+    runner.annotate_run(config, 2, directory, gold_file, client)
+
+    # pinned to one upstream provider without fallbacks, so every call hits the same weights and
+    # cache; the session keeps a run on one provider when nothing is pinned
+    body = {
+        "provider": {"data_collection": "deny", "order": ["alibaba"], "allow_fallbacks": False},
+        "session_id": "routed/run-2",
+    }
+    assert all(c["extra_body"] == body for c in client.calls)
+    marker = {"type": "ephemeral"}
+    assert all(c["messages"][0]["content"][-1]["cache_control"] == marker for c in client.calls)
+    calls = read_calls(directory)
+    assert calls[0]["cost"] == 0.001 and calls[0]["upstream_provider"] == "Alibaba"
+    manifest = read_manifest(directory)
+    assert manifest["settings"]["upstream"] == ["alibaba"]
+    assert manifest["api"]["extra_body"] == body and manifest["api"]["cache_instruction"]
+    assert manifest["totals"]["all"]["cost"] == pytest.approx(0.006)
+    assert manifest["totals"]["all"]["upstream_providers"] == {"Alibaba": 6}
+
+
+def test_unpinned_openrouter_run_routes_by_session(tmp_path, gold_file, fake_client):
+    config = RunConfig(name="free", provider="openrouter", model="m")
+    client = fake_client(answer)
+
+    runner.annotate_run(config, 1, runner.run_dir(tmp_path, config, 1), gold_file, client)
+
+    body = {"provider": {"data_collection": "deny"}, "session_id": "free/run-1"}
+    assert client.calls[0]["extra_body"] == body
 
 
 def test_parallel_workers(tmp_path, gold_file, client):

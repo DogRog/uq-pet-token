@@ -41,7 +41,11 @@ REPO_DIR = pathlib.Path(__file__).parent.parent.parent
 # versions are recorded per session, the parsers depend on langextract
 PACKAGES = ["openai", "langextract"]
 # errors that may go away when the document is annotated again later
-TRANSIENT_ERRORS = (openai.APITimeoutError, openai.APIConnectionError, openai.RateLimitError, openai.InternalServerError)
+TRANSIENT_ERRORS = (
+    openai.APITimeoutError, openai.APIConnectionError, openai.RateLimitError, openai.InternalServerError,
+    # a provider failed in the middle of the answer
+    autoannotate.UpstreamError,
+)
 # stop a run after this many failed documents in a row, e.g. if the model is not served at the moment
 MAX_CONSECUTIVE_FAILURES = 3
 
@@ -127,6 +131,29 @@ def resume_problem(directory: pathlib.Path, config: RunConfig, run: int) -> typi
     return None
 
 
+def request_body(
+        config: RunConfig, run: typing.Optional[int]
+) -> typing.Optional[typing.Dict[str, typing.Any]]:
+    """What a run adds to the body of every request.
+
+    The provider's extra_body, and on OpenRouter the pinned upstream providers and the run's
+    session.
+
+    Args:
+        config: the run's config
+        run: the run number, None for a preview, which has no session
+    """
+    provider = autoannotate.get_provider(config.provider)
+    body = dict(provider.extra_body or {})
+    if config.upstream is not None:
+        body["provider"] = {
+            **body.get("provider", {}), "order": list(config.upstream), "allow_fallbacks": False
+        }
+    if provider.session_routing and run is not None:
+        body["session_id"] = f"{config.name}/run-{run}"
+    return body or None
+
+
 def _load_manifest(
         directory: pathlib.Path, config: RunConfig, run: int, prompts: typing.Dict[str, str]
 ) -> typing.Dict[str, typing.Any]:
@@ -139,7 +166,8 @@ def _load_manifest(
             "api": {
                 "base_url": provider.base_url,
                 "instruction_role": provider.instruction_role,
-                "extra_body": provider.extra_body,
+                "extra_body": request_body(config, run),
+                "cache_instruction": provider.cache_instruction,
             },
             "sessions": [],
         }
@@ -177,6 +205,8 @@ def _call(
         "reasoning_tokens": annotation.reasoning_tokens,
         "cached_tokens": annotation.cached_tokens,
         "cache_write_tokens": annotation.cache_write_tokens,
+        "cost": annotation.cost,
+        "upstream_provider": annotation.upstream_provider,
         "num_predicted": len(doc.mentions) if step == "mentions" else len(doc.relations),
         "issues": annotation.issues,
         "response": annotation.response,
@@ -188,10 +218,12 @@ def _call(
     return doc
 
 
-def reported_sum(calls: typing.List[typing.Dict[str, typing.Any]], key: str) -> typing.Optional[int]:
-    """The sum of a token count over the calls that report it, None if none does.
+def reported_sum(
+        calls: typing.List[typing.Dict[str, typing.Any]], key: str
+) -> typing.Optional[float]:
+    """The sum of a token count or cost over the calls that report it, None if none does.
 
-    Calls logged before a count was recorded don't have it.
+    Calls logged before it was recorded don't have it.
     """
     values = [c[key] for c in calls if c.get(key) is not None]
     return sum(values) if values else None
@@ -222,6 +254,12 @@ def totals(directory: pathlib.Path, task: str) -> typing.Dict[str, typing.Any]:
             # parts of prompt_tokens read from and written to the prompt cache, the same way
             "cached_tokens": reported_sum(step_calls, "cached_tokens"),
             "cache_write_tokens": reported_sum(step_calls, "cache_write_tokens"),
+            # in USD, where the provider reports it (OpenRouter)
+            "cost": reported_sum(step_calls, "cost"),
+            # calls per upstream provider behind OpenRouter, empty for direct providers
+            "upstream_providers": dict(collections.Counter(
+                c["upstream_provider"] for c in step_calls if c.get("upstream_provider")
+            )),
             # summed over calls, which may have run in parallel
             "duration_s": round(sum(c["duration_s"] for c in step_calls), 3),
             "finish_reasons": dict(collections.Counter(str(c["finish_reason"]) for c in step_calls)),
@@ -251,13 +289,16 @@ def input_documents(task: str, input_file: pathlib.Path) -> typing.List[data.Doc
     return datasets.read_documents(input_file)
 
 
-def build_annotators(config: RunConfig, client) -> typing.Dict[str, autoannotate.BaseAnnotator]:
+def build_annotators(
+        config: RunConfig, client, run: typing.Optional[int] = None
+) -> typing.Dict[str, autoannotate.BaseAnnotator]:
     """The annotators of a run by step, "mentions" and for end-to-end runs "relations".
 
-    The prompt preview builds them without a client (None), as get_instruction and get_messages
-    don't call the LLM.
+    The prompt preview builds them without a client (None) and run, as get_instruction and
+    get_messages don't call the LLM.
     """
     provider = autoannotate.get_provider(config.provider)
+    extra_body = request_body(config, run)
     dataset = datasets.DATASETS[config.dataset]
     mention_definitions, mention_values = definitions.mention_prompt(dataset)
     annotators: typing.Dict[str, autoannotate.BaseAnnotator] = {
@@ -269,7 +310,8 @@ def build_annotators(config: RunConfig, client) -> typing.Dict[str, autoannotate
             reasoning_effort=config.reasoning_effort,
             template=definitions.mention_template(),
             instruction_role=provider.instruction_role,
-            extra_body=provider.extra_body,
+            extra_body=extra_body,
+            cache_instruction=provider.cache_instruction,
         )
     }
     if config.task == "end-to-end":
@@ -282,7 +324,8 @@ def build_annotators(config: RunConfig, client) -> typing.Dict[str, autoannotate
             reasoning_effort=config.reasoning_effort,
             template=definitions.relation_template(),
             instruction_role=provider.instruction_role,
-            extra_body=provider.extra_body,
+            extra_body=extra_body,
+            cache_instruction=provider.cache_instruction,
         )
     return annotators
 
@@ -303,7 +346,7 @@ def annotate_run(
     :param on_document: called in the calling thread after each document, once its prediction is
         saved; e.g. to show the scores so far
     """
-    annotators = build_annotators(config, client)
+    annotators = build_annotators(config, client, run)
     prompts = {step: annotator.get_instruction() for step, annotator in annotators.items()}
     manifest = _load_manifest(directory, config, run, prompts)
 
