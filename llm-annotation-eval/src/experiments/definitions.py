@@ -2,12 +2,12 @@
 
 prompts/mentions.txt and prompts/relations.txt are the instructions, with {{type_definitions}},
 {{procedure}}, {{disambiguation}} and {{example}} filled in from prompts/<dataset>.yaml. PET's and
-Quishpi's types are described there by hand. MedicalProcessInstruks names none of its types, so
-their descriptions are generated from its training sentences, with the wording and settings in
-prompts/medical.yaml. Every example shows uq-pet-token's bootstrap sentences (the labelled
-sentences its token classifiers start from, see eval.datasets.Dataset.bootstrap) with their gold
-annotations, filled into the example template of the YAML file; the test split never appears in
-a prompt.
+Quishpi's types are described there by hand. MedicalProcessInstruks' types are defined there by
+hand too, after its authors' label definitions, and each definition is followed by the type's most
+frequent texts in the training sentences, with the wording and settings in prompts/medical.yaml.
+Every example shows uq-pet-token's bootstrap sentences (the labelled sentences its token
+classifiers start from, see eval.datasets.Dataset.bootstrap) with their gold annotations, filled
+into the example template of the YAML file; the test split never appears in a prompt.
 
 A run's manifest (run.json) records the rendered prompts, and resuming a run refuses to continue
 if they changed in between.
@@ -76,7 +76,7 @@ def mention_prompt(
     mentions = _read(dataset.name)["mentions"]
     where = f"prompts/{dataset.name}.yaml, mentions"
     if dataset.name == "medical":
-        definitions = medical_mention_definitions(dataset.train(), mentions)
+        definitions = medical_mention_definitions(dataset.train(), mentions, where)
     else:
         types = _types(mentions, where)
         definitions = [
@@ -113,14 +113,18 @@ def _mentions(row: Row) -> typing.List[typing.Tuple[str, str]]:
 
 
 def medical_mention_definitions(
-        train: typing.List[Row], settings: typing.Dict[str, typing.Any]
+        train: typing.List[Row], settings: typing.Dict[str, typing.Any], where: str
 ) -> typing.List[autoannotate.MentionDefinition]:
-    """Describes each unnamed medical type by its most frequent texts in the training sentences.
+    """Describes each medical type by its definition and its most frequent training texts.
 
     Args:
         train: the training sentences, see eval.datasets.Dataset.train
         settings: the mentions section of prompts/medical.yaml
+        where: the section's location, for errors
     """
+    types = _types(settings, where)
+    if list(types) != list(datasets.DATASETS["medical"].types):
+        raise ValueError(f"{where}: expected one definition per type, in the dataset's order.")
     described = autoannotate.Prompt(text=settings["description"])
     unseen = autoannotate.Prompt(text=settings["description_unseen"])
     texts: typing.Dict[str, typing.Counter[str]] = collections.defaultdict(collections.Counter)
@@ -133,12 +137,13 @@ def medical_mention_definitions(
         if counts:
             total = sum(counts.values())
             most_common = counts.most_common(settings["texts_per_type"])
-            description = described(
+            frequent = described(
                 mention_count=f"{total} mention{'s' if total > 1 else ''}",
                 texts=", ".join(f'"{text}"' for text, _ in most_common),
             )
         else:
-            description = unseen()
+            frequent = unseen()
+        description = f"{types[tag_type]} {frequent}"
         definitions.append(autoannotate.MentionDefinition(type=tag_type, description=description))
     return definitions
 

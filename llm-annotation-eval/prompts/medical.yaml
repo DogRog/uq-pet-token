@@ -1,26 +1,87 @@
-# MedicalProcessInstruks' mention types, procedure, disambiguation hint and format example,
-# filled into mentions.txt (see README.md). The dataset names none of its types (T03 ... T43), so
-# the descriptions are generated from its training sentences (never the test split), with the
-# texts and settings below. {{name}} marks a value filled in for each type.
+# MedicalProcessInstruks' mention types, procedure, disambiguation hints and format example,
+# filled into mentions.txt (see README.md). The dataset tags its types by id (T03 ... T43); their
+# names and meaning come from the label definitions its authors shared (the begin tag of each id,
+# e.g. ACTI-SING-TASK for T03), which mark activities, their actors, data, specifications, guards
+# and purposes, and the words that indicate relations of DCR graphs between activities. Each
+# description is that definition, written by hand, followed by the type's most frequent texts in
+# the training sentences, generated with the settings below. Neither uses the test split: every
+# quoted example is a training text. {{name}} marks a value filled in for each type.
 mentions:
+  # one definition per type, in prompt order; each is one paragraph (">-")
+  types:
+    T03: >-
+      Activity: a single task of the guideline that someone performs or that is performed on
+      the patient, usually only its verb or the noun naming the action, without its actor or
+      the data it uses.
+    T05: >-
+      Parent Activity: an activity that groups a sub-process of other activities, often the
+      heading of the steps that belong to it.
+    T09: >-
+      Observation: something observed or determined about the patient or the situation, such
+      as a finding, a state or a suspicion, that the process reacts to.
+    T11: >-
+      Input: information that enters the process as an input to an activity, such as a value or
+      a finding that is received or looked up.
+    T15: >-
+      Queue: an activity that waits for or hands over to another party, such as a
+      consultation.
+    T17: >-
+      Specification: further information about how an activity is done: its manner, means,
+      route, location, time, frequency, quantity, duration or other details.
+    T19: >-
+      Guard: a constraint on an activity, such as a deadline, an exact value, or a bound
+      something must be larger or smaller than.
+    T21: >-
+      Purpose: the purpose of an activity, or the reason for it or the outcome it leads to,
+      usually a clause.
+    T23: >-
+      And: a word that joins activities or conditions that all apply, e.g. "and".
+    T25: >-
+      Or: a word that joins alternatives of which one or more apply, e.g. "or".
+    T27: >-
+      Xor: a word that joins alternatives of which exactly one applies, e.g. "otherwise".
+    T29: >-
+      Response: a word that indicates a DCR response relation, that an activity must follow
+      once another has happened, e.g. "then".
+    T31: >-
+      Inclusion: a word that indicates a DCR include relation, that an activity becomes part of
+      the process.
+    T33: >-
+      Condition: a word that indicates a DCR condition relation, that an activity may only
+      happen once a condition holds or another activity has happened, e.g. "if", "before".
+    T35: >-
+      Inclusion Response: a word that indicates both an include and a response relation.
+    T37: >-
+      Condition Response: a word that indicates both a condition and a response relation, that
+      an activity must follow once its condition holds.
+    T39: >-
+      Exclusion: a word that indicates a DCR exclude relation, that an activity is no longer
+      done or not allowed, e.g. "until", "not suitable".
+    T41: >-
+      Actor: who performs or receives an activity, such as a role or the patient.
+    T43: >-
+      Activity Data: what an activity uses or acts on, such as a drug, a dose, a device or an
+      examination.
   # how many of a type's most frequent texts its description lists
   texts_per_type: 10
-  # for a type with training mentions; mention_count is e.g. "163 mentions" or "1 mention", texts
-  # the most frequent texts in quotes, separated by commas
+  # appended to a definition for a type with training mentions; mention_count is e.g. "163
+  # mentions" or "1 mention", texts the most frequent texts in quotes, separated by commas
   description: >-
-    a type the dataset does not name. Its most frequent texts among the {{mention_count}} in the
-    training sentences: {{texts}}
-  # for a type without training mentions
+    Its most frequent texts among the {{mention_count}} in the training sentences: {{texts}}
+  # appended to a definition for a type without training mentions
   description_unseen: >-
-    a type the dataset does not name. It does not occur in the training sentences.
+    It does not occur in the training sentences.
   # the steps to take, a chain of thought; the answer itself is only the mention lines
   procedure: |-
     Go through the text sentence by sentence, using the other sentences as context:
 
-    1. Compare the words and phrases of the sentence with the frequent texts listed for each type.
-    2. Extract every word or phrase that is like the texts of one of the types, with that type.
+    1. Find the Activities (T03), Parent Activities (T05), Observations (T09), Inputs (T11) and Queues (T15).
+    2. For each of them, find its Actor (T41), Activity Data (T43), Specifications (T17), Guards (T19) and Purpose (T21).
+    3. Find the words that join or relate the activities: And (T23), Or (T25), Xor (T27), Response (T29), Inclusion (T31), Condition (T33), Inclusion Response (T35), Condition Response (T37) and Exclusion (T39).
+    4. Compare each mention with the frequent texts listed for its type.
   disambiguation: |-
-    If a word or phrase could be of several types, choose the type whose listed texts it is most similar to, in meaning and in length.
+    - In "give insulin to the patient", "give" is an Activity (T03), "insulin" Activity Data (T43) and "the patient" an Actor (T41).
+    - A word like "if" or "when" is a Condition (T33) when it only makes an activity depend on something, and a Condition Response (T37) when the activity must then also follow; choose the type whose listed texts it is most similar to.
   # uq-pet-token's bootstrap sentences (res/gold/<dataset>-bootstrap.jsonl, the labelled sentences
   # its token classifiers start from) with their mentions: sentences are "<i>: <words>" lines, as
   # the documents are given; mentions one line per mention, text, type and sentence separated by

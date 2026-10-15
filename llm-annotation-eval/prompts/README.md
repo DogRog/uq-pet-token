@@ -8,7 +8,7 @@ Everything the LLMs are told is in this folder; change a file here to change a p
 | `relations.txt` | the instruction for relation extraction (PET end-to-end runs) |
 | `pet.yaml` | PET's mention and relation types with their descriptions, the procedures, disambiguation hints and format examples |
 | `quishpi.yaml` | Quishpi's mention types, procedure, disambiguation hints and format example |
-| `medical.yaml` | how MedicalProcessInstruks' type descriptions are generated from its training sentences, as it names none of its types, and its procedure, disambiguation hint and format example |
+| `medical.yaml` | MedicalProcessInstruks' type definitions (after its authors' label definitions, as the release tags types by id only), how their most frequent training texts are added, and its procedure, disambiguation hints and format example |
 
 ## Structure
 

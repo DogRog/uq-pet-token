@@ -54,6 +54,15 @@ def _write_tuning_sweep(root, name, dataset, complete):
         )
 
 
+def test_tag_name_names_medical_types_and_keeps_the_rest():
+    assert [paper_results.tag_name(tag) for tag in ("O", "B-T03", "I-T43", "B-Actor")] == [
+        "O",
+        "B-Activity",
+        "I-Activity Data",
+        "B-Actor",
+    ]
+
+
 def test_tuning_winners_lists_tuned_settings_of_finished_sweeps(tmp_path):
     _write_tuning_sweep(tmp_path, "done", "quishpi", complete=True)
     _write_tuning_sweep(tmp_path, "running", "pet", complete=False)

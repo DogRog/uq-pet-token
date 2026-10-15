@@ -45,6 +45,29 @@ MEDICAL_TAGS = [
     "O",
     *(f"{prefix}-T{type_id:02d}" for type_id in MEDICAL_TYPE_IDS for prefix in ("B", "I")),
 ]
+# The dataset authors' names for these types, from their unpublished label definitions. Saved
+# results keep the id tags above, so the names are for display only (ADR 0008).
+MEDICAL_TYPE_NAMES = {
+    "T03": "Activity",
+    "T05": "Parent Activity",
+    "T09": "Observation",
+    "T11": "Input",
+    "T15": "Queue",
+    "T17": "Specification",
+    "T19": "Guard",
+    "T21": "Purpose",
+    "T23": "And",
+    "T25": "Or",
+    "T27": "Xor",
+    "T29": "Response",
+    "T31": "Inclusion",
+    "T33": "Condition",
+    "T35": "Inclusion Response",
+    "T37": "Condition Response",
+    "T39": "Exclusion",
+    "T41": "Actor",
+    "T43": "Activity Data",
+}
 DATASET_TAGS = {
     "pet": NER_TAGS,
     "conll2003": CONLL_TAGS,

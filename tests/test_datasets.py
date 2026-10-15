@@ -242,6 +242,12 @@ def test_medical_tags_are_named_by_their_begin_id():
         data_prep._medical_tag(7)
 
 
+def test_every_medical_type_has_its_own_name():
+    names = data_prep.MEDICAL_TYPE_NAMES
+    assert list(names) == [tag[2:] for tag in MEDICAL_TAGS[1::2]]
+    assert len(set(names.values())) == len(names)
+
+
 def test_medical_joins_both_files_and_is_split_like_pet(tmp_path):
     names = [f"doc-{idx}" for idx in range(50)]
     rows = [

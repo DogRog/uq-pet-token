@@ -193,15 +193,24 @@ class TestMedicalPrompt:
     def settings(self):
         return definitions._read("medical")["mentions"]
 
-    def test_types_are_described_by_their_training_texts(self, settings):
+    def test_types_are_defined_and_described_by_their_training_texts(self, settings):
         by_type = {
             d.type: d.description
-            for d in definitions.medical_mention_definitions(self.TRAIN, settings)
+            for d in definitions.medical_mention_definitions(self.TRAIN, settings, "medical")
         }
 
         assert list(by_type) == list(datasets.DATASETS["medical"].types)
+        assert by_type["T03"].startswith("Activity: ")
         assert by_type["T03"].endswith(
             'the 3 mentions in the training sentences: "Observe", "give", "observe"'
         )
+        assert by_type["T41"].startswith("Actor: ")
         assert by_type["T41"].endswith('the 1 mention in the training sentences: "the patient"')
-        assert "does not occur" in by_type["T05"]
+        assert by_type["T05"].startswith("Parent Activity: ")
+        assert by_type["T05"].endswith("It does not occur in the training sentences.")
+
+    def test_every_type_needs_a_definition(self, settings):
+        settings["types"].pop("T05")
+
+        with pytest.raises(ValueError, match="one definition per type"):
+            definitions.medical_mention_definitions(self.TRAIN, settings, "medical")

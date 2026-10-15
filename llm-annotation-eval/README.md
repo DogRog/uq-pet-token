@@ -79,7 +79,7 @@ uq-pet-token runs its experiments on PET, Quishpi and MedicalProcessInstruks, ea
 |---|---|---|---|---|
 | `pet` | Actor, Activity, Activity Data, Further Specification, XOR Gateway, Condition Specification, AND Gateway | 417 | 84 | `res/gold/pet.jsonl` (45 documents, with relations) |
 | `quishpi` | Action, Entity, Condition | 201 | 41 | the sentences grouped into their 18 texts |
-| `medical` | T03 … T43 (19 types without names) | 325 | 65 | the sentences grouped into their 13 guidelines |
+| `medical` | T03 … T43 (19 types, tagged by id; named by the dataset's authors, e.g. T03 Activity) | 325 | 65 | the sentences grouped into their 13 guidelines |
 
 `res/gold/<dataset>.jsonl` holds every sentence and `res/gold/<dataset>-test.jsonl` the test split, in uq-pet-token's format and order. They are written with uq-pet-token's own code, which also checks that PET's files are unchanged:
 
@@ -97,7 +97,7 @@ uv run python notebooks/run_experiments.py --check
 
 It compares the test gold stored in each of uq-pet-token's reported supervised test runs with `res/gold/`, rescores those runs' predictions with `eval.test_split.evaluate` against their `results.csv`, checks that every run here used today's gold files (their sha256 in `run.json`) and that no test sentence is in a prompt, and fails if one doesn't hold (`src/experiments/checks.py`). Optionally (`--check-rebuild`) it also rebuilds every split with uq-pet-token's code, the script above with `--check`, which writes nothing. It also lists the PET test sentences labelled differently in `pet.jsonl` and PET v1.1.
 
-The prompts differ per dataset ([prompts/](prompts/README.md)). PET's and Quishpi's mention definitions are written by hand; Quishpi's follow its annotations, which mark mostly single verbs as actions, the objects they act on as entities (not who performs them), and condition clauses. MedicalProcessInstruks names none of its types, and uq-pet-token does not guess names, so each type is described by its 10 most frequent texts in the training sentences, and the format example is the 3 training sentences that together show the most types. No test sentence appears in a prompt.
+The prompts differ per dataset ([prompts/](prompts/README.md)). PET's and Quishpi's mention definitions are written by hand; Quishpi's follow its annotations, which mark mostly single verbs as actions, the objects they act on as entities (not who performs them), and condition clauses. MedicalProcessInstruks tags its types by id; each is defined by hand after the label definitions its authors shared (e.g. T03 Activity, T41 Actor), followed by its 10 most frequent texts in the training sentences, and the format example is the 3 training sentences that together show the most types. No test sentence appears in a prompt.
 
 ### Test split of uq-pet-token
 

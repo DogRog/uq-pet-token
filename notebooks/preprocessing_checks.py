@@ -32,9 +32,10 @@ def _(mo):
       come from a span.
     - **MedicalProcessInstruks** gives integer tags without names. `data_prep` reads an
       odd id as the begin tag of a type and the next even id as its inside tag, then names
-      the type `T` plus its begin id. The pairing check counts inside tags that do not
-      follow their own type under that reading and under the opposite one. The few strays
-      left open a sentence: the release cut an entity at a sentence break such as "e.g.".
+      the type `T` plus its begin id; the statistics and viewer add the names the dataset
+      authors gave the types. The pairing check counts inside tags that do not follow their
+      own type under that reading and under the opposite one. The few strays left open a
+      sentence: the release cut an entity at a sentence break such as "e.g.".
       The dataset is gated: accept its conditions on the Hub and run
       `uv run hf auth login` once.
     - **Splits and statistics** and the **Document viewer** switch between datasets;
@@ -900,7 +901,11 @@ def _(
     }
     if medical_error is None:
         datasets["MedicalProcessInstruks"] = {
-            "tags": data_prep.MEDICAL_TAGS,
+            # Shown with the dataset authors' type names, e.g. B-T03 as B-T03 Activity.
+            "tags": [
+                f"{tag} {data_prep.MEDICAL_TYPE_NAMES[tag[2:]]}" if tag != "O" else tag
+                for tag in data_prep.MEDICAL_TAGS
+            ],
             "sentences": medical_sentences,
             "labels": {
                 row["document"]: f"{row['document_id'][0]} · {row['document'][:8]}"

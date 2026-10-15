@@ -14,7 +14,7 @@ is available as a second dataset, and two more process corpora as third and four
 [Quishpi](https://github.com/PADS-UPC/atdp-extractor/tree/bpm2020/input) (process texts
 with Action, Entity, and Condition spans) and
 [MedicalProcessInstruks](https://huggingface.co/datasets/dagrat/MedicalProcessInstruks)
-(English clinical guidelines with 19 unnamed process entity types). The supplied configurations cover DistilBERT, BERT,
+(English clinical guidelines with 19 process entity types). The supplied configurations cover DistilBERT, BERT,
 RoBERTa, DeBERTa-v3, and ModernBERT.
 
 The project includes:
@@ -115,7 +115,9 @@ pinned revision. It is gated: accept its conditions on the dataset page and run
 `uv run hf auth login` once before the first load. Its released train and test files are joined
 and split exactly like PET, because the released test file is one guideline of 28
 sentences: **5 bootstrap, 255 pool, and 65 test sentences**. The release names no tags,
-so each type is named by its begin id (`B-T03`/`I-T03` … `B-T43`/`I-T43`; 39 BIO tags).
+so each type is tagged by its begin id (`B-T03`/`I-T03` … `B-T43`/`I-T43`; 39 BIO tags). The
+notebooks show the names the dataset authors gave the types (`MEDICAL_TYPE_NAMES` in
+`data_prep`, e.g. T03 Activity, T41 Actor, T43 Activity Data); saved runs keep the id tags.
 `docs/adr/0008-new-datasets-are-split-like-pet.md` records both choices.
 
 The pool size (`dataset_percent`) keeps that percentage of the dataset's pool. Smaller

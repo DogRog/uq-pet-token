@@ -277,6 +277,17 @@ def supervised_scores(results_root: Path) -> pl.DataFrame:
     return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
 
 
+def type_name(kind: str) -> str:
+    """A medical type's display name ("T03" -> "Activity"); other types stay as they are."""
+    return data_prep.MEDICAL_TYPE_NAMES.get(kind, kind)
+
+
+def tag_name(tag: str) -> str:
+    """A tag with its type's display name ("B-T03" -> "B-Activity")."""
+    prefix, _, kind = tag.partition("-")
+    return f"{prefix}-{type_name(kind)}" if kind else tag
+
+
 def read_llm_predictions(predictions_file: Path, dataset: str) -> list[list[str]]:
     """Predicted tags of an LLM run's test-predictions.jsonl, one list per test sentence.
 

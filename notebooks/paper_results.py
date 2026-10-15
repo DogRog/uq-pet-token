@@ -616,6 +616,7 @@ def _(
     mo,
     pl,
     pool_percent,
+    pr,
     tag_selections,
 ):
     _heading = mo.md(
@@ -664,7 +665,10 @@ def _(
         ),
     )
     # Every run of a dataset shares its pool, so the summaries average over models and seeds.
-    _selections = pl.concat(_frames, how="diagonal_relaxed")
+    _selections = pl.concat(_frames, how="diagonal_relaxed").with_columns(
+        pl.col("label").map_elements(pr.tag_name, return_dtype=pl.String)
+    )
+    _label_order = [pr.tag_name(label) for label in _label_order]
     _note = (
         f"**Acquired words per arm: {min(_acquired):,}**"
         if min(_acquired) == max(_acquired)
@@ -700,6 +704,8 @@ def _(
       with a larger K reach a given percentage in fewer, bigger rounds.
     - Tag totals come from the completed acquisition logs; this retrospective view does
       not use gold labels to select words.
+    - Medical tags show the dataset authors' type names; the saved runs store them by
+      begin id (`B-T03` is `B-Activity`).
     """)
                 }
             ),
@@ -1869,7 +1875,7 @@ def _(
             pieces[start:end] = [
                 f'<span style="background:{color};border-radius:3px;'
                 f'padding:1px 3px{outline}" title="{kind}">{" ".join(pieces[start:end])}'
-                f"<sub style='opacity:.7'> {kind}</sub></span>"
+                f"<sub style='opacity:.7'> {html.escape(pr.type_name(kind))}</sub></span>"
             ]
         return " ".join(pieces)
 
