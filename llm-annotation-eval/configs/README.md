@@ -50,6 +50,12 @@ A run can't be resumed with a different `dataset`, `task`, `provider`, `model`, 
 
 The gateway caches responses: an identical request returns the earlier answer within milliseconds, so repeated runs would be copies of the first. Every NHR request therefore sends `"cache": {"no-cache": true}` in its body (`Provider.extra_body` in `src/autoannotate/providers.py`), and `run.json` records it under `api`. A `Cache-Control: no-cache` header does not work.
 
+## Prompt cache
+
+Every call of a run starts with the same instruction (the system or developer message; about 1,300 tokens for PET, 900 for Quishpi), and only the document after it differs, so a provider with a prompt cache can reuse its computation and bill it at a discount. A run annotates its first document alone before starting the other workers, so the instruction is cached by then. `calls.jsonl` records `cached_tokens` (part of `prompt_tokens` read from the cache) and `cache_write_tokens` (written to it) where the provider reports them, and `run.json` totals and `runs.csv` sum them.
+
+The NHR@FAU gateway reports neither (checked on 2026-10-15 with gemma-4-31b and gemma-4-e4b: `prompt_tokens_details` is null), so they stay empty for NHR runs; whether its servers cache the prefix can't be told from the responses. OpenAI caches prompts of 1,024 tokens or more by itself and reports `cached_tokens`. This prompt cache is unrelated to the gateway's response cache above, which stays off.
+
 ## reasoning_effort on the NHR@FAU gateway
 
 Tested on 2026-10-06 with one short prompt per setting, and for the models in `configs/pet/md.yaml` again with the mention prompt on one gold document. "reasons" means reasoning text came back separately from the answer.

@@ -47,17 +47,30 @@ class FakeClient:
                    the answer, which may raise to simulate a failed request
     :param reasoning: reasoning text returned next to the answer, like vLLM's reasoning_content
     :param reasoning_tokens: None to not report them, like most open-weight models
+    :param cached_tokens: prompt tokens read from the provider's prompt cache; None to not report
+                          them, like the NHR@FAU gateway
+    :param cache_write_tokens: prompt tokens written to the cache, which OpenRouter reports next to
+                               cached_tokens for some models
     """
 
     def __init__(self, answer: typing.Union[str, typing.Callable[[typing.Dict], str]],
                  prompt_tokens: int = 11, completion_tokens: int = 7,
                  reasoning: typing.Optional[str] = None, reasoning_tokens: typing.Optional[int] = None,
-                 finish_reason: str = "stop"):
+                 finish_reason: str = "stop", cached_tokens: typing.Optional[int] = None,
+                 cache_write_tokens: typing.Optional[int] = None):
         self.calls: typing.List[typing.Dict] = []
         self._answer = answer if callable(answer) else lambda params: answer
         details = types.SimpleNamespace(reasoning_tokens=reasoning_tokens) if reasoning_tokens is not None else None
+        prompt_details = None
+        if cached_tokens is not None:
+            # fields the openai package doesn't know end up in model_extra
+            extra = {} if cache_write_tokens is None else {"cache_write_tokens": cache_write_tokens}
+            prompt_details = types.SimpleNamespace(cached_tokens=cached_tokens, model_extra=extra)
         self._usage = types.SimpleNamespace(
-            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, completion_tokens_details=details
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            completion_tokens_details=details,
+            prompt_tokens_details=prompt_details,
         )
         self._model_extra = {"reasoning_content": reasoning} if reasoning is not None else {}
         self._finish_reason = finish_reason

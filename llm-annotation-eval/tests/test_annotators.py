@@ -133,7 +133,27 @@ def test_annotate_without_reasoning_or_reasoning_token_count(fake_client, make_d
 
     assert annotation.reasoning is None
     assert annotation.reasoning_tokens is None
+    assert annotation.cached_tokens is None and annotation.cache_write_tokens is None
     assert annotation.issues == []
+
+
+def test_annotate_reports_prompt_cache_use(fake_client, make_doc):
+    client = fake_client("clerk\tActor\t0", prompt_tokens=1300, cached_tokens=1280, cache_write_tokens=0)
+
+    annotation = mention_annotator(client).annotate(make_doc(["the clerk works"]))
+
+    assert annotation.cached_tokens == 1280
+    assert annotation.cache_write_tokens == 0
+
+
+def test_annotate_reports_cached_tokens_without_cache_writes(fake_client, make_doc):
+    # OpenAI reports cache reads only
+    client = fake_client("clerk\tActor\t0", prompt_tokens=1300, cached_tokens=0)
+
+    annotation = mention_annotator(client).annotate(make_doc(["the clerk works"]))
+
+    assert annotation.cached_tokens == 0
+    assert annotation.cache_write_tokens is None
 
 
 def test_annotate_handles_missing_answer(fake_client, make_doc):

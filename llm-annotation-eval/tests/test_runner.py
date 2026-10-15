@@ -1,6 +1,7 @@
 import csv
 import json
 import shutil
+import time
 
 import httpx
 import openai
@@ -65,7 +66,9 @@ def answer(params, fail_on=None):
 
 @pytest.fixture
 def client(fake_client):
-    return fake_client(answer, prompt_tokens=100, completion_tokens=10, reasoning="thinking", reasoning_tokens=4)
+    return fake_client(
+        answer, prompt_tokens=100, completion_tokens=10, reasoning="thinking", reasoning_tokens=4, cached_tokens=90
+    )
 
 
 def read_calls(directory):
@@ -94,6 +97,7 @@ def test_run_writes_predictions_calls_and_manifest(tmp_path, gold_file, client):
     assert calls[0]["reasoning"] == "thinking"
     assert calls[0]["response_model"] == "org/Model-1-2026-10-01"
     assert calls[0]["num_predicted"] == 2
+    assert calls[0]["cached_tokens"] == 90 and calls[0]["cache_write_tokens"] is None
     assert [i["kind"] for i in calls[0]["issues"]] == ["ignored_line"]
     assert all(c["reasoning_effort"] == "low" for c in client.calls)
     # the gateway's response cache would make repeated runs copies of the first
@@ -116,6 +120,8 @@ def test_run_writes_predictions_calls_and_manifest(tmp_path, gold_file, client):
     assert totals["documents"] == 3 and totals["discarded_calls"] == 0
     assert totals["all"]["prompt_tokens"] == 600
     assert totals["all"]["reasoning_tokens"] == 24
+    assert totals["all"]["cached_tokens"] == 540
+    assert totals["all"]["cache_write_tokens"] is None
     assert totals["mentions"]["predicted"] == 6
     assert totals["mentions"]["issues"] == {"ignored_line": 3}
     assert totals["relations"]["finish_reasons"] == {"stop": 3}
@@ -184,6 +190,24 @@ def test_failures_in_a_row_stop_the_run(tmp_path, gold_file, fake_client):
     [session] = read_manifest(directory)["sessions"]
     assert session["outcome"] == "failed"
     assert len(session["failed_documents"]) == 3
+
+
+def test_first_document_is_annotated_alone(tmp_path, gold_file, fake_client):
+    # the provider caches the shared instruction during the first document, so the workers that
+    # start afterwards read it from the cache instead of all computing it at once
+    def slow_first(params):
+        if "doc-a" in params["messages"][1]["content"][0]["text"]:
+            time.sleep(0.05)
+        return answer(params)
+
+    client = fake_client(slow_first)
+    directory = runner.run_dir(tmp_path, CONFIG, 1)
+
+    runner.annotate_run(CONFIG, 1, directory, gold_file, client, workers=3)
+
+    started = [c["messages"][1]["content"][0]["text"] for c in client.calls]
+    assert all("doc-a" in text for text in started[:2])
+    assert len(started) == 6
 
 
 def test_parallel_workers(tmp_path, gold_file, client):
@@ -284,6 +308,7 @@ def test_score_and_summarize_repeated_runs(tmp_path, gold_file, client, fake_cli
     assert float(runs[0]["md_recall"]) == pytest.approx(2 / 3)
     assert float(runs[0]["re_micro_recall"]) == 0.5
     assert runs[0]["reasoning_tokens"] == "24" and runs[1]["reasoning_tokens"] == ""
+    assert runs[0]["cached_tokens"] == "540" and runs[1]["cached_tokens"] == ""
     assert runs[1]["dropped_mention_lines"] == "0"
 
     [row] = summary

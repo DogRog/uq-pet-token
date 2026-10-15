@@ -16,6 +16,12 @@ class LLMAnnotation:
     completion_tokens: int
     # None if the provider does not report it separately
     reasoning_tokens: typing.Optional[int]
+    # part of prompt_tokens read from the provider's prompt cache; None if the provider does not
+    # report it, like the NHR@FAU gateway
+    cached_tokens: typing.Optional[int]
+    # part of prompt_tokens written to the prompt cache, which some providers charge extra for;
+    # None if not reported (OpenAI never does, OpenRouter for some models)
+    cache_write_tokens: typing.Optional[int]
     # raw answer as returned by the LLM, before parsing
     response: str
     # reasoning text, if the provider returns it separately from the answer
@@ -118,11 +124,16 @@ class BaseAnnotator(abc.ABC):
         # OpenAI-compatible servers return reasoning under a non-standard field, if at all
         extra = choice.message.model_extra or {}
         details = resp.usage.completion_tokens_details
+        prompt_details = resp.usage.prompt_tokens_details
+        # not a field of the openai package, so among the extra fields
+        prompt_extra = (prompt_details.model_extra or {}) if prompt_details is not None else {}
         return LLMAnnotation(
             doc=doc,
             prompt_tokens=resp.usage.prompt_tokens,
             completion_tokens=resp.usage.completion_tokens,
             reasoning_tokens=details.reasoning_tokens if details is not None else None,
+            cached_tokens=prompt_details.cached_tokens if prompt_details is not None else None,
+            cache_write_tokens=prompt_extra.get("cache_write_tokens"),
             response=answer,
             reasoning=extra.get("reasoning_content") or extra.get("reasoning"),
             finish_reason=choice.finish_reason,

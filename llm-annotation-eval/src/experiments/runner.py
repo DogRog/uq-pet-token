@@ -175,6 +175,8 @@ def _call(
         "prompt_tokens": annotation.prompt_tokens,
         "completion_tokens": annotation.completion_tokens,
         "reasoning_tokens": annotation.reasoning_tokens,
+        "cached_tokens": annotation.cached_tokens,
+        "cache_write_tokens": annotation.cache_write_tokens,
         "num_predicted": len(doc.mentions) if step == "mentions" else len(doc.relations),
         "issues": annotation.issues,
         "response": annotation.response,
@@ -184,6 +186,15 @@ def _call(
     if annotation.finish_reason == "length":
         print(f"The {step} answer for {document.id} was cut off at the token limit.")
     return doc
+
+
+def reported_sum(calls: typing.List[typing.Dict[str, typing.Any]], key: str) -> typing.Optional[int]:
+    """The sum of a token count over the calls that report it, None if none does.
+
+    Calls logged before a count was recorded don't have it.
+    """
+    values = [c[key] for c in calls if c.get(key) is not None]
+    return sum(values) if values else None
 
 
 def totals(directory: pathlib.Path, task: str) -> typing.Dict[str, typing.Any]:
@@ -202,13 +213,15 @@ def totals(directory: pathlib.Path, task: str) -> typing.Dict[str, typing.Any]:
 
     def sums(steps: typing.List[str]) -> typing.Dict[str, typing.Any]:
         step_calls = [c for c in kept if c["step"] in steps]
-        reasoning = [c["reasoning_tokens"] for c in step_calls if c["reasoning_tokens"] is not None]
         return {
             "calls": len(step_calls),
             "prompt_tokens": sum(c["prompt_tokens"] for c in step_calls),
             "completion_tokens": sum(c["completion_tokens"] for c in step_calls),
             # part of completion_tokens; None if the provider did not report it for any call
-            "reasoning_tokens": sum(reasoning) if reasoning else None,
+            "reasoning_tokens": reported_sum(step_calls, "reasoning_tokens"),
+            # parts of prompt_tokens read from and written to the prompt cache, the same way
+            "cached_tokens": reported_sum(step_calls, "cached_tokens"),
+            "cache_write_tokens": reported_sum(step_calls, "cache_write_tokens"),
             # summed over calls, which may have run in parallel
             "duration_s": round(sum(c["duration_s"] for c in step_calls), 3),
             "finish_reasons": dict(collections.Counter(str(c["finish_reason"]) for c in step_calls)),
@@ -339,22 +352,31 @@ def annotate_run(
 
     pool = futures.ThreadPoolExecutor(workers)
     try:
-        pending = {pool.submit(annotate_document, d): d for d in todo}
         consecutive_failures = 0
-        for future in futures.as_completed(pending):
-            try:
-                future.result()
-                consecutive_failures = 0
-                if on_document is not None:
-                    on_document(pending[future].id, None)
-            except TRANSIENT_ERRORS as e:
-                print(f"Skipping {pending[future].id}, it is left for the next start: {type(e).__name__}: {e}")
-                session["failed_documents"].append(pending[future].id)
-                consecutive_failures += 1
-                if on_document is not None:
-                    on_document(pending[future].id, e)
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                    raise RuntimeError(f"{consecutive_failures} documents in a row failed, last with {e}") from e
+        # the first document alone: every call starts with the same instruction, which the provider
+        # can cache during the first one, so the workers that start afterwards read it from the
+        # cache instead of all computing it at once
+        for batch in (todo[:1], todo[1:]):
+            pending = {pool.submit(annotate_document, d): d for d in batch}
+            for future in futures.as_completed(pending):
+                try:
+                    future.result()
+                    consecutive_failures = 0
+                    if on_document is not None:
+                        on_document(pending[future].id, None)
+                except TRANSIENT_ERRORS as e:
+                    print(
+                        f"Skipping {pending[future].id}, it is left for the next start: "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    session["failed_documents"].append(pending[future].id)
+                    consecutive_failures += 1
+                    if on_document is not None:
+                        on_document(pending[future].id, e)
+                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                        raise RuntimeError(
+                            f"{consecutive_failures} documents in a row failed, last with {e}"
+                        ) from e
         session["outcome"] = "incomplete" if session["failed_documents"] else "completed"
     except Exception as e:
         session["outcome"] = "failed"

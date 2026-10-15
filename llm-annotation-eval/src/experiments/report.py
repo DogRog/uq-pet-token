@@ -37,7 +37,8 @@ RUN_VALUES = (
     [f"{t}_{s}" for t in TASKS for s in SCORES]
     + [f"{t}_micro_{s}" for t in TASKS for s in SCORES]
     + list(TEST_SCORES.values())
-    + ["prompt_tokens", "completion_tokens", "reasoning_tokens", "llm_seconds"]
+    + ["prompt_tokens", "cached_tokens", "cache_write_tokens"]
+    + ["completion_tokens", "reasoning_tokens", "llm_seconds"]
 )
 
 
@@ -88,13 +89,13 @@ def scores_so_far(
     """
     predicted = runner.read_predictions(directory, task)
     calls = [c for c in runner.read_calls(directory) if "error" not in c]
-    reasoning = [c["reasoning_tokens"] for c in calls if c["reasoning_tokens"] is not None]
     scores: typing.Dict[str, typing.Any] = {
         "documents": len(predicted),
         "calls": len(calls),
         "prompt_tokens": sum(c["prompt_tokens"] for c in calls),
+        "cached_tokens": runner.reported_sum(calls, "cached_tokens"),
         "completion_tokens": sum(c["completion_tokens"] for c in calls),
-        "reasoning_tokens": sum(reasoning) if reasoning else None,
+        "reasoning_tokens": runner.reported_sum(calls, "reasoning_tokens"),
         "truncated_answers": sum(c["finish_reason"] == "length" for c in calls),
         "dropped_lines": sum(i["kind"].startswith("dropped") for c in calls for i in c["issues"]),
     }
@@ -175,6 +176,9 @@ def _run_row(directory: pathlib.Path) -> typing.Dict[str, typing.Any]:
         row[column] = test_metrics[key] if test_metrics else None
     row.update({
         "prompt_tokens": totals["all"]["prompt_tokens"],
+        # run.json totals from before cached tokens were logged don't have them
+        "cached_tokens": totals["all"].get("cached_tokens"),
+        "cache_write_tokens": totals["all"].get("cache_write_tokens"),
         "completion_tokens": totals["all"]["completion_tokens"],
         "reasoning_tokens": totals["all"]["reasoning_tokens"],
         "llm_seconds": totals["all"]["duration_s"],

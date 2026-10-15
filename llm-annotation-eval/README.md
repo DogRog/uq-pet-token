@@ -46,10 +46,10 @@ In it you pick a config file and can change it in place (or save it), choose whi
 uv run python notebooks/run_experiments.py --config configs/pet/md.yaml --only 'gemma-4-31b-*' --workers 4
 ```
 
-`--only` takes a pattern of config names (`*` for any text) and can be repeated; one config file per call. `--workers` sets how many documents are annotated at the same time (default 4). A document whose request times out or hits a server error is skipped and annotated when you start the config again; a rejected request, or 3 failed documents in a row, stops that config and the next one is run. Each run of a config gets its own folder, `res/pred/<config name>/run-<i>/`, containing:
+`--only` takes a pattern of config names (`*` for any text) and can be repeated; one config file per call. `--workers` sets how many documents are annotated at the same time (default 4); a run's first document is annotated alone, so the provider can cache the instruction every call starts with before the others start. A document whose request times out or hits a server error is skipped and annotated when you start the config again; a rejected request, or 3 failed documents in a row, stops that config and the next one is run. Each run of a config gets its own folder, `res/pred/<config name>/run-<i>/`, containing:
 
 - `end-to-end/pet.jsonl` (or `md/pet.jsonl` for `task: md`): the predicted documents
-- `calls.jsonl`: one line per LLM call, with token usage (including reasoning tokens where the provider reports them), duration, finish reason, the raw response, the reasoning text, and the lines the parser had to drop or fix
+- `calls.jsonl`: one line per LLM call, with token usage (including reasoning tokens, and prompt tokens read from or written to the provider's prompt cache, where the provider reports them), duration, finish reason, the raw response, the reasoning text, and the lines the parser had to drop or fix
 - `run.json`: the settings, the exact prompts, and per session the start and end time, git commit, Python and package versions, and a hash of the gold file, plus totals over all calls
 - `metrics.json`: precision, recall and F1 for mentions (`md`) and, for end-to-end runs, relations (`re`), as the mean ± SD over documents (macro), micro-averaged, and per type
 

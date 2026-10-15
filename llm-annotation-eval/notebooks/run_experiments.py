@@ -334,7 +334,16 @@ def _(input_documents, mo, preview_config):
 
 
 @app.cell(hide_code=True)
-def _(PRED_DIR, json, mo, pre, preview_config, preview_document, runner, stack):
+def _(
+    PRED_DIR,
+    json,
+    mo,
+    pre,
+    preview_config,
+    preview_document,
+    runner,
+    stack,
+):
     mo.stop(preview_config.value is None or preview_document.value is None, mo.md("## 2. Prompts"))
     _config = preview_config.value
     _document = preview_document.value
@@ -406,6 +415,10 @@ def _(mo, selected):
       overlapping mentions matching.
     - **Test F1** scores the test sentences among them like uq-pet-token: exact match, and
       partial match beside it.
+    - **Cached in** is the part of the tokens in the provider read from its prompt cache: the
+      instruction every call starts with. The first document of a run is annotated alone so it
+      can be cached before the others start. Empty if the provider doesn't report it, like the
+      NHR@FAU gateway.
     - **Dropped lines** are answer lines the parser could not use; **cut off** counts answers
       that hit the token limit.
     """)
@@ -457,6 +470,8 @@ def _(
             "test F1": percent(scores.get("test_f1")),
             "test partial F1": percent(scores.get("test_partial_f1")),
             "tokens in": scores.get("prompt_tokens", 0),
+            # empty if the provider doesn't report its prompt cache, like the NHR@FAU gateway
+            "cached in": "" if scores.get("cached_tokens") is None else scores["cached_tokens"],
             "tokens out": scores.get("completion_tokens", 0),
             "dropped lines": scores.get("dropped_lines", 0),
             "cut off": scores.get("truncated_answers", 0),
