@@ -97,6 +97,7 @@ def _():
         pr,
         results_root,
         series_color,
+        series_colors,
         stats,
         tag_selections,
     )
@@ -949,6 +950,20 @@ def _(
     return
 
 
+@app.cell
+def _(mo, pr):
+    llm_band = mo.ui.dropdown(
+        {
+            "Supervised": "supervised",
+            "Random, final round": "random",
+            **{f"UQ ({metric}), final round": metric for metric in pr.UQ_METRICS},
+        },
+        value="Supervised",
+        label="Band",
+    )
+    return (llm_band,)
+
+
 @app.cell(hide_code=True)
 def _(
     acquisition,
@@ -956,11 +971,13 @@ def _(
     curves,
     field,
     llm,
+    llm_band,
     mo,
     pl,
     pr,
     score_name,
     series_color,
+    series_colors,
     supervised,
 ):
     mo.stop(
@@ -991,6 +1008,50 @@ def _(
         .sort("dataset", "f1", descending=[False, True])
     )
     _best = _configs.group_by("dataset").agg(pl.all().sort_by("f1").last())
+    _final = curves.filter(
+        (pl.col("acquisition") == acquisition.value)
+        & (pl.col("round") == pl.col("round").max().over(*pr.SETTING, "seed", "arm"))
+    )
+
+    def _final_scores(rows, keys):
+        return rows.group_by(keys).agg(
+            pl.col(field).mean().alias("f1"),
+            pl.col(field).std().alias("sd"),
+            pl.col(field.replace("f1", "precision")).mean().alias("precision")
+            if "macro" not in field
+            else pl.lit(None, pl.Float64).alias("precision"),
+            pl.col(field.replace("f1", "recall")).mean().alias("recall")
+            if "macro" not in field
+            else pl.lit(None, pl.Float64).alias("recall"),
+            pl.len().cast(pl.UInt32).alias("runs"),
+        )
+
+    _columns = ["dataset", "method", "config", "llm_model", "runs", "f1", "sd"]
+    _columns += ["precision", "recall"]
+    _comparison = pl.concat(
+        [
+            _configs.with_columns(method=pl.lit("LLM")).select(_columns),
+            _final_scores(
+                _final.filter(
+                    (pl.col("arm") == "random") & (pl.col("uq_metric") == pr.UQ_METRICS[0])
+                ),
+                ["dataset", "model"],
+            )
+            .with_columns(method=pl.lit("random"), llm_model=pl.lit(None, pl.String))
+            .rename({"model": "config"})
+            .select(_columns),
+            _final_scores(
+                _final.filter(pl.col("arm") == "uncertainty"), ["dataset", "model", "uq_metric"]
+            )
+            .with_columns(method="UQ: " + pl.col("uq_metric"), llm_model=pl.lit(None, pl.String))
+            .rename({"model": "config"})
+            .select(_columns),
+        ]
+    ).sort(
+        pl.col("dataset").replace_strict(pr.DATASET_ORDER, [0, 1, 2]),
+        pl.col("f1"),
+        descending=[False, True],
+    )
     _sup = (
         supervised.group_by("dataset", "model")
         .agg(pl.col(field).mean().alias("f1"))
@@ -998,6 +1059,16 @@ def _(
         .agg(pl.col("f1").min().alias("low"), pl.col("f1").max().alias("high"))
         if not supervised.is_empty()
         else pl.DataFrame(schema={"dataset": pl.String, "low": pl.Float64, "high": pl.Float64})
+    )
+    _band_method = {"supervised": None, "random": "random"}.get(
+        llm_band.value, f"UQ: {llm_band.value}"
+    )
+    _band = (
+        _comparison.filter(pl.col("method") == _band_method)
+        .group_by("dataset")
+        .agg(pl.col("f1").min().alias("low"), pl.col("f1").max().alias("high"))
+        if _band_method
+        else _sup
     )
     _datasets = [d for d in pr.DATASET_ORDER if d in set(_configs["dataset"])]
 
@@ -1010,8 +1081,8 @@ def _(
             axis=alt.Axis(labelLimit=240),
         )
         band = (
-            alt.Chart(_sup.filter(pl.col("dataset") == dataset))
-            .mark_rect(color="#54A24B", opacity=0.18)
+            alt.Chart(_band.filter(pl.col("dataset") == dataset))
+            .mark_rect(color=series_colors[llm_band.value], opacity=0.18)
             .encode(
                 x="low:Q",
                 x2="high:Q",
@@ -1114,12 +1185,24 @@ def _(
             mo.md(
                 "## 6. Against LLM annotation\n"
                 "Test score of LLMs that annotate each test sentence from instructions and "
-                "the 5 bootstrap sentences, with no training, next to the supervised "
-                "models (green band, lowest to highest model). Then how much of the pool a "
+                "the 5 bootstrap sentences, with no training, next to a band of token "
+                f"classifier scores ({llm_band.selected_key.lower()}, lowest to highest "
+                "model). Then how much of the pool a "
                 f"token classifier needs, {acquisition.value} acquisition, to match the "
                 "best LLM.\n\n" + "\n".join(_summary(d) for d in _datasets)
             ),
+            llm_band,
             mo.ui.altair_chart(_chart),
+            mo.md(
+                "LLM configurations next to each token classifier's final-round test "
+                f"score after acquiring the whole pool, {acquisition.value} acquisition."
+            ),
+            mo.ui.table(
+                _comparison,
+                selection=None,
+                page_size=25,
+                format_mapping={c: "{:.3f}" for c in ("f1", "sd", "precision", "recall")},
+            ),
             mo.ui.altair_chart(_reach_chart),
             mo.accordion(
                 {
@@ -1127,20 +1210,6 @@ def _(
                         _reach_table,
                         selection=None,
                         format_mapping={s: "{:.1f}" for s in _series},
-                    ),
-                    "LLM configurations: models and test scores": mo.ui.table(
-                        _configs.select(
-                            "dataset",
-                            "config",
-                            "llm_model",
-                            "runs",
-                            "f1",
-                            "sd",
-                            "precision",
-                            "recall",
-                        ),
-                        selection=None,
-                        format_mapping={c: "{:.3f}" for c in ("f1", "sd", "precision", "recall")},
                     ),
                     "How to read this": mo.md("""
     - The LLM runs are `llm-annotation-eval`'s `md-test-sentences` task: each test sentence
@@ -1156,6 +1225,8 @@ def _(
     - The best LLM is picked on the test split, which favours the LLM; the pool share is
       the first round where the seed-mean curve reaches its score, not interpolated. A
       blank cell means the curve never gets there.
+    - In the table, random and UQ rows are a classifier's final round, mean ± SD over
+      model seeds (`runs`); UQ rows are one per metric, `config` is the classifier.
     - Chapter 10 can show an LLM's predictions next to the token classifiers'.
     """),
                 }
