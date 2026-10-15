@@ -1371,21 +1371,38 @@ def _(alt, gap_names, metric_gap, mo, pl, pr, seeds, series_color):
             tooltip=["model", alt.Tooltip("gap:Q", format="+.2f")],
         )
     )
-    _winners = (
+    _best = (
         _means.sort("gap", descending=True)
         .group_by("dataset", "model", "acquisition", maintain_order=True)
         .first()
-        .group_by("dataset", "uq_metric")
-        .len("times best")
-        .pivot(on="dataset", index="uq_metric", values="times best")
-        .fill_null(0)
-        .sort("uq_metric")
     )
-    _winners = _winners.select("uq_metric", *[d for d in pr.DATASET_ORDER if d in _winners.columns])
-    _most_best = (
-        _winners.select("uq_metric", pl.sum_horizontal(pl.exclude("uq_metric")).alias("total"))
+    _winners = {}
+    for _acquisition in ["Top-K", "Gumbel noise"]:
+        _table = (
+            _best.filter(pl.col("acquisition") == _acquisition)
+            .group_by("dataset", "uq_metric")
+            .len("times best")
+            .pivot(on="dataset", index="uq_metric", values="times best")
+            .fill_null(0)
+        )
+        _winners[_acquisition] = (
+            pl.DataFrame({"uq_metric": pr.UQ_METRICS})
+            .join(_table, on="uq_metric", how="left")
+            .fill_null(0)
+            .select("uq_metric", *[d for d in pr.DATASET_ORDER if d in _table.columns])
+        )
+    _most_best = {
+        _acquisition: _table.select(
+            "uq_metric", pl.sum_horizontal(pl.exclude("uq_metric")).alias("total")
+        )
         .sort("total", descending=True)
         .row(0, named=True)
+        for _acquisition, _table in _winners.items()
+    }
+    _leaders = " ".join(
+        f"With {_acquisition}, **{_row['uq_metric']}** gives a model its largest gap most "
+        f"often ({_row['total']} of {_best.filter(pl.col('acquisition') == _acquisition).height} times)."
+        for _acquisition, _row in _most_best.items()
     )
     _worst = _means.sort("gap").row(0, named=True)
     _spread = (
@@ -1398,8 +1415,8 @@ def _(alt, gap_names, metric_gap, mo, pl, pr, seeds, series_color):
             mo.md(
                 "## 8. Which UQ metric?\n"
                 f"Bars are the mean {_name} over the five models; ticks are the individual "
-                "models. The table counts how often each metric gave a model its largest "
-                "gap (5 models × 2 acquisitions per dataset)."
+                "models. Each table counts how often each metric gave a model its largest "
+                "gap with that acquisition (5 models per dataset)."
             ),
             metric_gap,
             mo.hstack(
@@ -1412,14 +1429,19 @@ def _(alt, gap_names, metric_gap, mo, pl, pr, seeds, series_color):
                             ),
                         )
                     ),
-                    mo.ui.table(_winners, selection=None, label="Times best per dataset"),
+                    mo.vstack(
+                        [
+                            mo.ui.table(_table, selection=None, label=f"Times best, {_acquisition}")
+                            for _acquisition, _table in _winners.items()
+                        ],
+                        gap=2,
+                    ),
                 ],
                 justify="start",
                 gap=3,
             ),
             mo.md(
-                f"**{_most_best['uq_metric']}** gives a model its largest gap most often "
-                f"({_most_best['total']} of {_means.height // 3} times). The weakest setting is "
+                f"{_leaders} The weakest setting is "
                 f"{_worst['uq_metric']} for {_worst['model']} on {_worst['dataset']} with "
                 f"{_worst['acquisition']} ({_worst['gap']:+.2f} pp). Within a setting the "
                 f"metrics differ by {_spread:.2f} pp on average, against a mean {_name} of "
