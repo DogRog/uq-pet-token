@@ -1,7 +1,46 @@
 import marimo
 
 __generated_with = "0.25.1"
-app = marimo.App(width="medium")
+app = marimo.App(width="full")
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.vstack(
+        [
+            mo.md("""
+    # LLM annotation runs
+
+    Pick a config file and change it, check which runs it makes and what they would send,
+    then run them while the scores so far update after every document. Each chapter is one
+    step and is listed in the outline. The results of all runs are in
+    `notebooks/eval_table.py`.
+    """),
+            mo.accordion(
+                {
+                    "How to read this": mo.md("""
+    - Runs are saved in `res/pred/<config>/run-<i>/` (see `src/experiments/runner.py`); a
+      config that was run before resumes its unfinished runs.
+    - Chapter 4 writes the files uq-pet-token reads and checks that both projects use the
+      same data and scoring.
+    """),
+                    "Running as a script": mo.md("""
+    The notebook runs a config without the editor:
+
+    ```bash
+    uv run python notebooks/run_experiments.py --config configs/pet/md.yaml \\
+        --only 'gemma-4-31b-*' --workers 4
+    ```
+
+    `--only` takes a pattern of config names and can be repeated; add `--export` to write every
+    run's `test-predictions.jsonl`, or `--check` to check the data against uq-pet-token
+    (`--check-rebuild` also rebuilds its splits).
+    """),
+                }
+            ),
+        ]
+    )
+    return
 
 
 @app.cell
@@ -24,11 +63,9 @@ def _(html, mo):
             f'font-size: 0.8rem">{html.escape(text)}</pre>'
         )
 
-
     def stack(*items):
         """mo.vstack without the items that are None, which it would show as "None"."""
         return mo.vstack([i for i in items if i is not None])
-
 
     def bar(done, total):
         """A progress bar, done of total."""
@@ -38,7 +75,6 @@ def _(html, mo):
             f'<div style="height: 100%; width: {_width:.1f}%; border-radius: 0.25rem; '
             'background: #3b9c5a"></div></div>'
         )
-
 
     def percent(value):
         return "" if value is None else f"{value:.1%}"
@@ -57,8 +93,9 @@ def _(mo, sys):
     from experiments import config as run_config
 
     PRED_DIR = batch.PRED_DIR
-    # notebook arguments, e.g. marimo edit notebooks/run_experiments.py -- --config configs/pet/md.yaml,
-    # or as a script: python notebooks/run_experiments.py --config configs/pet/md.yaml --workers 8
+    # notebook arguments, e.g. marimo edit notebooks/run_experiments.py -- --config
+    # configs/pet/md.yaml, or as a script:
+    # python notebooks/run_experiments.py --config configs/pet/md.yaml --workers 8
     cli = dict(mo.cli_args())
     script_mode = mo.app_meta().mode == "script"
     return (
@@ -75,29 +112,6 @@ def _(mo, sys):
         script_mode,
         test_split,
     )
-
-
-@app.cell
-def _(mo):
-    mo.md(r"""
-    # Experiments
-
-    Pick a config file and change it below, check which runs it makes and what they would send,
-    then run them while the scores so far update after every document. Runs are saved in
-    `res/pred/<config>/run-<i>/` (see `src/experiments/runner.py`); a config that was run before
-    resumes its unfinished runs. The results of all runs are in `notebooks/eval_table.py`.
-
-    As a script, the notebook runs a config without the editor, like this:
-
-    ```bash
-    uv run python notebooks/run_experiments.py --config configs/pet/md.yaml --only 'gemma-4-31b-*' --workers 4
-    ```
-
-    `--only` takes a pattern of config names and can be repeated; add `--export` to write every
-    run's `test-predictions.jsonl`, or `--check` to check the data against uq-pet-token
-    (`--check-rebuild` also rebuilds its splits).
-    """)
-    return
 
 
 @app.cell
@@ -119,24 +133,34 @@ def _(CONFIG_DIR, REPO_DIR, cli, mo):
     return (config_file,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(REPO_DIR, config_file, mo):
     # changing the file starts over from what it holds
     config_text = (REPO_DIR / config_file.value).read_text(encoding="utf8")
     editor = mo.ui.code_editor(value=config_text, language="yaml", min_height=160)
     save = mo.ui.run_button(label="Save to the file", kind="warn")
-    mo.vstack([
-        mo.md("## 1. Configuration"),
-        config_file,
-        editor,
-        mo.md(
-            "Changes apply to the runs below without saving; see `configs/README.md` for the keys. "
-            "A config with `model` is named after the file, so changing its model or prompts "
-            "makes its existing runs impossible to resume: rename the file, or use `models`, "
-            "whose entries are named by their `name`."
-        ),
-        save,
-    ])
+    mo.vstack(
+        [
+            mo.md(
+                "## 1. Configuration\n"
+                "The config file's runs, as edited here: changes apply to the runs below without "
+                "saving."
+            ),
+            config_file,
+            editor,
+            save,
+            mo.accordion(
+                {
+                    "How to read this": mo.md("""
+    - `configs/README.md` lists the keys, and which reasoning efforts each model accepts.
+    - A config with `model` is named after the file, so changing its model or prompts makes
+      its existing runs impossible to resume: rename the file, or use `models`, whose entries
+      are named by their `name`.
+    """)
+                }
+            ),
+        ]
+    )
     return config_text, editor, save
 
 
@@ -174,7 +198,10 @@ def _(batch, cli, configs, mo):
         full_width=True,
     )
     workers = mo.ui.number(
-        start=1, stop=32, step=1, value=int(cli.get("workers", 4)),
+        start=1,
+        stop=32,
+        step=1,
+        value=int(cli.get("workers", 4)),
         label="Documents at the same time per run",
     )
     mo.vstack([selection, workers]) if configs else None
@@ -191,7 +218,6 @@ def _(configs, selection):
 def _(datasets, test_split):
     _cache = {}
 
-
     def gold_data(dataset_name):
         """Gold documents and test sentences of a dataset, read once."""
         if dataset_name not in _cache:
@@ -202,7 +228,6 @@ def _(datasets, test_split):
             }
         return _cache[dataset_name]
 
-
     def input_documents(config):
         """The documents a run of the config annotates."""
         _dataset = datasets.DATASETS[config.dataset]
@@ -210,7 +235,7 @@ def _(datasets, test_split):
             _documents = test_split.sentence_documents(gold_data(config.dataset)["test"])
         else:
             _documents = gold_data(config.dataset)["documents"]
-        return _documents[:config.max_documents]
+        return _documents[: config.max_documents]
 
     return gold_data, input_documents
 
@@ -222,7 +247,7 @@ def _(mo):
     return get_runs_changed, set_runs_changed
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(
     PRED_DIR,
     batch,
@@ -254,26 +279,34 @@ def _(
                 _state = "done"
             _metrics_file = _directory / "metrics.json"
             _metrics = json.loads(_metrics_file.read_text()) if _metrics_file.exists() else {}
-            _rows.append({
-                "config": _config.name,
-                "run": _run,
-                "dataset": _config.dataset,
-                "task": _config.task,
-                "model": _config.model,
-                "reasoning": _config.reasoning_effort or "",
-                "documents": f"{_done}/{_planned}",
-                "state": _state,
-                "MD F1": percent(_metrics.get("md", {}).get("macro", {}).get("f1", {}).get("mean")),
-                "test F1": percent(_metrics.get("test", {}).get("entity_f1")),
-            })
+            _rows.append(
+                {
+                    "config": _config.name,
+                    "run": _run,
+                    "dataset": _config.dataset,
+                    "task": _config.task,
+                    "model": _config.model,
+                    "reasoning": _config.reasoning_effort or "",
+                    "documents": f"{_done}/{_planned}",
+                    "state": _state,
+                    "MD F1": percent(
+                        _metrics.get("md", {}).get("macro", {}).get("f1", {}).get("mean")
+                    ),
+                    "test F1": percent(_metrics.get("test", {}).get("entity_f1")),
+                }
+            )
     stack(
         mo.md("### Runs"),
         *[mo.callout(p, kind="danger") for p in _problems],
-        mo.ui.table(_rows, selection=None, pagination=False) if _rows else mo.md("No config selected."),
+        mo.ui.table(_rows, selection=None, pagination=False)
+        if _rows
+        else mo.md("No config selected."),
         mo.md(
             "A run that can't be resumed stops the run of its config; see its reason in the "
             "prompt preview."
-        ) if any(r["state"].startswith("can't") for r in _rows) else None,
+        )
+        if any(r["state"].startswith("can't") for r in _rows)
+        else None,
     )
     return
 
@@ -300,7 +333,7 @@ def _(input_documents, mo, preview_config):
     return (preview_document,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(PRED_DIR, json, mo, pre, preview_config, preview_document, runner, stack):
     mo.stop(preview_config.value is None or preview_document.value is None, mo.md("## 2. Prompts"))
     _config = preview_config.value
@@ -312,24 +345,36 @@ def _(PRED_DIR, json, mo, pre, preview_config, preview_document, runner, stack):
         _instruction, _user = (m["content"][0]["text"] for m in _params.pop("messages"))
         _parameters = json.dumps(_params)
         _tabs[f"{_step}: instruction"] = stack(
-            mo.md(f"The {_annotator.instruction_role} message, {len(_instruction.split()):,} "
-                  "words, the same for every document."),
+            mo.md(
+                f"The {_annotator.instruction_role} message, {len(_instruction.split()):,} "
+                "words, the same for every document."
+            ),
             pre(_instruction),
         )
         _tabs[f"{_step}: document"] = stack(
             mo.md(f"The user message, {len(_user.split()):,} words."),
-            mo.md("The relation step gets the document with the predicted mentions; here the "
-                  "gold mentions stand in for them.") if _step == "relations" else None,
+            mo.md(
+                "The relation step gets the document with the predicted mentions; here the "
+                "gold mentions stand in for them."
+            )
+            if _step == "relations"
+            else None,
             pre(_user),
         )
     _problems = [
         f"run {_run}: {_problem}"
         for _run in range(1, _config.repeats + 1)
-        if (_problem := runner.resume_problem(runner.run_dir(PRED_DIR, _config, _run), _config, _run))
+        if (
+            _problem := runner.resume_problem(
+                runner.run_dir(PRED_DIR, _config, _run), _config, _run
+            )
+        )
     ]
     stack(
-        mo.md("## 2. Prompts\n\nWhat the selected runs would send, built by the same code that "
-              "sends it (`runner.build_annotators`)."),
+        mo.md(
+            "## 2. Prompts\nWhat the selected runs would send, built by the same code that "
+            "sends it (`runner.build_annotators`)."
+        ),
         mo.hstack([preview_config, preview_document], justify="start"),
         *[mo.callout(p, kind="warn") for p in _problems],
         mo.md(f"Request parameters besides the messages: `{_parameters}`"),
@@ -338,22 +383,36 @@ def _(PRED_DIR, json, mo, pre, preview_config, preview_document, runner, stack):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo, selected):
     run_button = mo.ui.run_button(
         label=f"Run {len(selected)} config{'s' if len(selected) != 1 else ''}",
         kind="success",
         disabled=not selected,
     )
-    mo.vstack([
-        mo.md(
-            "## 3. Run\n\nThe scores below update after every document: on the documents done "
-            "so far (MD/RE F1, macro over documents, lenient), and on the test sentences among "
-            "them (test F1 exact and partial, like uq-pet-token). Stop the cell to interrupt; the "
-            "documents being annotated are finished and saved, and running again resumes."
-        ),
-        run_button,
-    ])
+    mo.vstack(
+        [
+            mo.md(
+                "## 3. Run\n"
+                "Runs the selected configs; the scores below update after every document. Stop the "
+                "cell to interrupt: the documents being annotated are finished and saved, and "
+                "running again resumes."
+            ),
+            run_button,
+            mo.accordion(
+                {
+                    "How to read this": mo.md("""
+    - **MD F1** and **RE F1** score the documents done so far, macro over documents, with
+      overlapping mentions matching.
+    - **Test F1** scores the test sentences among them like uq-pet-token: exact match, and
+      partial match beside it.
+    - **Dropped lines** are answer lines the parser could not use; **cut off** counts answers
+      that hit the token limit.
+    """)
+                }
+            ),
+        ]
+    )
     return (run_button,)
 
 
@@ -386,7 +445,6 @@ def _(
     finished_rows = []
     _live = {"title": "Starting", "done": 0, "planned": 0, "failed": [], "row": None}
 
-
     def _row(config, run, scores, state):
         return {
             "config": config.name,
@@ -404,46 +462,52 @@ def _(
             "cut off": scores.get("truncated_answers", 0),
         }
 
-
     def _show():
         _rows = finished_rows + ([_live["row"]] if _live["row"] else [])
         _failed = f", skipped for now: {', '.join(_live['failed'])}" if _live["failed"] else ""
-        mo.output.replace(stack(
-            mo.md(f"**{_live['title']}**: {_live['done']}/{_live['planned']} documents{_failed}"),
-            bar(_live["done"], _live["planned"]),
-            mo.ui.table(_rows, selection=None, pagination=False) if _rows else None,
-        ))
-
+        mo.output.replace(
+            stack(
+                mo.md(
+                    f"**{_live['title']}**: {_live['done']}/{_live['planned']} documents{_failed}"
+                ),
+                bar(_live["done"], _live["planned"]),
+                mo.ui.table(_rows, selection=None, pagination=False) if _rows else None,
+            )
+        )
 
     for _i, _config in enumerate(selected, start=1):
         _dataset = datasets.DATASETS[_config.dataset]
         _gold = gold_data(_config.dataset)
-
 
         def _scores(directory, config=_config, gold=_gold, dataset=_dataset):
             return report.scores_so_far(
                 directory, config.task, gold["documents"], gold["test"], dataset.types
             )
 
-
         def _on_document(run, directory, document_id, error, config=_config, scores=_scores):
             if error is not None:
                 _live["failed"].append(document_id)
             _so_far = scores(directory)
             _live.update(
-                title=f"{config.name}, run {run}/{config.repeats}", done=_so_far["documents"],
+                title=f"{config.name}, run {run}/{config.repeats}",
+                done=_so_far["documents"],
                 row=_row(config, run, _so_far, "running"),
             )
             _show()
 
-
         _live.update(
-            title=f"{_config.name} ({_i}/{len(selected)})", done=0, failed=[], row=None,
+            title=f"{_config.name} ({_i}/{len(selected)})",
+            done=0,
+            failed=[],
+            row=None,
             planned=len(input_documents(_config)),
         )
         _show()
         for _result in batch.run_config(
-            _config, _clients[_config.provider], int(workers.value), PRED_DIR,
+            _config,
+            _clients[_config.provider],
+            int(workers.value),
+            PRED_DIR,
             on_document=_on_document,
         ):
             _state = f"failed: {_result.error}" if _result.error else "done"
@@ -463,28 +527,35 @@ def _(
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     export_button = mo.ui.run_button(label="Export test predictions")
     rebuild = mo.ui.checkbox(label="also rebuild the splits with uq-pet-token's code (slow)")
     check_button = mo.ui.run_button(label="Check the data")
-    mo.vstack([
-        mo.md(
-            "## 4. For the paper\n\n"
-            "**Test predictions for uq-pet-token.** Writes `test-predictions.jsonl` next to every "
-            "run's `pet.jsonl` (the test sentences of its dataset with predicted BIO tags). Runs "
-            "write theirs when they are scored; this redoes all of them, e.g. after a change to "
-            "`eval.test_split`."
-        ),
-        export_button,
-        mo.md(
-            "**Same data and scoring as uq-pet-token?** Compares `res/gold/` with the test gold "
-            "stored in uq-pet-token's reported supervised runs, rescores those runs' predictions "
-            "against their `results.csv`, checks that every run here used today's gold files "
-            "and that no test sentence is in a prompt (see `src/experiments/checks.py`)."
-        ),
-        mo.hstack([check_button, rebuild], justify="start"),
-    ])
+    mo.vstack(
+        [
+            mo.md(
+                "## 4. For the paper\n"
+                "Files uq-pet-token reads, and a check that both projects use the same data "
+                "and scoring."
+            ),
+            mo.md(
+                "### Test predictions for uq-pet-token\n"
+                "Writes `test-predictions.jsonl` next to every run's `pet.jsonl`: the test "
+                "sentences of its dataset with predicted BIO tags. Runs write theirs when they "
+                "are scored; this redoes all of them, e.g. after a change to `eval.test_split`."
+            ),
+            export_button,
+            mo.md(
+                "### Same data and scoring as uq-pet-token?\n"
+                "Compares `res/gold/` with the test gold stored in uq-pet-token's reported "
+                "supervised runs, rescores those runs' predictions against their `results.csv`, "
+                "checks that every run here used today's gold files and that no test sentence "
+                "is in a prompt (see `src/experiments/checks.py`)."
+            ),
+            mo.hstack([check_button, rebuild], justify="start"),
+        ]
+    )
     return check_button, export_button, rebuild
 
 
@@ -517,14 +588,16 @@ def _(check_button, checks, cli, mo, rebuild, script_mode):
         print(*_report.notes, sep="\n")
         if not _report.ok:
             raise RuntimeError("A data check failed.")
-    mo.vstack([
-        mo.callout(
-            "All checks passed." if _report.ok else "A check failed.",
-            kind="success" if _report.ok else "danger",
-        ),
-        mo.ui.table(_rows, selection=None, pagination=False),
-        mo.md("\n".join(f"- {n}" for n in _report.notes)),
-    ])
+    mo.vstack(
+        [
+            mo.callout(
+                "All checks passed." if _report.ok else "A check failed.",
+                kind="success" if _report.ok else "danger",
+            ),
+            mo.ui.table(_rows, selection=None, pagination=False),
+            mo.md("\n".join(f"- {n}" for n in _report.notes)),
+        ]
+    )
     return
 
 

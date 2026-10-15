@@ -30,6 +30,40 @@
         "--no-token"
       ],
       "port": 2721
+    },
+    {
+      "name": "llm-eval-table",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": [
+        "run",
+        "--project",
+        "llm-annotation-eval",
+        "marimo",
+        "run",
+        "llm-annotation-eval/notebooks/eval_table.py",
+        "--headless",
+        "--port",
+        "2722",
+        "--no-token"
+      ],
+      "port": 2722
+    },
+    {
+      "name": "llm-run-experiments",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": [
+        "run",
+        "--project",
+        "llm-annotation-eval",
+        "marimo",
+        "run",
+        "llm-annotation-eval/notebooks/run_experiments.py",
+        "--headless",
+        "--port",
+        "2723",
+        "--no-token"
+      ],
+      "port": 2723
     }
   ]
 }
