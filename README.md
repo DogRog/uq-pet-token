@@ -389,7 +389,7 @@ bash scripts/run_stochastic_uq_all_models.sh --dry-run
 bash scripts/run_stochastic_uq_all_models.sh
 ```
 
-Chapter 6 of `notebooks/paper_results.py` compares Gumbel noise with top-K. No notebook
+Chapter 8 of `notebooks/paper_results.py` compares Gumbel noise with top-K. No notebook
 analyzes word form cap runs; they are not part of the paper rerun.
 
 ### 3. Supervised upper bound

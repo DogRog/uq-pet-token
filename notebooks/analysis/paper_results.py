@@ -1,14 +1,19 @@
 """Load the paper rerun's saved results across datasets and models; nothing is trained.
 
 Every loader reads `results/<stage>/<sweep>/` and keys rows by dataset and model, taken
-from each sweep's plan, so sweep folder names never need parsing.
+from each sweep's plan, so sweep folder names never need parsing. Loaders make the
+dataset, model, and acquisition columns Enums, so sorting on them follows the paper's
+order; derived tables keep their inputs' types.
 """
 
 import json
+import statistics
 from functools import cache
 from pathlib import Path
 
+import numpy as np
 import polars as pl
+from scipy import stats
 from seqeval.metrics.sequence_labeling import get_entities
 
 from uq_pet import data_prep
@@ -25,12 +30,26 @@ MODELS = {
 MODEL_ORDER = list(MODELS.values())
 DATASETS = {"pet": "PET", "quishpi": "Quishpi", "medical": "Medical"}
 DATASET_ORDER = list(DATASETS.values())
+ACQUISITIONS = ["Top-K", "Gumbel noise"]
 STAGES = {
     "random_baseline_search": "Random-baseline tuning",
     "best_uq": "Best UQ",
     "supervised": "Supervised baseline",
     "random_search": "30-config random sweep",
 }
+SETTING = ["dataset", "model", "acquisition", "uq_metric"]
+# One run: a setting's model seed in one arm.
+RUN = [*SETTING, "seed", "arm"]
+_ENUMS = {
+    "dataset": pl.Enum(DATASET_ORDER),
+    "model": pl.Enum(MODEL_ORDER),
+    "acquisition": pl.Enum(ACQUISITIONS),
+}
+
+
+def _ordered(frame: pl.DataFrame) -> pl.DataFrame:
+    """Cast the dataset, model, and acquisition columns present to their Enums."""
+    return frame.cast({column: enum for column, enum in _ENUMS.items() if column in frame.columns})
 
 
 def _sweeps(stage_root: Path):
@@ -84,47 +103,55 @@ def sweep_status(results_root: Path) -> pl.DataFrame:
                     "sweep": sweep_dir.name,
                 }
             )
-    return pl.DataFrame(rows).with_columns(
+    return _ordered(pl.DataFrame(rows)).with_columns(
         ((pl.col("complete") == pl.col("planned")) & pl.col("tested")).alias("done")
     )
 
 
-def best_uq_curves(results_root: Path) -> pl.DataFrame:
-    """Every evaluation row of every completed best-UQ comparison, keyed by its setting."""
+def comparison_curves(results_root: Path, stage: str = "best_uq") -> pl.DataFrame:
+    """Every evaluation row of every completed comparison in a stage, keyed by its setting.
+
+    Rows also carry the comparison's `config_id`, its sampled parameters, and its
+    `run_dir`, so one read of the results serves every chapter and score.
+    """
     frames = []
-    for sweep_dir, plan, summary, dataset, model in _sweeps(results_root / "best_uq"):
+    for sweep_dir, plan, summary, dataset, model in _sweeps(results_root / stage):
         for comparison in (summary or {}).get("comparisons", []):
             if comparison["status"] != "complete":
                 continue
+            run_dir = sweep_dir / comparison["run_dir"]
             frames.append(
-                pl.read_csv(sweep_dir / comparison["run_dir"] / "results.csv").with_columns(
+                pl.read_csv(run_dir / "results.csv").with_columns(
                     dataset=pl.lit(dataset),
                     model=pl.lit(model),
                     acquisition=pl.lit(_acquisition(plan)),
                     uq_metric=pl.lit(comparison["uq_metric"]),
+                    config_id=pl.lit(comparison.get("config_id"), pl.Categorical),
+                    run_dir=pl.lit(str(run_dir), pl.Categorical),
+                    **{
+                        name: pl.lit(value)
+                        for name, value in comparison.get("parameters", {}).items()
+                    },
                 )
             )
-    return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+    return _ordered(pl.concat(frames, how="diagonal_relaxed")) if frames else pl.DataFrame()
 
 
-SETTING = ["dataset", "model", "acquisition", "uq_metric"]
+def arm_series(curves: pl.DataFrame) -> pl.DataFrame:
+    """Label each row's `series`, "random" or its UQ metric, keeping one copy of the random arm.
 
-
-def best_uq_runs(results_root: Path) -> pl.DataFrame:
-    """The run folder of every completed best-UQ comparison, keyed by its setting."""
-    rows = [
-        {
-            "dataset": dataset,
-            "model": model,
-            "acquisition": _acquisition(plan),
-            "uq_metric": comparison["uq_metric"],
-            "run_dir": str(sweep_dir / comparison["run_dir"]),
-        }
-        for sweep_dir, plan, summary, dataset, model in _sweeps(results_root / "best_uq")
-        for comparison in (summary or {}).get("comparisons", [])
-        if comparison["status"] == "complete"
-    ]
-    return pl.DataFrame(rows, schema=[*SETTING, "run_dir"])
+    Each UQ metric's comparison saves the same random arm of its dataset, model, and
+    acquisition, so those rows repeat once per metric; the first metric's copy stays.
+    """
+    shared = ["dataset", "model", "acquisition"]
+    return curves.filter(
+        (pl.col("arm") == "uncertainty")
+        | (pl.col("uq_metric") == pl.col("uq_metric").min().over(shared))
+    ).with_columns(
+        series=pl.when(pl.col("arm") == "random")
+        .then(pl.lit("random"))
+        .otherwise(pl.col("uq_metric"))
+    )
 
 
 @cache
@@ -136,8 +163,9 @@ def _test_split(dataset: str) -> tuple[dict, ...]:
 def load_test_predictions(run_dir: Path) -> tuple[list[dict], pl.DataFrame, list]:
     """Return a run's test sentences with gold `tags`, results rows, and predicted tags.
 
-    Predicted tags come one per results row. predictions.npz stores tags only, so the words come from rebuilding the run's test
-    split from local data; its gold tags must equal the saved ones.
+    Predicted tags come one per results row. predictions.npz stores tags only, so the
+    words come from rebuilding the run's test split from local data; its gold tags must
+    equal the saved ones.
     """
     dataset = json.loads((run_dir / "config.json").read_text())["dataset"]
     test = _test_split(dataset)
@@ -184,73 +212,156 @@ def match_entities(
     )
 
 
-def curve_auc(results: pl.DataFrame, field: str = "entity_f1") -> dict[tuple[int, str], float]:
-    """Return normalized ``field`` AUC over acquired-pool percentage per (seed, arm)."""
-    aucs = {}
-    for (seed, arm), rows in results.group_by("seed", "arm"):
-        rows = rows.sort("round")
-        x = rows["percent_acquired"].to_list()
-        y = rows[field].to_list()
-        if len(x) < 2 or any(right <= left for left, right in zip(x, x[1:], strict=False)):
-            raise ValueError(f"seed={seed}, arm={arm} needs increasing acquisition points")
-        area = sum((x[i + 1] - x[i]) * (y[i] + y[i + 1]) / 2 for i in range(len(x) - 1))
-        aucs[int(seed), str(arm)] = area / (x[-1] - x[0])
-    return aucs
+def arm_scores(curves: pl.DataFrame, field: str, keys: list[str] = SETTING) -> pl.DataFrame:
+    """Per `keys` group, model seed, and arm: normalized `field` AUC and the final score.
+
+    The AUC is the trapezoid area over acquired-pool percentage divided by the span it
+    covers, so it is in the same units as `field`.
+    """
+    x = pl.col("percent_acquired").sort_by("round")
+    y = pl.col(field).sort_by("round")
+    scores = curves.group_by(*keys, "seed", "arm").agg(
+        auc=(x.diff() * (y + y.shift(1)) / 2).sum() / (x.last() - x.first()),
+        final=y.last(),
+        increasing=(pl.len() > 1) & (x.diff().drop_nulls() > 0).all(),
+    )
+    if not scores["increasing"].all():
+        bad = scores.filter(~pl.col("increasing")).row(0, named=True)
+        raise ValueError(f"{bad} needs increasing acquisition points")
+    return scores.drop("increasing")
 
 
-def seed_scores(curves: pl.DataFrame, field: str) -> pl.DataFrame:
-    """Per setting and model seed: both arms' normalized AUC and final score, and their gaps.
+def seed_scores(curves: pl.DataFrame, field: str, keys: list[str] = SETTING) -> pl.DataFrame:
+    """Per `keys` group and model seed: both arms' normalized AUC and final score, and their gaps.
 
     AUC is over acquired-pool percentage, as in the saved summaries, so the seed mean of
-    `gap_auc` equals the summary's gap AUC.
+    `gap_auc` equals the summary's gap AUC. Groups without `field` in every row, such as
+    runs saved before a score existed, are left out.
     """
-    rows = []
-    for key, runs in curves.group_by(SETTING, maintain_order=True):
-        aucs = curve_auc(runs, field)
-        finals = {
-            (seed, arm): score
-            for seed, arm, score in runs.filter(
-                pl.col("round") == pl.col("round").max().over("seed", "arm")
-            )
-            .select("seed", "arm", field)
-            .iter_rows()
-        }
-        for seed in sorted({seed for seed, _ in aucs}):
-            random_final = finals[seed, "random"]
-            uq_final = finals[seed, "uncertainty"]
-            rows.append(
-                dict(zip(SETTING, key, strict=True))
-                | {
-                    "seed": seed,
-                    "random_auc": aucs[seed, "random"],
-                    "uq_auc": aucs[seed, "uncertainty"],
-                    "gap_auc": aucs[seed, "uncertainty"] - aucs[seed, "random"],
-                    "random_final": random_final,
-                    "uq_final": uq_final,
-                    "final_gap": uq_final - random_final,
-                }
-            )
-    return pl.DataFrame(rows)
+    if field not in curves.columns:
+        return pl.DataFrame()
+    scores = arm_scores(curves.filter(pl.col(field).is_not_null().all().over(keys)), field, keys)
 
+    def arm(name, prefix):
+        return scores.filter(pl.col("arm") == name).select(
+            *keys,
+            "seed",
+            pl.col("auc").alias(f"{prefix}_auc"),
+            pl.col("final").alias(f"{prefix}_final"),
+        )
 
-def pool_to_reach(curves: pl.DataFrame, field: str, fraction: float) -> pl.DataFrame:
-    """Pool percentage at which each arm first reaches `fraction` of random's final score.
-
-    The target is per seed: `fraction` times that seed's random-arm score after the
-    whole pool is acquired. Crossings are observed rounds, not interpolated; an arm that
-    never reaches the target gets a null.
-    """
-    final_random = curves.filter(
-        (pl.col("arm") == "random")
-        & (pl.col("round") == pl.col("round").max().over(*SETTING, "seed"))
-    ).select(*SETTING, "seed", (fraction * pl.col(field)).alias("target"))
     return (
-        curves.join(final_random, on=[*SETTING, "seed"])
-        .filter(pl.col(field) >= pl.col("target"))
-        .group_by(*SETTING, "seed", "arm")
-        .agg(pl.col("percent_acquired").min())
-        .pivot(on="arm", index=[*SETTING, "seed"], values="percent_acquired")
-        .rename({"random": "random_pool", "uncertainty": "uq_pool"})
+        arm("random", "random")
+        .join(arm("uncertainty", "uq"), on=[*keys, "seed"], nulls_equal=True)
+        .with_columns(
+            gap_auc=pl.col("uq_auc") - pl.col("random_auc"),
+            final_gap=pl.col("uq_final") - pl.col("random_final"),
+        )
+        .sort(*keys, "seed")
+    )
+
+
+# The sampled parameters `comparison_curves` copies onto each row of the 30-config sweeps.
+CONFIG_PARAMETERS = [
+    "learning_rate",
+    "k",
+    "update_passes",
+    "replay_ratio",
+    "batch_size",
+    "weight_decay",
+]
+
+
+def config_scores(curves: pl.DataFrame, field: str) -> pl.DataFrame:
+    """Per sampled configuration and UQ metric: gaps and random-arm scores, seed means.
+
+    `curves` comes from `comparison_curves(..., "random_search")`. Gaps are computed from
+    the curves, as for best UQ, because the saved summaries hold micro F1 gaps only. The
+    random arm is shared by the UQ metrics of one configuration, so its scores repeat.
+    """
+    parameters = [name for name in CONFIG_PARAMETERS if name in curves.columns]
+    keys = [*SETTING, "config_id", *parameters]
+    seeds = seed_scores(curves, field, keys)
+    if seeds.is_empty():
+        return seeds
+    return seeds.group_by(keys, maintain_order=True).agg(
+        pl.col("gap_auc", "final_gap", "random_auc", "random_final").mean()
+    )
+
+
+def gap_curves(curves: pl.DataFrame, field: str) -> pl.DataFrame:
+    """UQ-minus-random `field` per setting, model seed, and round."""
+    return (
+        curves.select(*RUN, "round", "percent_acquired", field)
+        .pivot(on="arm", index=[*SETTING, "seed", "round", "percent_acquired"], values=field)
+        .with_columns(gap=pl.col("uncertainty") - pl.col("random"))
+    )
+
+
+def score_aggs(field: str) -> list[pl.Expr]:
+    """Mean `f1` and `sd` of `field`, its precision and recall means, and the `runs` count.
+
+    Precision and recall are saved for micro F1 only, so they are null for macro F1.
+    """
+    prefix = field.removesuffix("_f1")
+    return [
+        pl.col(field).mean().alias("f1"),
+        pl.col(field).std().alias("sd"),
+        *(
+            pl.lit(None, pl.Float64).alias(measure)
+            if "macro" in field
+            else pl.col(f"{prefix}_{measure}").mean().alias(measure)
+            for measure in ("precision", "recall")
+        ),
+        pl.len().cast(pl.UInt32).alias("runs"),
+    ]
+
+
+def final_scores(curves: pl.DataFrame, field: str) -> pl.DataFrame:
+    """Final-round scores of each series over model seeds, per dataset, model, acquisition."""
+    keys = ["dataset", "model", "acquisition", "series"]
+    return (
+        arm_series(curves)
+        .filter(pl.col("round") == pl.col("round").max().over(RUN))
+        .group_by(keys)
+        .agg(*score_aggs(field))
+        .sort(keys)
+    )
+
+
+def first_round_reaching(curves: pl.DataFrame, field: str, targets: pl.DataFrame) -> pl.DataFrame:
+    """Pool percentage at which each run's `field` first reaches its target, else null.
+
+    `targets` holds a `target` per its other columns, all of them curve columns. Crossings
+    are observed rounds, not interpolated; a later round can dip below again. A `series`
+    column from `arm_series` is kept.
+    """
+    keys = [column for column in targets.columns if column != "target"]
+    runs = RUN + ["series"] * ("series" in curves.columns)
+    joined = curves.join(targets, on=keys)
+    reached = (
+        joined.filter(pl.col(field) >= pl.col("target"))
+        .group_by(runs)
+        .agg(pl.col("percent_acquired").min().alias("pool"))
+    )
+    return joined.select(runs).unique().join(reached, on=runs, how="left").sort(runs)
+
+
+def median_pool(reach: pl.DataFrame, by: list[str]) -> pl.DataFrame:
+    """Median `first_round_reaching` pool per group, and how many runs reach the target.
+
+    Runs that never reach it rank beyond the pool, so the median is null once half or
+    more of the group's runs miss.
+    """
+    return (
+        reach.group_by(by)
+        .agg(
+            pl.col("pool").fill_null(float("inf")).median(),
+            pl.col("pool").is_not_null().sum().alias("reached"),
+            pl.len().alias("runs"),
+        )
+        .with_columns(pool=pl.when(pl.col("pool").is_finite()).then(pl.col("pool")))
+        .sort(by)
     )
 
 
@@ -274,7 +385,7 @@ def supervised_scores(results_root: Path) -> pl.DataFrame:
                     validation_score=pl.lit(summary["selection"]["validation_score"]),
                 )
             )
-    return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+    return _ordered(pl.concat(frames, how="diagonal_relaxed")) if frames else pl.DataFrame()
 
 
 def type_name(kind: str) -> str:
@@ -331,34 +442,7 @@ def llm_test_scores(llm_root: Path, task: str = "md-test-sentences") -> pl.DataF
                 **evaluate_predictions(gold, read_llm_predictions(predictions_file, dataset)),
             }
         )
-    return pl.DataFrame(rows)
-
-
-def pool_to_match(curves: pl.DataFrame, field: str, targets: pl.DataFrame) -> pl.DataFrame:
-    """Pool percentage at which each arm's seed-mean curve first reaches its dataset's target.
-
-    `targets` has a `target` score per dataset. The random arm is shared by a model's UQ
-    metrics, so it appears once per model; a curve that never reaches the target gets a
-    null.
-    """
-    mean_curves = (
-        curves.with_columns(
-            series=pl.when(pl.col("arm") == "random").then(pl.lit("random")).otherwise("uq_metric")
-        )
-        .group_by("dataset", "model", "series", "round")
-        .agg(pl.col(field).mean(), pl.col("percent_acquired").mean())
-        .join(targets.select("dataset", "target"), on="dataset")
-    )
-    reached = (
-        mean_curves.filter(pl.col(field) >= pl.col("target"))
-        .group_by("dataset", "model", "series")
-        .agg(pl.col("percent_acquired").min().alias("pool"))
-    )
-    return (
-        mean_curves.select("dataset", "model", "series")
-        .unique()
-        .join(reached, on=["dataset", "model", "series"], how="left")
-    )
+    return _ordered(pl.DataFrame(rows))
 
 
 def tuning_winners(results_root: Path) -> pl.DataFrame:
@@ -380,87 +464,27 @@ def tuning_winners(results_root: Path) -> pl.DataFrame:
                 **{name: best[name] for name in plan["search_space"]},
             }
         )
-    return pl.DataFrame(rows)
+    frame = _ordered(pl.DataFrame(rows))
+    return frame.sort("dataset", "model") if rows else frame
 
 
-def random_sweep_comparisons(results_root: Path, field: str) -> pl.DataFrame:
-    """Per configuration and UQ metric of the 30-config sweeps: gaps and random-arm scores.
-
-    Each score comes as an AUC and a final-round value, averaged over model seeds. The
-    random arm is shared by the UQ metrics of one configuration, so its scores repeat.
-    Gaps are computed from each run's curves, as `seed_scores` does for best UQ, because
-    the saved summaries hold micro F1 gaps only; runs without `field` are left out.
-    """
+def dataset_sizes(curves: pl.DataFrame) -> pl.DataFrame:
+    """Split sizes and scoreable pool words of each dataset in `comparison_curves`."""
+    if curves.is_empty():
+        return pl.DataFrame()
     rows = []
-    for sweep_dir, _, summary, dataset, model in _sweeps(results_root / "random_search"):
-        for comparison in (summary or {}).get("comparisons", []):
-            if comparison["status"] != "complete":
-                continue
-            results = pl.read_csv(sweep_dir / comparison["run_dir"] / "results.csv")
-            if field not in results.columns or results[field].is_null().any():
-                continue
-            aucs = curve_auc(results, field)
-            finals = {
-                (seed, arm): score
-                for seed, arm, score in results.filter(
-                    pl.col("round") == pl.col("round").max().over("seed", "arm")
-                )
-                .select("seed", "arm", field)
-                .iter_rows()
+    for (dataset,), runs in curves.group_by("dataset"):
+        config = json.loads((Path(runs["run_dir"][0]) / "config.json").read_text())
+        rows.append(
+            {
+                "dataset": dataset,
+                "bootstrap_sentences": config["seed_sentences"],
+                "pool_sentences": config["pool_sentences"],
+                "test_sentences": config["test_sentences"],
+                "scoreable_pool_words": runs["scoreable_pool_tokens"].max(),
             }
-            seeds = sorted({seed for seed, _ in aucs})
-            rows.append(
-                {
-                    "dataset": dataset,
-                    "model": model,
-                    "config_id": comparison["config_id"],
-                    "uq_metric": comparison["uq_metric"],
-                    "gap_auc": _mean(aucs[s, "uncertainty"] - aucs[s, "random"] for s in seeds),
-                    "final_gap": _mean(
-                        finals[s, "uncertainty"] - finals[s, "random"] for s in seeds
-                    ),
-                    "random_auc": _mean(aucs[s, "random"] for s in seeds),
-                    "random_final": _mean(finals[s, "random"] for s in seeds),
-                    **comparison["parameters"],
-                }
-            )
-    return pl.DataFrame(rows)
-
-
-def _mean(values) -> float:
-    values = list(values)
-    return sum(values) / len(values)
-
-
-def dataset_sizes(results_root: Path) -> pl.DataFrame:
-    """Split sizes and scoreable pool words of each dataset with a best-UQ run."""
-    rows = {}
-    for sweep_dir, _, summary, dataset, _ in _sweeps(results_root / "best_uq"):
-        comparisons = [
-            c for c in (summary or {}).get("comparisons", []) if c["status"] == "complete"
-        ]
-        if dataset in rows or not comparisons:
-            continue
-        run_dir = sweep_dir / comparisons[0]["run_dir"]
-        config = json.loads((run_dir / "config.json").read_text())
-        results = pl.read_csv(run_dir / "results.csv")
-        rows[dataset] = {
-            "dataset": dataset,
-            "bootstrap_sentences": config["seed_sentences"],
-            "pool_sentences": config["pool_sentences"],
-            "test_sentences": config["test_sentences"],
-            "scoreable_pool_words": results["scoreable_pool_tokens"].max(),
-        }
-    return pl.DataFrame(list(rows.values()))
-
-
-def gap_curves(curves: pl.DataFrame, field: str) -> pl.DataFrame:
-    """UQ-minus-random `field` per setting, model seed, and round."""
-    return (
-        curves.select(*SETTING, "seed", "round", "percent_acquired", "arm", field)
-        .pivot(on="arm", index=[*SETTING, "seed", "round", "percent_acquired"], values=field)
-        .with_columns(gap=pl.col("uncertainty") - pl.col("random"))
-    )
+        )
+    return pl.DataFrame(rows).cast({"dataset": curves.schema["dataset"]}).sort("dataset")
 
 
 def config_gap_ttests(comparisons: pl.DataFrame, gap: str = "gap_auc") -> pl.DataFrame:
@@ -469,8 +493,6 @@ def config_gap_ttests(comparisons: pl.DataFrame, gap: str = "gap_auc") -> pl.Dat
     One row per dataset, model, and UQ metric with at least two configurations; Holm and
     Bonferroni adjust across the three planned UQ metrics within each sweep.
     """
-    from scipy import stats
-
     rows = []
     for (dataset, model, metric), group in comparisons.group_by(
         "dataset", "model", "uq_metric", maintain_order=True
@@ -486,7 +508,7 @@ def config_gap_ttests(comparisons: pl.DataFrame, gap: str = "gap_auc") -> pl.Dat
                 "model": model,
                 "uq_metric": metric,
                 "configurations": len(gaps),
-                "mean_gap_pp": 100 * sum(gaps) / len(gaps),
+                "mean_gap_pp": 100 * statistics.fmean(gaps),
                 "ci_low_pp": 100 * ci.low,
                 "ci_high_pp": 100 * ci.high,
                 "configs_favouring_uq": sum(gap > 0 for gap in gaps),
@@ -496,8 +518,10 @@ def config_gap_ttests(comparisons: pl.DataFrame, gap: str = "gap_auc") -> pl.Dat
     if not rows:
         return pl.DataFrame()
     planned = len(UQ_METRICS)
+    keys = ["dataset", "model", "uq_metric"]
     return (
         pl.DataFrame(rows)
+        .cast({column: comparisons.schema[column] for column in keys})
         .with_columns(
             rank=pl.col("p_value").rank("ordinal").over("dataset", "model").cast(pl.Int64),
             bonferroni_p=(planned * pl.col("p_value")).clip(upper_bound=1.0),
@@ -515,13 +539,10 @@ def config_gap_ttests(comparisons: pl.DataFrame, gap: str = "gap_auc") -> pl.Dat
 
 def mean_interval(values: list[float]) -> tuple[float, float, float]:
     """Mean and two-sided 95% t-interval of `values`; one value gives a zero-width interval."""
-    from scipy import stats
-
-    mean = _mean(values)
+    mean = statistics.fmean(values)
     if len(values) < 2:
         return mean, mean, mean
-    sd = (sum((value - mean) ** 2 for value in values) / (len(values) - 1)) ** 0.5
-    half = stats.t.ppf(0.975, len(values) - 1) * sd / len(values) ** 0.5
+    half = stats.t.ppf(0.975, len(values) - 1) * statistics.stdev(values) / len(values) ** 0.5
     return mean, mean - half, mean + half
 
 
@@ -543,30 +564,55 @@ def floor_and_ceiling(curves: pl.DataFrame, supervised: pl.DataFrame, field: str
         pl.len().alias("ceiling_seeds"),
     )
     return floor.join(ceiling, on=["dataset", "model"], how="full", coalesce=True).sort(
-        pl.col("dataset").replace_strict(DATASET_ORDER, list(range(len(DATASET_ORDER)))),
-        pl.col("model").replace_strict(MODEL_ORDER, list(range(len(MODEL_ORDER)))),
+        "dataset", "model"
     )
+
+
+def dataset_bounds(bounds: pl.DataFrame, supervised: pl.DataFrame, field: str) -> pl.DataFrame:
+    """Per dataset: the mean floor over models and the ceiling with its 95% t-interval.
+
+    `bounds` comes from `floor_and_ceiling`. The interval runs over every supervised test
+    run of the dataset (models × seeds), so it covers model choice as well as seeds.
+    """
+    rows = []
+    for (dataset,), group in bounds.group_by("dataset", maintain_order=True):
+        scores = supervised.filter(pl.col("dataset") == dataset)[field].drop_nulls().to_list()
+        ceiling, low, high = mean_interval(scores) if scores else (None, None, None)
+        floor = group["floor"].mean()
+        rows.append(
+            {
+                "dataset": dataset,
+                "floor": floor,
+                "ceiling": ceiling,
+                "ceiling_low": low,
+                "ceiling_high": high,
+                "floor_to_ceiling": None if ceiling is None or floor is None else ceiling - floor,
+                "models": group.drop_nulls("ceiling").height,
+            }
+        )
+    schema = {"dataset": bounds.schema["dataset"], "models": pl.Int64} | {
+        column: pl.Float64
+        for column in ("floor", "ceiling", "ceiling_low", "ceiling_high", "floor_to_ceiling")
+    }
+    return pl.DataFrame(rows, schema=schema).sort("dataset")
 
 
 def scores_at_budgets(curves: pl.DataFrame, field: str, budgets: list[float]) -> pl.DataFrame:
     """Each run's `field` at the given pool percentages, linearly interpolated between rounds.
 
     Models acquire different K per round, so their rounds land on different pool
-    percentages; interpolating puts every run on the same budgets. One row per setting,
-    seed, arm, and budget.
+    percentages; interpolating puts every run on the same budgets. One row per run and
+    budget.
     """
-    import numpy as np
-
     rows = []
-    for key, run in curves.group_by([*SETTING, "seed", "arm"], maintain_order=True):
+    for key, run in curves.group_by(RUN, maintain_order=True):
         run = run.sort("round")
         scores = np.interp(budgets, run["percent_acquired"].to_numpy(), run[field].to_numpy())
         rows += [
-            dict(zip([*SETTING, "seed", "arm"], key, strict=True))
-            | {"budget": float(budget), "score": float(score)}
+            dict(zip(RUN, key, strict=True)) | {"budget": float(budget), "score": float(score)}
             for budget, score in zip(budgets, scores, strict=True)
         ]
-    return pl.DataFrame(rows)
+    return pl.DataFrame(rows).cast({column: curves.schema[column] for column in RUN})
 
 
 def headroom_summary(
@@ -605,26 +651,8 @@ def headroom_summary(
                 "pairs": group.height,
             }
         )
-    return pl.DataFrame(rows).sort([*by, "budget"])
-
-
-def pool_to_ceiling(
-    curves: pl.DataFrame, field: str, ceilings: pl.DataFrame, fraction: float
-) -> pl.DataFrame:
-    """Pool percentage at which each run first reaches `fraction` of its model's ceiling.
-
-    The target is `fraction` times the mean supervised score of the run's dataset and
-    model. Crossings are observed rounds, as in `pool_to_reach`; a run that never
-    reaches the target gets a null.
-    """
-    targets = ceilings.select("dataset", "model", (fraction * pl.col("ceiling")).alias("target"))
-    runs = curves.select(*SETTING, "seed", "arm").unique()
-    reached = (
-        curves.join(targets, on=["dataset", "model"])
-        .filter(pl.col(field) >= pl.col("target"))
-        .group_by(*SETTING, "seed", "arm")
-        .agg(pl.col("percent_acquired").min().alias("pool"))
-    )
-    return runs.join(reached, on=[*SETTING, "seed", "arm"], how="left").sort(
-        *SETTING, "seed", "arm"
+    return (
+        pl.DataFrame(rows)
+        .cast({column: at_budgets.schema[column] for column in by})
+        .sort([*by, "budget"])
     )

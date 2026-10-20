@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.25.1"
+__generated_with = "0.25.2"
 app = marimo.App(width="full")
 
 
@@ -30,11 +30,16 @@ def _(mo):
     - **Top-K** takes the K most uncertain candidates per round; **Gumbel noise** samples
       them in proportion to their scores (ADR 0009).
     - The floating panel switches every chapter between exact match (headline, tuning
-      objective) and partial match (reported only, ADR 0010), and picks the acquisition
-      shown in chapters 3–7. Chapter 11 marks unmatched entities by the chosen matching.
+      objective) and partial match (reported only, ADR 0010). It also picks the
+      acquisition shown in chapters 3–7, the UQ metric of chapters 3 and 6, and the gap
+      of chapters 2, 9, and 10. Chapter 11 marks unmatched entities by the chosen matching.
     - **F1 average** switches every chapter between micro F1 (pooled over all entities,
       the headline) and macro F1 (the mean of per-type F1, so a rare type weighs as much
       as a common one; reported only). Precision and recall exist for micro F1 only.
+    - **Pool to reach a target** (chapters 4, 6, and 7) is the first observed round at
+      which a run reaches its target, not interpolated. Summaries are medians over runs,
+      and a run that never reaches the target ranks beyond the pool, so a median is
+      "not reached" once half the runs miss.
     - Nothing is downloaded or trained.
     """)
                 }
@@ -104,53 +109,102 @@ def _():
 
 
 @app.cell
-def _(FloatingPanel, mo):
+def _(FloatingPanel, mo, pr):
     refresh = mo.ui.run_button(label="Reload results")
     entity_matching = mo.ui.dropdown(
         {"exact": "entity_f1", "partial": "entity_partial_f1"},
         value="exact",
         label="Entity matching",
     )
-    acquisition = mo.ui.dropdown(
-        ["Top-K", "Gumbel noise"], value="Top-K", label="Acquisition (ch. 3–7)"
-    )
     f1_average = mo.ui.dropdown({"micro": "", "macro": "_macro"}, value="micro", label="F1 average")
-    pool_percent = mo.ui.slider(
-        start=0, stop=100, step=1, value=25, label="Pool acquired, % (ch. 3)", show_value=True
+    acquisition = mo.ui.dropdown(pr.ACQUISITIONS, value="Top-K", label="Acquisition")
+    uq_metric = mo.ui.dropdown(pr.UQ_METRICS, value="entropy", label="UQ metric")
+    gap_names = {"gap_auc": "gap AUC", "final_gap": "final F1 gap"}
+    gap = mo.ui.dropdown(
+        {"Gap AUC": "gap_auc", "Final F1 gap": "final_gap"},
+        value="Gap AUC",
+        label="Gap",
     )
-    FloatingPanel(mo.vstack([entity_matching, f1_average, acquisition, pool_percent, refresh]))
-    return acquisition, entity_matching, f1_average, pool_percent, refresh
+    pool_percent = mo.ui.slider(
+        start=0, stop=100, step=1, value=25, label="Pool acquired, %", show_value=True
+    )
+    FloatingPanel(
+        mo.vstack([entity_matching, f1_average, acquisition, uq_metric, gap, pool_percent, refresh])
+    )
+    return (
+        acquisition,
+        entity_matching,
+        f1_average,
+        gap,
+        gap_names,
+        pool_percent,
+        refresh,
+        uq_metric,
+    )
 
 
 @app.cell
-def _(llm_root, pr, refresh, results_root):
+def _(llm_root, pl, pr, refresh, results_root):
     refresh.value
     status = pr.sweep_status(results_root)
-    curves = pr.best_uq_curves(results_root)
+    curves = pr.comparison_curves(results_root)
+    sweep_curves = pr.comparison_curves(results_root, "random_search")
     supervised = pr.supervised_scores(results_root)
-    sizes = pr.dataset_sizes(results_root)
+    sizes = pr.dataset_sizes(curves)
     winners = pr.tuning_winners(results_root)
     llm = pr.llm_test_scores(llm_root)
-    return curves, llm, sizes, status, supervised, winners
+    best_runs = (
+        curves.select(*pr.SETTING, pl.col("run_dir").cast(pl.String)).unique().sort(pr.SETTING)
+        if not curves.is_empty()
+        else pl.DataFrame(schema=[*pr.SETTING, "run_dir"])
+    )
+    # "dataset · model · acquisition · UQ metric" -> the comparison's run folder.
+    run_options = {" · ".join(row[:4]): row[4] for row in best_runs.iter_rows()}
+    return (
+        best_runs,
+        curves,
+        llm,
+        run_options,
+        sizes,
+        status,
+        supervised,
+        sweep_curves,
+        winners,
+    )
 
 
 @app.cell
-def _(curves, entity_matching, f1_average, pr, results_root):
+def _(curves, entity_matching, f1_average, pr, supervised, sweep_curves):
     # entity_f1 -> entity_macro_f1, entity_partial_f1 -> entity_partial_macro_f1.
     field = entity_matching.value.replace("_f1", f"{f1_average.value}_f1")
     matching = entity_matching.selected_key
     score_name = f"{matching}-match {'macro ' if f1_average.value else ''}entity F1"
     seeds = pr.seed_scores(curves, field)
     gaps = pr.gap_curves(curves, field)
-    sweep = pr.random_sweep_comparisons(results_root, field)
-    return field, gaps, matching, score_name, seeds, sweep
+    sweep = pr.config_scores(sweep_curves, field)
+    bounds = pr.floor_and_ceiling(curves, supervised, field)
+    dataset_bounds = pr.dataset_bounds(bounds, supervised, field)
+    return (
+        bounds,
+        dataset_bounds,
+        field,
+        gaps,
+        matching,
+        score_name,
+        seeds,
+        sweep,
+    )
 
 
 @app.cell(hide_code=True)
 def _(mo, pl, pr, sizes, status, winners):
     _stage_order = list(pr.STAGES.values())
-    # Best UQ runs two sweeps per model, Top-K and Gumbel noise.
-    _expected = pl.when(pl.col("stage") == pr.STAGES["best_uq"]).then(10).otherwise(5)
+    # Best UQ runs one sweep per model and acquisition.
+    _expected = (
+        pl.when(pl.col("stage") == pr.STAGES["best_uq"])
+        .then(len(pr.ACQUISITIONS) * len(pr.MODELS))
+        .otherwise(len(pr.MODELS))
+    )
     _progress = (
         status.group_by("stage", "dataset")
         .agg(pl.col("done").sum().alias("finished"), (~pl.col("done")).sum().alias("running"))
@@ -202,12 +256,7 @@ def _(mo, pl, pr, sizes, status, winners):
             mo.accordion(
                 {
                     "Random-baseline validation winners": mo.ui.table(
-                        winners.sort(
-                            pl.col("dataset").replace_strict(
-                                pr.DATASET_ORDER, list(range(len(pr.DATASET_ORDER)))
-                            ),
-                            pl.col("model").replace_strict(pr.MODEL_ORDER, list(range(5))),
-                        ),
+                        winners,
                         selection=None,
                         format_mapping={
                             "validation_score": "{:.3f}",
@@ -224,25 +273,7 @@ def _(mo, pl, pr, sizes, status, winners):
 
 
 @app.cell(hide_code=True)
-def _(curves, field, mo, pl, pr, score_name, supervised):
-    _bounds = pr.floor_and_ceiling(curves, supervised, field)
-    _rows = []
-    for (_dataset,), _group in _bounds.group_by("dataset", maintain_order=True):
-        _ceiling, _low, _high = pr.mean_interval(
-            supervised.filter(pl.col("dataset") == _dataset)[field].to_list()
-        )
-        _floor = _group["floor"].mean()
-        _rows.append(
-            {
-                "dataset": _dataset,
-                "floor": _floor,
-                "ceiling": _ceiling,
-                "ceiling_low": _low,
-                "ceiling_high": _high,
-                "floor_to_ceiling": _ceiling - _floor,
-                "models": _group.drop_nulls("ceiling").height,
-            }
-        )
+def _(bounds, dataset_bounds, mo, score_name):
     _format = {
         column: "{:.3f}"
         for column in ("floor", "ceiling", "ceiling_low", "ceiling_high", "floor_to_ceiling")
@@ -256,13 +287,13 @@ def _(curves, field, mo, pl, pr, score_name, supervised):
                 "(ceiling), averaged over the five models. Every gap in later chapters "
                 "sits between the two; chapter 6 measures how much of that room is left."
             ),
-            mo.ui.table(pl.DataFrame(_rows), selection=None, format_mapping=_format)
-            if _rows
+            mo.ui.table(dataset_bounds, selection=None, format_mapping=_format)
+            if dataset_bounds.height
             else mo.md("No completed runs yet."),
             mo.accordion(
                 {
                     "Per model": mo.ui.table(
-                        _bounds,
+                        bounds,
                         selection=None,
                         format_mapping={
                             "floor": "{:.3f}",
@@ -286,19 +317,10 @@ def _(curves, field, mo, pl, pr, score_name, supervised):
     return
 
 
-@app.cell
-def _(mo):
-    headline_gap = mo.ui.dropdown(
-        {"Gap AUC": "gap_auc", "Final F1 gap": "final_gap"}, value="Gap AUC", label="Gap"
-    )
-    return (headline_gap,)
-
-
 @app.cell(hide_code=True)
-def _(alt, headline_gap, mo, pl, pr, score_name, seeds):
-    _gap = headline_gap.value
+def _(alt, gap, gap_names, mo, pl, pr, score_name, seeds):
+    _gap = gap.value
     _other = "final_gap" if _gap == "gap_auc" else "gap_auc"
-    _names = {"gap_auc": "gap AUC", "final_gap": "final F1 gap"}
     _shown = f"{_gap}_pp"
     _settings = seeds.group_by(pr.SETTING).agg(
         (100 * pl.col("gap_auc").mean()).alias("gap_auc_pp"),
@@ -323,14 +345,14 @@ def _(alt, headline_gap, mo, pl, pr, score_name, seeds):
         mo.stat(
             f"{(seeds[_gap] > 0).sum()}/{seeds.height}",
             label="Model seeds where UQ wins",
-            caption=f"per-seed {_names[_gap]} > 0",
+            caption=f"per-seed {gap_names[_gap]} > 0",
             bordered=True,
         ),
         *[
             mo.stat(
                 f"{_by_dataset[dataset][_shown].mean():+.2f} pp",
-                label=f"Mean {_names[_gap]} · {dataset}",
-                caption=f"{_names[_other]} {_by_dataset[dataset][f'{_other}_pp'].mean():+.2f} pp",
+                label=f"Mean {gap_names[_gap]} · {dataset}",
+                caption=f"{gap_names[_other]} {_by_dataset[dataset][f'{_other}_pp'].mean():+.2f} pp",
                 bordered=True,
             )
             for dataset in pr.DATASET_ORDER
@@ -347,7 +369,7 @@ def _(alt, headline_gap, mo, pl, pr, score_name, seeds):
             _base.mark_rect().encode(
                 color=alt.Color(
                     f"{_shown}:Q",
-                    title=f"{_names[_gap].capitalize()} (pp)",
+                    title=f"{gap_names[_gap].capitalize()} (pp)",
                     scale=alt.Scale(scheme="blueorange", domain=[-_limit, _limit]),
                 ),
                 tooltip=[
@@ -369,7 +391,7 @@ def _(alt, headline_gap, mo, pl, pr, score_name, seeds):
         )
         .properties(width=330, height=190)
         .facet(
-            row=alt.Row("acquisition:N", title=None, sort=["Top-K", "Gumbel noise"]),
+            row=alt.Row("acquisition:N", title=None, sort=pr.ACQUISITIONS),
             column=alt.Column("dataset:N", title=None, sort=pr.DATASET_ORDER),
         )
     )
@@ -377,11 +399,10 @@ def _(alt, headline_gap, mo, pl, pr, score_name, seeds):
         [
             mo.md(
                 "## 2. Headline: UQ beats random at the validation winners\n"
-                f"Test {score_name} {_names[_gap].replace(' F1', '')} for every model, UQ metric, "
+                f"Test {score_name} {gap_names[_gap].replace(' F1', '')} for every model, UQ metric, "
                 "and acquisition, each model at its validation winner with 5 model seeds. "
                 "Cells show the gap in pp and how many seeds favour UQ."
             ),
-            headline_gap,
             mo.hstack(_stats, justify="start", gap=1, wrap=True),
             mo.ui.altair_chart(_heatmap),
             mo.accordion(
@@ -400,9 +421,9 @@ def _(alt, headline_gap, mo, pl, pr, score_name, seeds):
     - The three UQ metrics of one model share its bootstrap and random arm, so they are
       not independent replications; Top-K and Gumbel noise share them too.
     - Seeds share the data split; a seed fixes model initialisation and selection.
-    - **Gap** switches the cards and the heatmap between gap AUC and the final F1 gap:
-      the last round's UQ-minus-random test entity F1, after both arms acquired the whole
-      pool. The final gap is noisy on Quishpi (41 test sentences) and only reflects
+    - The panel's **Gap** switches the cards and the heatmap between gap AUC and the
+      final F1 gap: the last round's UQ-minus-random test entity F1, after both arms
+      acquired the whole pool. The final gap is noisy on Quishpi (41 test sentences) and only reflects
       learning order. Gap AUC is the headline.
     - Chapter 10 checks the same comparison at 30 sampled configurations instead of
       one tuned configuration.
@@ -415,13 +436,12 @@ def _(alt, headline_gap, mo, pl, pr, score_name, seeds):
 
 
 @app.cell(hide_code=True)
-def _(acquisition, mo, pr, seeds):
+def _(acquisition, mo, pr, seeds, uq_metric):
     curve_dataset = mo.ui.dropdown(
         [d for d in pr.DATASET_ORDER if d in seeds["dataset"].unique().to_list()],
         value="PET",
         label="Dataset",
     )
-    curve_metric = mo.ui.dropdown(pr.UQ_METRICS, value="entropy", label="UQ metric")
     curve_view = mo.ui.radio(
         ["F1 curves", "Precision & recall", "Gap curves"],
         value="F1 curves",
@@ -432,17 +452,18 @@ def _(acquisition, mo, pr, seeds):
         [
             mo.md(
                 "## 3. Learning curves\n"
-                f"Test entity F1 against the acquired pool, {acquisition.value} acquisition. "
+                f"Test entity F1 against the acquired pool, {uq_metric.value} against random "
+                f"with {acquisition.value} acquisition. "
                 "**F1 curves** show seed means with ±1 SD bands and the supervised upper "
                 "bound (green dashes); **precision & recall** splits F1 into false "
                 "positives (precision) and missed entities (recall), one row per arm; "
                 "**gap curves** show UQ − random per round. The red line marks the pool "
                 "percentage set in the floating panel."
             ),
-            mo.hstack([curve_dataset, curve_metric, curve_view], justify="start", gap=2),
+            mo.hstack([curve_dataset, curve_view], justify="start", gap=2),
         ]
     )
-    return curve_dataset, curve_metric, curve_view
+    return curve_dataset, curve_view
 
 
 @app.cell(hide_code=True)
@@ -450,7 +471,6 @@ def _(
     acquisition,
     alt,
     curve_dataset,
-    curve_metric,
     curve_view,
     curves,
     field,
@@ -463,6 +483,7 @@ def _(
     score_name,
     series_color,
     supervised,
+    uq_metric,
 ):
     mo.stop(
         curve_view.value == "Precision & recall" and "_macro" in field,
@@ -474,7 +495,6 @@ def _(
             kind="warn",
         ),
     )
-    _metrics = [curve_metric.value]
     _x = alt.X("percent:Q", title="Pool acquired (%)", scale=alt.Scale(domain=[0, 100]))
 
     def _marker(base, panels):
@@ -488,18 +508,13 @@ def _(
             .encode(x=alt.datum(pool_percent.value))
         )
 
-    _color = series_color(_metrics + ["random"] * (curve_view.value != "Gap curves"))
-    _runs = curves.filter(
+    _selected = (
         (pl.col("dataset") == curve_dataset.value)
         & (pl.col("acquisition") == acquisition.value)
-        & pl.col("uq_metric").is_in(_metrics)
-    ).with_columns(
-        series=pl.when(pl.col("arm") == "random")
-        .then(pl.lit("random"))
-        .otherwise(pl.col("uq_metric"))
+        & (pl.col("uq_metric") == uq_metric.value)
     )
-    # The UQ metrics share one random arm; keep a single copy of it.
-    _runs = _runs.filter((pl.col("arm") == "uncertainty") | (pl.col("uq_metric") == _metrics[0]))
+    _color = series_color([uq_metric.value] + ["random"] * (curve_view.value != "Gap curves"))
+    _runs = pr.arm_series(curves.filter(_selected))
     _facet = {"facet": alt.Facet("model:N", title=None, sort=pr.MODEL_ORDER), "columns": 5}
     _size = {"width": 215, "height": 230}
     if curve_view.value == "Precision & recall":
@@ -596,11 +611,7 @@ def _(
         )
     else:
         _data = (
-            gaps.filter(
-                (pl.col("dataset") == curve_dataset.value)
-                & (pl.col("acquisition") == acquisition.value)
-                & pl.col("uq_metric").is_in(_metrics)
-            )
+            gaps.filter(_selected)
             .group_by("model", "uq_metric", "round")
             .agg(
                 pl.col("percent_acquired").mean().alias("percent"),
@@ -665,27 +676,76 @@ def _(mo, pr):
     return (coverage_model,)
 
 
-@app.cell(hide_code=True)
+@app.cell
 def _(
     Path,
     acquisition,
     best_runs,
     coverage_model,
     curve_dataset,
-    curve_metric,
     json,
+    pl,
+    pr,
+    tag_selections,
+    uq_metric,
+):
+    # Parsing the selection logs is slow, so moving the pool slider reuses them.
+    _runs = best_runs.filter(
+        (pl.col("dataset") == curve_dataset.value)
+        & (pl.col("acquisition") == acquisition.value)
+        & (pl.col("uq_metric") == uq_metric.value)
+    )
+    if coverage_model.value != "all five":
+        _runs = _runs.filter(pl.col("model") == coverage_model.value)
+    _frames, coverage_order, coverage_results, coverage_partial = [], None, [], []
+    for _model, _run_dir in _runs.select("model", "run_dir").iter_rows():
+        _results = pl.read_csv(Path(_run_dir) / "results.csv")
+        _ends = _results.group_by("seed", "arm").agg(pl.col("percent_acquired").max())
+        if not (_ends["percent_acquired"] >= 100).all():
+            coverage_partial.append(_model)
+            continue
+        _frame, _order = tag_selections(
+            json.loads((Path(_run_dir) / "selections.json").read_text()), _results, _run_dir
+        )
+        _frames.append(_frame)
+        coverage_order = coverage_order or [pr.tag_name(label) for label in _order]
+        coverage_results.append(_results)
+    # Every run of a dataset shares its pool, so the summaries average over models and seeds.
+    coverage_selections = (
+        pl.concat(_frames, how="diagonal_relaxed").with_columns(
+            pl.col("label").map_elements(pr.tag_name, return_dtype=pl.String)
+        )
+        if _frames
+        else None
+    )
+    return (
+        coverage_order,
+        coverage_partial,
+        coverage_results,
+        coverage_selections,
+    )
+
+
+@app.cell(hide_code=True)
+def _(
+    acquisition,
+    coverage_model,
+    coverage_order,
+    coverage_partial,
+    coverage_results,
+    coverage_selections,
+    curve_dataset,
     make_tag_category_coverage_chart,
     make_tag_coverage_chart,
     mo,
     pl,
     pool_percent,
-    pr,
-    tag_selections,
+    uq_metric,
 ):
     _heading = mo.md(
         "### What each arm acquired by the red line\n"
         f"How much of each gold tag each arm has acquired once {pool_percent.value}% of the "
-        f"pool is labelled: {curve_dataset.value}, {curve_metric.value}, "
+        f"pool is labelled: {curve_dataset.value}, {uq_metric.value}, "
         f"{acquisition.value} acquisition, "
         + (
             "averaged over the five models and their seeds. "
@@ -695,30 +755,8 @@ def _(
         + "The first chart counts each tag against its own tokens in the pool, which keeps "
         "rare tags visible; the second counts it against all scoreable pool tokens."
     )
-    _runs = best_runs.filter(
-        (pl.col("dataset") == curve_dataset.value)
-        & (pl.col("acquisition") == acquisition.value)
-        & (pl.col("uq_metric") == curve_metric.value)
-        & ((pl.col("model") == coverage_model.value) | (coverage_model.value == "all five"))
-    )
-    _frames, _label_order, _partial, _acquired = [], None, [], []
-    for _model, _run_dir in _runs.select("model", "run_dir").iter_rows():
-        _results = pl.read_csv(Path(_run_dir) / "results.csv")
-        _ends = _results.group_by("seed", "arm").agg(pl.col("percent_acquired").max())
-        if not (_ends["percent_acquired"] >= 100).all():
-            _partial.append(_model)
-            continue
-        _frame, _order = tag_selections(
-            json.loads((Path(_run_dir) / "selections.json").read_text()), _results, _run_dir
-        )
-        _frames.append(_frame)
-        _label_order = _label_order or _order
-        _acquired.append(
-            _results.filter(pl.col("percent_acquired") <= pool_percent.value)["n_acquired"].max()
-            or 0
-        )
     mo.stop(
-        not _frames,
+        coverage_selections is None,
         mo.vstack(
             [
                 _heading,
@@ -727,18 +765,19 @@ def _(
             ]
         ),
     )
-    # Every run of a dataset shares its pool, so the summaries average over models and seeds.
-    _selections = pl.concat(_frames, how="diagonal_relaxed").with_columns(
-        pl.col("label").map_elements(pr.tag_name, return_dtype=pl.String)
-    )
-    _label_order = [pr.tag_name(label) for label in _label_order]
+    _acquired = [
+        _results.filter(pl.col("percent_acquired") <= pool_percent.value)["n_acquired"].max() or 0
+        for _results in coverage_results
+    ]
     _note = (
         f"**Acquired words per arm: {min(_acquired):,}**"
         if min(_acquired) == max(_acquired)
         else f"**Acquired words per arm: {min(_acquired):,}–{max(_acquired):,}** across models"
     ) + ", the latest completed round at or below the red line."
-    if _partial:
-        _note += f" Left out because they did not acquire the whole pool: {', '.join(_partial)}."
+    if coverage_partial:
+        _note += (
+            f" Left out because they did not acquire the whole pool: {', '.join(coverage_partial)}."
+        )
     mo.vstack(
         [
             _heading,
@@ -746,12 +785,18 @@ def _(
             mo.md(_note),
             mo.ui.altair_chart(
                 make_tag_category_coverage_chart(
-                    _selections, pool_percent.value, curve_metric.value, label_order=_label_order
+                    coverage_selections,
+                    pool_percent.value,
+                    uq_metric.value,
+                    label_order=coverage_order,
                 )
             ),
             mo.ui.altair_chart(
                 make_tag_coverage_chart(
-                    _selections, pool_percent.value, curve_metric.value, label_order=_label_order
+                    coverage_selections,
+                    pool_percent.value,
+                    uq_metric.value,
+                    label_order=coverage_order,
                 )
             ),
             mo.accordion(
@@ -759,8 +804,8 @@ def _(
                     "How to read this": mo.md("""
     - Bars are means over the model seeds of the chosen model, or over every model and seed
       with **all five**, and include zero counts. The model choice drives these charts
-      only; the curves above always show all five. Both charts use full BIO tags, ordered by how many distinct pool words carry
-      each tag.
+      only; the curves above always show all five. Both charts use full BIO tags, ordered
+      by how many distinct pool words carry each tag.
     - Random acquisition sits near the red line's percentage on every tag in the first
       chart; bars far from it show what the uncertainty arm prioritizes or postpones.
     - Only completed rounds at or below the red line count, without interpolation. Models
@@ -810,29 +855,36 @@ def _(
     mo,
     pl,
     pr,
+    seeds,
     series_color,
     sizes,
     target_fraction,
 ):
-    _reach = pr.pool_to_reach(
-        curves.filter(pl.col("acquisition") == acquisition.value), field, target_fraction.value
+    # Each seed's target is a share of its own random arm's full-pool score.
+    _targets = (
+        seeds.filter(pl.col("acquisition") == acquisition.value)
+        .select(
+            "dataset",
+            "model",
+            "acquisition",
+            "seed",
+            (target_fraction.value * pl.col("random_final")).alias("target"),
+        )
+        .unique()
     )
-    _unreached = _reach["uq_pool"].null_count()
-    # An arm that never reaches the target is counted at the full pool, which favours random.
-    _reach = _reach.with_columns(pl.col("uq_pool").fill_null(100.0))
-    _random = _reach.group_by("dataset", "model").agg(
-        pl.col("random_pool").mean().alias("pool"), pl.lit("random").alias("series")
+    _reach = pr.first_round_reaching(
+        pr.arm_series(curves.filter(pl.col("acquisition") == acquisition.value)),
+        field,
+        _targets,
     )
-    _uq = (
-        _reach.group_by("dataset", "model", "uq_metric")
-        .agg(pl.col("uq_pool").mean().alias("pool"))
-        .rename({"uq_metric": "series"})
-    )
+    _unreached = _reach.filter(pl.col("arm") == "uncertainty")["pool"]
     _points = (
-        pl.concat([_random, _uq.select(_random.columns)])
+        pr.median_pool(_reach, ["dataset", "model", "series"])
         .join(sizes.select("dataset", "scoreable_pool_words"), on="dataset", how="left")
         .with_columns(words=(pl.col("pool") * pl.col("scoreable_pool_words") / 100).round(0))
     )
+    _missing = _points.filter(pl.col("pool").is_null())
+    _points = _points.drop_nulls("pool")
     _span = _points.group_by("dataset", "model").agg(
         pl.col("pool").min().alias("low"), pl.col("pool").max().alias("high")
     )
@@ -858,48 +910,71 @@ def _(
                     "series",
                     alt.Tooltip("pool:Q", format=".1f"),
                     "words",
+                    "reached",
+                    "runs",
                 ],
             ),
         ).properties(title=dataset, width=380, height=180)
         for dataset in pr.DATASET_ORDER
         if dataset in _points["dataset"].unique().to_list()
     ]
-    _summary = (
-        _reach.group_by("dataset")
-        .agg(pl.col("random_pool").mean(), pl.col("uq_pool").mean())
-        .sort(
-            pl.col("dataset").replace_strict(pr.DATASET_ORDER, list(range(len(pr.DATASET_ORDER))))
+    _summary = pr.median_pool(_reach, ["dataset", "arm"])
+
+    def _pool(row):
+        return "not reached" if row["pool"] is None else f"{row['pool']:.0f}%"
+
+    def _card(dataset):
+        rows = {
+            row["arm"]: row
+            for row in _summary.filter(pl.col("dataset") == dataset).iter_rows(named=True)
+        }
+        uq, random = rows["uncertainty"], rows["random"]
+        return mo.stat(
+            f"{_pool(uq)} vs {_pool(random)}",
+            label=f"{dataset}: pool needed, UQ vs random",
+            caption=(
+                f"UQ labels {1 - uq['pool'] / random['pool']:.0%} fewer words"
+                if uq["pool"] is not None and random["pool"]
+                else f"UQ reached it in {uq['reached']}/{uq['runs']} runs"
+            ),
+            bordered=True,
         )
-    )
+
     mo.vstack(
         [
             mo.hstack(
-                [
-                    mo.stat(
-                        f"{row['uq_pool']:.0f}% vs {row['random_pool']:.0f}%",
-                        label=f"{row['dataset']}: pool needed, UQ vs random",
-                        caption=f"UQ labels {100 * (1 - row['uq_pool'] / row['random_pool']):.0f}% fewer words",
-                        bordered=True,
-                    )
-                    for row in _summary.iter_rows(named=True)
-                ],
+                [_card(dataset) for dataset in _summary["dataset"].unique(maintain_order=True)],
                 justify="start",
                 gap=1,
             ),
             mo.ui.altair_chart(alt.hconcat(*_charts).resolve_scale(color="shared")),
             mo.md(
-                f"UQ missed the target in **{_unreached}** seed run(s); they count as the full pool."
+                f"UQ never reached the target in **{_unreached.null_count()}** of "
+                f"{_unreached.len()} runs."
+                + (
+                    " Medians not reached, left out of the chart: "
+                    + ", ".join(
+                        f"{row['dataset']} {row['model']} {row['series']}"
+                        for row in _missing.iter_rows(named=True)
+                    )
+                    + "."
+                    if _missing.height
+                    else ""
+                )
             )
-            if _unreached
+            if _unreached.null_count()
             else mo.md(""),
             mo.accordion(
                 {
                     "How to read this": mo.md("""
     - The target is per model seed: the chosen share of that seed's random-arm F1 after
       the whole pool is acquired. Random always reaches it by 100%.
+    - Each point is the median over the 5 model seeds; the cards take the median over
+      every run of the dataset (models × seeds, and UQ metrics for UQ). Hover a point for
+      its pool share in words and how many runs reached the target.
     - Crossings are the first observed round at or above the target, not interpolated;
-      a later round can dip below again.
-    - Each point averages the 5 model seeds; hover for the pool share in words.
+      a later round can dip below again. A run that never reaches the target ranks
+      beyond the pool.
     """)
                 }
             ),
@@ -912,37 +987,22 @@ def _(
 def _(
     acquisition,
     alt,
+    curves,
     field,
     mo,
     pl,
     pr,
     score_name,
-    seeds,
     series_color,
     supervised,
 ):
-    _arms = seeds.filter(pl.col("acquisition") == acquisition.value)
-    _random = (
-        _arms.filter(pl.col("uq_metric") == pr.UQ_METRICS[0])
-        .group_by("dataset", "model")
-        .agg(
-            pl.col("random_final").mean().alias("f1"),
-            pl.col("random_final").std().alias("sd"),
-            pl.lit("random").alias("series"),
-        )
-    )
-    _uq = (
-        _arms.group_by("dataset", "model", "uq_metric")
-        .agg(pl.col("uq_final").mean().alias("f1"), pl.col("uq_final").std().alias("sd"))
-        .rename({"uq_metric": "series"})
-        .select(_random.columns)
-    )
+    _arms = pr.final_scores(curves.filter(pl.col("acquisition") == acquisition.value), field)
     _sup = supervised.group_by("dataset", "model").agg(
+        pl.lit("supervised").alias("series"),
         pl.col(field).mean().alias("f1"),
         pl.col(field).std().alias("sd"),
-        pl.lit("supervised").alias("series"),
     )
-    _points = pl.concat([_sup, _random, _uq])
+    _points = pl.concat([_sup, _arms.select(_sup.columns)])
     _widest = _points.drop_nulls("sd").sort("sd", descending=True).head(1).to_dicts()
     _spread = (
         f"; seeds vary most for {_widest[0]['model']} on {_widest[0]['dataset']}, "
@@ -981,7 +1041,7 @@ def _(
             pl.col("weight_decay").first(),
             pl.col("epochs").first(),
         )
-        .sort("dataset", pl.col("model").replace_strict(pr.MODEL_ORDER, list(range(5))))
+        .sort("dataset", "model")
     )
     mo.vstack(
         [
@@ -1020,8 +1080,7 @@ def _(
 
 
 @app.cell(hide_code=True)
-def _(mo, pr):
-    headroom_metric = mo.ui.dropdown(pr.UQ_METRICS, value="entropy", label="UQ metric")
+def _(mo):
     ceiling_fraction = mo.ui.slider(
         start=0.8,
         stop=1.0,
@@ -1030,31 +1089,31 @@ def _(mo, pr):
         label="Share of the ceiling to reach",
         show_value=True,
     )
-    return ceiling_fraction, headroom_metric
+    return (ceiling_fraction,)
 
 
 @app.cell(hide_code=True)
 def _(
     acquisition,
     alt,
+    bounds,
     ceiling_fraction,
     curves,
+    dataset_bounds,
     field,
-    headroom_metric,
     mo,
     pl,
     pr,
     score_name,
     series_color,
-    supervised,
+    uq_metric,
 ):
-    BUDGETS = [10.0, 25.0, 50.0]
+    _budgets = [10.0, 25.0, 50.0]
+    _headline_budget = 25.0
+    _bounds = bounds.drop_nulls("ceiling")
     _runs = curves.filter(
-        (pl.col("acquisition") == acquisition.value)
-        & (pl.col("uq_metric") == headroom_metric.value)
-    )
-    _bounds = pr.floor_and_ceiling(curves, supervised, field).drop_nulls("ceiling")
-    _runs = _runs.join(_bounds.select("dataset", "model"), on=["dataset", "model"])
+        (pl.col("acquisition") == acquisition.value) & (pl.col("uq_metric") == uq_metric.value)
+    ).join(_bounds.select("dataset", "model"), on=["dataset", "model"])
     mo.stop(
         _runs.is_empty(),
         mo.md(
@@ -1063,33 +1122,25 @@ def _(
             "dataset and model."
         ),
     )
-    _datasets = [d for d in pr.DATASET_ORDER if d in _runs["dataset"].unique().to_list()]
-    _grid = pr.scores_at_budgets(_runs, field, [float(b) for b in range(0, 101, 2)])
+    _datasets = _runs["dataset"].unique().sort().to_list()
     _curve = (
-        _grid.with_columns(
-            series=pl.when(pl.col("arm") == "random")
-            .then(pl.lit("random"))
-            .otherwise(pl.col("uq_metric"))
-        )
+        pr.arm_series(pr.scores_at_budgets(_runs, field, [float(b) for b in range(0, 101, 2)]))
         .group_by("dataset", "series", "budget")
         .agg((100 * pl.col("score")).mean().alias("score"))
     )
-    _ceilings = []
-    for _dataset in _datasets:
-        _mean, _low, _high = pr.mean_interval(
-            supervised.filter(pl.col("dataset") == _dataset)[field].to_list()
-        )
-        _ceilings.append(
-            {
-                "dataset": _dataset,
-                "ceiling": 100 * _mean,
-                "low": 100 * _low,
-                "high": 100 * _high,
-                "floor": 100 * _bounds.filter(pl.col("dataset") == _dataset)["floor"].mean(),
-            }
-        )
-    _ceilings = pl.DataFrame(_ceilings)
-    _color = series_color(["random", headroom_metric.value, "supervised"])
+    _ceilings = dataset_bounds.select(
+        "dataset",
+        *[
+            (100 * pl.col(column)).alias(name)
+            for column, name in (
+                ("ceiling", "ceiling"),
+                ("ceiling_low", "low"),
+                ("ceiling_high", "high"),
+                ("floor", "floor"),
+            )
+        ],
+    )
+    _color = series_color(["random", uq_metric.value, "supervised"])
     _x = alt.X("budget:Q", title="Pool acquired (%)", scale=alt.Scale(domain=[0, 100]))
 
     def _panel(dataset):
@@ -1122,29 +1173,26 @@ def _(
         ).properties(title=dataset, width=330, height=240)
 
     _figure = alt.hconcat(*[_panel(d) for d in _datasets]).resolve_scale(color="shared")
-    _at = pr.scores_at_budgets(_runs, field, BUDGETS)
-    _order = {
-        "dataset": pl.col("dataset").replace_strict(
-            pr.DATASET_ORDER, list(range(len(pr.DATASET_ORDER)))
+    _at = pr.scores_at_budgets(_runs, field, _budgets)
+    _by_dataset = pr.headroom_summary(_at, _bounds, ["dataset"])
+    _by_model = pr.headroom_summary(_at, _bounds, ["dataset", "model"])
+    _reach = pr.median_pool(
+        pr.first_round_reaching(
+            _runs,
+            field,
+            _bounds.select(
+                "dataset", "model", (ceiling_fraction.value * pl.col("ceiling")).alias("target")
+            ),
         ),
-        "model": pl.col("model").replace_strict(pr.MODEL_ORDER, list(range(5))),
-    }
-    _by_dataset = pr.headroom_summary(_at, _bounds, ["dataset"]).sort(_order["dataset"], "budget")
-    _by_model = pr.headroom_summary(_at, _bounds, ["dataset", "model"]).sort(
-        _order["dataset"], _order["model"], "budget"
-    )
-    _reach = (
-        pr.pool_to_ceiling(_runs, field, _bounds, ceiling_fraction.value)
-        .with_columns(reached=pl.col("pool").is_not_null(), pool=pl.col("pool").fill_null(1e9))
-        .group_by("dataset", "arm")
-        .agg(pl.col("pool").median(), pl.col("reached").sum(), pl.len().alias("runs"))
+        ["dataset", "arm"],
     )
 
     def _pool(dataset, arm):
-        row = _reach.filter((pl.col("dataset") == dataset) & (pl.col("arm") == arm)).row(
-            0, named=True
-        )
-        pool = "not reached" if row["pool"] > 100 else f"{row['pool']:.0f}%"
+        rows = _reach.filter((pl.col("dataset") == dataset) & (pl.col("arm") == arm))
+        if rows.is_empty():
+            return "–", "0/0"
+        row = rows.row(0, named=True)
+        pool = "not reached" if row["pool"] is None else f"{row['pool']:.0f}%"
         return pool, f"{row['reached']}/{row['runs']}"
 
     _cards = []
@@ -1160,32 +1208,24 @@ def _(
             )
         )
 
+    _pp_columns = ("uq", "gap", "gap_low", "gap_high", "ceiling", "headroom")
+
     def _table(summary, keys):
         return summary.select(
             *keys,
             pl.col("budget").alias("pool_pct"),
             (100 * pl.col("random")).alias("random"),
-            *[pl.col(c) * 100 for c in ("uq", "gap", "gap_low", "gap_high", "ceiling", "headroom")],
+            *[pl.col(c) * 100 for c in _pp_columns],
             (100 * pl.col("share_closed")).alias("share_closed_pct"),
             "pairs",
         )
 
     _pp = {
         column: "{:+.1f}" if column.startswith("gap") else "{:.1f}"
-        for column in (
-            "random",
-            "uq",
-            "gap",
-            "gap_low",
-            "gap_high",
-            "ceiling",
-            "headroom",
-            "share_closed_pct",
-        )
+        for column in ("random", *_pp_columns, "share_closed_pct")
     }
-    _half = _by_dataset.filter(pl.col("budget") == 25.0)
     _lines = [
-        f"- **{row['dataset']}**: at 25% of the pool random is "
+        f"- **{row['dataset']}**: at {_headline_budget:.0f}% of the pool random is "
         f"{100 * row['headroom']:.1f} pp below the ceiling; UQ closes "
         + (
             f"{100 * row['share_closed']:.0f}% of that"
@@ -1194,21 +1234,20 @@ def _(
         )
         + f" ({100 * row['gap']:+.1f} pp, 95% CI {100 * row['gap_low']:+.1f} to "
         f"{100 * row['gap_high']:+.1f})."
-        for row in _half.iter_rows(named=True)
+        for row in _by_dataset.filter(pl.col("budget") == _headline_budget).iter_rows(named=True)
     ]
     mo.vstack(
         [
             mo.md(
                 "## 6. How much is left to gain\n"
                 "A gap only means something next to the room it has to grow in. Each "
-                f"panel averages the five models' seeds for {headroom_metric.value} and "
+                f"panel averages the five models' seeds for {uq_metric.value} and "
                 f"random ({acquisition.value} acquisition) between the round-0 floor (grey "
                 "dots) and the supervised ceiling (green band, 95% interval). The table "
                 "reads the same curves at fixed pool budgets: **headroom** is how far "
                 "random still is from the ceiling, **share closed** the part of it UQ "
                 "gains."
             ),
-            headroom_metric,
             mo.ui.altair_chart(_figure),
             mo.callout(mo.md("\n".join(_lines)), kind="neutral") if _lines else mo.md(""),
             mo.ui.table(_table(_by_dataset, ["dataset"]), selection=None, format_mapping=_pp),
@@ -1236,8 +1275,8 @@ def _(
       (ADR 0006); arms can pass it, which makes headroom negative.
     - **Pool to the ceiling** is the first observed round at which a run reaches the
       chosen share of its model's supervised score, unlike chapter 4, whose target is
-      random's own final score. The median counts runs that never reach it as beyond
-      the pool.
+      random's own final score. The cards show the median run, which is "not reached"
+      once half the runs never get there.
     """),
                 }
             ),
@@ -1286,17 +1325,7 @@ def _(
     )
     _configs = (
         llm.group_by("dataset", "config", "reasoning_effort", "llm_model")
-        .agg(
-            pl.col(field).mean().alias("f1"),
-            pl.col(field).std().alias("sd"),
-            pl.col(field.replace("f1", "precision")).mean().alias("precision")
-            if "macro" not in field
-            else pl.lit(None, pl.Float64).alias("precision"),
-            pl.col(field.replace("f1", "recall")).mean().alias("recall")
-            if "macro" not in field
-            else pl.lit(None, pl.Float64).alias("recall"),
-            pl.len().alias("runs"),
-        )
+        .agg(*pr.score_aggs(field))
         .with_columns(
             low=pl.col("f1") - pl.col("sd").fill_null(0),
             high=pl.col("f1") + pl.col("sd").fill_null(0),
@@ -1304,50 +1333,23 @@ def _(
         .sort("dataset", "f1", descending=[False, True])
     )
     _best = _configs.group_by("dataset").agg(pl.all().sort_by("f1").last())
-    _final = curves.filter(
-        (pl.col("acquisition") == acquisition.value)
-        & (pl.col("round") == pl.col("round").max().over(*pr.SETTING, "seed", "arm"))
-    )
-
-    def _final_scores(rows, keys):
-        return rows.group_by(keys).agg(
-            pl.col(field).mean().alias("f1"),
-            pl.col(field).std().alias("sd"),
-            pl.col(field.replace("f1", "precision")).mean().alias("precision")
-            if "macro" not in field
-            else pl.lit(None, pl.Float64).alias("precision"),
-            pl.col(field.replace("f1", "recall")).mean().alias("recall")
-            if "macro" not in field
-            else pl.lit(None, pl.Float64).alias("recall"),
-            pl.len().cast(pl.UInt32).alias("runs"),
-        )
-
+    _arms = curves.filter(pl.col("acquisition") == acquisition.value)
     _columns = ["dataset", "method", "config", "llm_model", "runs", "f1", "sd"]
     _columns += ["precision", "recall"]
     _comparison = pl.concat(
         [
             _configs.with_columns(method=pl.lit("LLM")).select(_columns),
-            _final_scores(
-                _final.filter(
-                    (pl.col("arm") == "random") & (pl.col("uq_metric") == pr.UQ_METRICS[0])
-                ),
-                ["dataset", "model"],
+            pr.final_scores(_arms, field)
+            .with_columns(
+                method=pl.when(pl.col("series") == "random")
+                .then(pl.lit("random"))
+                .otherwise("UQ: " + pl.col("series")),
+                config=pl.col("model").cast(pl.String),
+                llm_model=pl.lit(None, pl.String),
             )
-            .with_columns(method=pl.lit("random"), llm_model=pl.lit(None, pl.String))
-            .rename({"model": "config"})
-            .select(_columns),
-            _final_scores(
-                _final.filter(pl.col("arm") == "uncertainty"), ["dataset", "model", "uq_metric"]
-            )
-            .with_columns(method="UQ: " + pl.col("uq_metric"), llm_model=pl.lit(None, pl.String))
-            .rename({"model": "config"})
             .select(_columns),
         ]
-    ).sort(
-        pl.col("dataset").replace_strict(pr.DATASET_ORDER, [0, 1, 2]),
-        pl.col("f1"),
-        descending=[False, True],
-    )
+    ).sort("dataset", "f1", descending=[False, True])
     _sup = (
         supervised.group_by("dataset", "model")
         .agg(pl.col(field).mean().alias("f1"))
@@ -1366,7 +1368,7 @@ def _(
         if _band_method
         else _sup
     )
-    _datasets = [d for d in pr.DATASET_ORDER if d in set(_configs["dataset"])]
+    _datasets = _configs["dataset"].unique().sort().to_list()
 
     def _panel(dataset):
         rows = _configs.filter(pl.col("dataset") == dataset)
@@ -1413,21 +1415,19 @@ def _(
 
     _chart = alt.hconcat(*[_panel(d) for d in _datasets]).resolve_scale(x="independent")
 
-    _reach = pr.pool_to_match(
-        curves.filter(pl.col("acquisition") == acquisition.value),
-        field,
-        _best.select("dataset", target="f1"),
+    # Each run's pool to reach the best LLM's score of its dataset.
+    _reach = pr.first_round_reaching(
+        pr.arm_series(_arms), field, _best.select("dataset", target="f1")
     )
+    _by_series = pr.median_pool(_reach, ["dataset", "model", "series"])
+    _by_arm = pr.median_pool(_reach, ["dataset", "arm"])
     _series = ["random", *pr.UQ_METRICS]
     _reach_table = (
-        _reach.pivot(on="series", index=["dataset", "model"], values="pool")
-        .select("dataset", "model", *[s for s in _series if s in set(_reach["series"])])
-        .sort(
-            pl.col("dataset").replace_strict(pr.DATASET_ORDER, [0, 1, 2]),
-            pl.col("model").replace_strict(pr.MODEL_ORDER, list(range(5))),
-        )
+        _by_series.pivot(on="series", index=["dataset", "model"], values="pool")
+        .select("dataset", "model", *[s for s in _series if s in set(_by_series["series"])])
+        .sort("dataset", "model")
     )
-    _reach_points = _reach.drop_nulls("pool")
+    _reach_points = _by_series.drop_nulls("pool")
     _reach_chart = (
         alt.Chart(_reach_points)
         .mark_point(size=110, filled=True, opacity=0.9)
@@ -1440,19 +1440,24 @@ def _(
             y=alt.Y("model:N", title=None, sort=pr.MODEL_ORDER),
             color=series_color(_reach_points["series"].to_list()),
             shape=alt.Shape("series:N", title=None, legend=None),
-            tooltip=["dataset", "model", "series", alt.Tooltip("pool:Q", format=".1f")],
+            tooltip=[
+                "dataset",
+                "model",
+                "series",
+                alt.Tooltip("pool:Q", format=".1f"),
+                "reached",
+                "runs",
+            ],
         )
         .properties(width=380, height=200)
         .facet(column=alt.Column("dataset:N", title=None, sort=pr.DATASET_ORDER))
     )
 
-    def _median_pool(dataset, series):
-        pools = _reach.filter((pl.col("dataset") == dataset) & pl.col("series").is_in(series))
-        reached = pools.drop_nulls("pool")
-        return (
-            f"{reached['pool'].median():.0f}%" if reached.height else "never",
-            pools.height - reached.height,
-        )
+    def _median_pool(dataset, arm):
+        rows = _by_arm.filter((pl.col("dataset") == dataset) & (pl.col("arm") == arm))
+        row = rows.row(0, named=True)
+        pool = "not reached" if row["pool"] is None else f"{row['pool']:.0f}%"
+        return f"{pool} ({row['reached']}/{row['runs']} runs reach it)"
 
     def _summary(dataset):
         best = _best.filter(pl.col("dataset") == dataset).row(0, named=True)
@@ -1462,18 +1467,12 @@ def _(
             if sup.height
             else ""
         )
-        if _reach.filter(pl.col("dataset") == dataset).is_empty():
+        if _by_arm.filter(pl.col("dataset") == dataset).height < 2:
             return f"- **{dataset}**: best LLM {best['config']}, {best['f1']:.3f}{sup_text}."
-        random_pool, random_missed = _median_pool(dataset, ["random"])
-        uq_pool, uq_missed = _median_pool(dataset, pr.UQ_METRICS)
-        missed = (
-            f" ({random_missed} random and {uq_missed} UQ curves never get there)"
-            if random_missed or uq_missed
-            else ""
-        )
         return (
             f"- **{dataset}**: best LLM {best['config']}, {best['f1']:.3f}{sup_text}. "
-            f"Median pool to match it: UQ {uq_pool}, random {random_pool}{missed}."
+            f"Median pool to match it: UQ {_median_pool(dataset, 'uncertainty')}, "
+            f"random {_median_pool(dataset, 'random')}."
         )
 
     mo.vstack(
@@ -1502,7 +1501,7 @@ def _(
             mo.ui.altair_chart(_reach_chart),
             mo.accordion(
                 {
-                    "Pool acquired (%) to match the best LLM, per model": mo.ui.table(
+                    "Pool acquired (%) to match the best LLM, median per model": mo.ui.table(
                         _reach_table,
                         selection=None,
                         format_mapping={s: "{:.1f}" for s in _series},
@@ -1518,9 +1517,10 @@ def _(
     - Predictions are rescored here with `evaluate_predictions` on the rebuilt test
       split, so the panel's matching and F1 average apply. Types outside the dataset's
       schema count as wrong.
-    - The best LLM is picked on the test split, which favours the LLM; the pool share is
-      the first round where the seed-mean curve reaches its score, not interpolated. A
-      blank cell means the curve never gets there.
+    - The best LLM is picked on the test split, which favours the LLM. The pool share is
+      each run's first observed round at or above its score, not interpolated; points
+      and the table show the median over model seeds, the summary the median over every
+      run of the arm. A blank cell means the median run never gets there.
     - In the table, random and UQ rows are a classifier's final round, mean ± SD over
       model seeds (`runs`); UQ rows are one per metric, `config` is the classifier.
     - Chapter 11 can show an LLM's predictions next to the token classifiers'.
@@ -1630,21 +1630,12 @@ def _(alt, mo, pl, pr, seeds, stats):
     return
 
 
-@app.cell
-def _(mo):
-    gap_names = {"gap_auc": "gap AUC", "final_gap": "final gap"}
-    _options = {"AUC": "gap_auc", "Final F1": "final_gap"}
-    metric_gap = mo.ui.dropdown(_options, value="AUC", label="Gap in")
-    sweep_gap = mo.ui.dropdown(_options, value="AUC", label="Gap in")
-    return gap_names, metric_gap, sweep_gap
-
-
 @app.cell(hide_code=True)
-def _(alt, gap_names, metric_gap, mo, pl, pr, seeds, series_color):
-    _name = gap_names[metric_gap.value]
+def _(alt, gap, gap_names, mo, pl, pr, seeds, series_color):
+    _name = gap_names[gap.value]
     _means = (
         seeds.group_by(pr.SETTING)
-        .agg((100 * pl.col(metric_gap.value).mean()).alias("gap"))
+        .agg((100 * pl.col(gap.value).mean()).alias("gap"))
         .with_columns(series=pl.col("uq_metric"))
     )
     _bars = (
@@ -1673,7 +1664,7 @@ def _(alt, gap_names, metric_gap, mo, pl, pr, seeds, series_color):
         .first()
     )
     _winners = {}
-    for _acquisition in ["Top-K", "Gumbel noise"]:
+    for _acquisition in pr.ACQUISITIONS:
         _table = (
             _best.filter(pl.col("acquisition") == _acquisition)
             .group_by("dataset", "uq_metric")
@@ -1714,15 +1705,12 @@ def _(alt, gap_names, metric_gap, mo, pl, pr, seeds, series_color):
                 "models. Each table counts how often each metric gave a model its largest "
                 "gap with that acquisition (5 models per dataset)."
             ),
-            metric_gap,
             mo.hstack(
                 [
                     mo.ui.altair_chart(
                         (_bars + _ticks).facet(
                             column=alt.Column("dataset:N", title=None, sort=pr.DATASET_ORDER),
-                            row=alt.Row(
-                                "acquisition:N", title=None, sort=["Top-K", "Gumbel noise"]
-                            ),
+                            row=alt.Row("acquisition:N", title=None, sort=pr.ACQUISITIONS),
                         )
                     ),
                     mo.vstack(
@@ -1749,9 +1737,33 @@ def _(alt, gap_names, metric_gap, mo, pl, pr, seeds, series_color):
 
 
 @app.cell(hide_code=True)
-def _(alt, gap_names, mo, pl, pr, score_name, status, sweep, sweep_gap):
-    _name = gap_names[sweep_gap.value]
-    _ttests = pr.config_gap_ttests(sweep, sweep_gap.value) if sweep.height else pl.DataFrame()
+def _(
+    alt,
+    gap,
+    gap_names,
+    mo,
+    pl,
+    pr,
+    score_name,
+    series_color,
+    status,
+    sweep,
+):
+    _name = gap_names[gap.value]
+    _ttests = pr.config_gap_ttests(sweep, gap.value) if sweep.height else pl.DataFrame()
+    # Each sampled configuration runs once per UQ metric.
+    _progress = status.filter(pl.col("stage") == pr.STAGES["random_search"]).select(
+        "dataset",
+        "model",
+        "done",
+        (pl.col("complete") // len(pr.UQ_METRICS)).alias("configs"),
+        (pl.col("planned") // len(pr.UQ_METRICS)).alias("planned_configs"),
+    )
+    _so_far = (
+        pl.when(pl.col("done"))
+        .then(pl.lit(""))
+        .otherwise(pl.format(" ({}/{} configs so far)", "configs", "planned_configs"))
+    )
     _verdicts = {}
     if _ttests.height:
         for _row in (
@@ -1759,9 +1771,10 @@ def _(alt, gap_names, mo, pl, pr, score_name, status, sweep, sweep_gap):
             .agg(
                 (pl.col("holm_p") < 0.05).sum().alias("significant"),
                 pl.len().alias("metrics"),
-                pl.col("configurations").min(),
             )
-            .sort("dataset", pl.col("model").replace_strict(pr.MODEL_ORDER, list(range(5))))
+            .join(_progress, on=["dataset", "model"])
+            .with_columns(so_far=_so_far)
+            .sort("dataset", "model")
             .iter_rows(named=True)
         ):
             _verdict = (
@@ -1772,40 +1785,21 @@ def _(alt, gap_names, mo, pl, pr, score_name, status, sweep, sweep_gap):
                 else "some metrics"
             )
             _verdicts.setdefault(_verdict, []).append(
-                f"{_row['dataset']} {_row['model']}"
-                + (
-                    f" ({_row['configurations']} configs so far)"
-                    if _row["configurations"] < 30
-                    else ""
-                )
+                f"{_row['dataset']} {_row['model']}{_row['so_far']}"
             )
-    _progress = status.filter(pl.col("stage") == pr.STAGES["random_search"]).select(
-        "dataset",
-        "model",
-        "done",
-        (pl.col("complete") // 3).alias("configs"),
-        (pl.col("planned") // 3).alias("planned_configs"),
-    )
-    _labelled = sweep.join(_progress, on=["dataset", "model"]).with_columns(
-        panel=pl.format(
-            "{} · {}{}",
-            "dataset",
-            "model",
-            pl.when(pl.col("done"))
-            .then(pl.lit(""))
-            .otherwise(pl.format(" ({}/{} so far)", "configs", "planned_configs")),
-        ),
-        gap_pp=100 * pl.col(sweep_gap.value),
+    _labelled = (
+        sweep.join(_progress, on=["dataset", "model"])
+        .sort("dataset", "model", "config_id", "uq_metric")
+        .with_columns(
+            panel=pl.format("{} · {}{}", "dataset", "model", _so_far),
+            gap_pp=100 * pl.col(gap.value),
+            series=pl.col("uq_metric"),
+            # Spread the points of one panel and metric evenly; stable across renders.
+            jitter=(0.618 * pl.int_range(pl.len()).over("dataset", "model", "uq_metric")) % 1,
+        )
     )
     # One row per dataset, models in the usual order.
-    _panels = (
-        _labelled.sort(
-            pl.col("dataset").replace_strict(pr.DATASET_ORDER, [0, 1, 2]),
-            pl.col("model").replace_strict(pr.MODEL_ORDER, list(range(5))),
-        )["panel"]
-        .unique(maintain_order=True)
-        .to_list()
-    )
+    _panels = _labelled["panel"].unique(maintain_order=True).to_list()
     _strip = (
         alt.Chart(_labelled)
         .mark_circle(size=45, opacity=0.7)
@@ -1813,11 +1807,7 @@ def _(alt, gap_names, mo, pl, pr, score_name, status, sweep, sweep_gap):
             x=alt.X("uq_metric:N", title=None, sort=pr.UQ_METRICS, axis=alt.Axis(labelAngle=-30)),
             xOffset=alt.XOffset("jitter:Q"),
             y=alt.Y("gap_pp:Q", title=f"{_name[0].upper()}{_name[1:]} (pp)"),
-            color=alt.Color(
-                "uq_metric:N",
-                legend=None,
-                scale=alt.Scale(domain=pr.UQ_METRICS, range=["#F58518", "#E45756", "#B279A2"]),
-            ),
+            color=series_color(pr.UQ_METRICS).legend(None),
             tooltip=[
                 "config_id",
                 "uq_metric",
@@ -1829,7 +1819,6 @@ def _(alt, gap_names, mo, pl, pr, score_name, status, sweep, sweep_gap):
                 "batch_size",
             ],
         )
-        .transform_calculate(jitter="random()")
     )
     _mean = (
         alt.Chart(_labelled)
@@ -1852,7 +1841,6 @@ def _(alt, gap_names, mo, pl, pr, score_name, status, sweep, sweep_gap):
                 f"typical settings, not just at the winner ({score_name}). The sweep ran "
                 "Top-K acquisition only, so the panel's acquisition choice does not apply."
             ),
-            sweep_gap,
             mo.ui.altair_chart(_chart)
             if sweep.height
             else mo.md("No completed configurations yet."),
@@ -1896,6 +1884,7 @@ def _(alt, gap_names, mo, pl, pr, score_name, status, sweep, sweep_gap):
       configurations finished so far.
     - Configurations are sampled across the whole search space, including poor ones, so
       the spread is far wider than at the validation winners in chapter 2.
+    - Points are spread sideways only to keep them apart; the offset carries no value.
     """)
                 }
             ),
@@ -1905,29 +1894,17 @@ def _(alt, gap_names, mo, pl, pr, score_name, status, sweep, sweep_gap):
 
 
 @app.cell(hide_code=True)
-def _(ParallelCoordinates, gap_names, mo, pl, pr, sweep, sweep_gap):
+def _(ParallelCoordinates, gap, gap_names, mo, pl, pr, sweep):
     mo.stop(sweep.is_empty())
-    config_drivers = [
-        "learning_rate",
-        "k",
-        "update_passes",
-        "replay_ratio",
-        "batch_size",
-        "weight_decay",
-    ]
-    _random = {"gap_auc": "random_auc", "final_gap": "random_final"}[sweep_gap.value]
+    _random = {"gap_auc": "random_auc", "final_gap": "random_final"}[gap.value]
     config_gaps = (
         sweep.group_by("dataset", "model", "config_id")
         .agg(
-            pl.col(config_drivers).first(),
+            pl.col(pr.CONFIG_PARAMETERS).first(),
             (100 * pl.col(_random).first()).alias("random_pp"),
-            (100 * pl.col(sweep_gap.value).mean()).alias("gap_pp"),
+            (100 * pl.col(gap.value).mean()).alias("gap_pp"),
         )
-        .sort(
-            pl.col("dataset").replace_strict(pr.DATASET_ORDER, [0, 1, 2]),
-            pl.col("model").replace_strict(pr.MODEL_ORDER, list(range(5))),
-            "config_id",
-        )
+        .sort("dataset", "model", "config_id")
     )
     drivers_plot = mo.ui.anywidget(
         ParallelCoordinates(
@@ -1935,36 +1912,36 @@ def _(ParallelCoordinates, gap_names, mo, pl, pr, sweep, sweep_gap):
             config_gaps.select(
                 "gap_pp",
                 "random_pp",
-                *reversed(config_drivers[1:]),
+                *reversed(pr.CONFIG_PARAMETERS[1:]),
                 pl.col("learning_rate").log10().alias("log10_learning_rate"),
-                "model",
-                "dataset",
+                pl.col("model").cast(pl.String),
+                pl.col("dataset").cast(pl.String),
             ),
             color_by="gap_pp",
             height=480,
         )
     )
-    _score = "AUC" if sweep_gap.value == "gap_auc" else "final F1"
+    _score = "AUC" if gap.value == "gap_auc" else "final F1"
     mo.vstack(
         [
             mo.md(
                 "### What drives the gap across configurations?\n"
                 "One line per configuration, coloured by `gap_pp`: its "
-                f"{gap_names[sweep_gap.value]} in pp, averaged over the three UQ metrics. "
+                f"{gap_names[gap.value]} in pp, averaged over the three UQ metrics. "
                 f"`random_pp` is the random arm's {_score}. Brush an axis to select the "
                 "lines crossing it, then Keep or Exclude them; drag an axis title to reorder."
             ),
             drivers_plot,
         ]
     )
-    return config_drivers, config_gaps, drivers_plot
+    return config_gaps, drivers_plot
 
 
 @app.cell(hide_code=True)
-def _(config_drivers, config_gaps, drivers_plot, mo, pl, stats):
+def _(config_gaps, drivers_plot, mo, pl, pr, stats):
     # Only Keep and Exclude reach Python; a brush alone does not.
     _kept = config_gaps[drivers_plot.widget.filtered_indices]
-    _columns = [*config_drivers, "random_pp"]
+    _columns = [*pr.CONFIG_PARAMETERS, "random_pp"]
     _rho = pl.DataFrame(
         [
             {"sweep": f"{dataset} · {model}", "configurations": group.height}
@@ -2030,20 +2007,6 @@ def _(config_drivers, config_gaps, drivers_plot, mo, pl, stats):
         ]
     )
     return
-
-
-@app.cell
-def _(pl, pr, refresh, results_root):
-    refresh.value
-    best_runs = pr.best_uq_runs(results_root).sort(
-        pl.col("dataset").replace_strict(pr.DATASET_ORDER, [0, 1, 2]),
-        pl.col("model").replace_strict(pr.MODEL_ORDER, list(range(5))),
-        pl.col("acquisition").replace_strict(["Top-K", "Gumbel noise"], [0, 1]),
-        "uq_metric",
-    )
-    # "dataset · model · acquisition · UQ metric" -> the comparison's run folder.
-    run_options = {" · ".join(row[:4]): row[4] for row in best_runs.iter_rows()}
-    return best_runs, run_options
 
 
 @app.cell
