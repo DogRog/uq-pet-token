@@ -949,11 +949,7 @@ def _(
         .mark_line(point=True)
         .encode(
             x=alt.X("target:Q", title="Target: share of random's full-pool F1 (%)"),
-            y=alt.Y(
-                "efficiency:Q",
-                title=f"Random's labels per {uq_metric.value} label",
-                scale=alt.Scale(type="log"),
-            ),
+            y=alt.Y("efficiency:Q", title=f"Random's labels per {uq_metric.value} label"),
             color=alt.Color("dataset:N", title=None, sort=pr.DATASET_ORDER),
             tooltip=[
                 "dataset",
@@ -2334,7 +2330,6 @@ def _(mo):
       and gives UQ the same settings; chapter 10 is the check that the result does not
       hinge on that choice. The test-tuned random oracle is not part of this rerun.
     - **Partial match** is reported only (ADR 0010); tuning and the headline use exact match.
-    - **Still running.** Chapter 1 lists unfinished sweeps; reload to include them.
     """)
     return
 
