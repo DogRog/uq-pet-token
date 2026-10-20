@@ -30,13 +30,13 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-# the scripts import autoannotate, eval and data from src/, so the tests do too
+# the scripts import autoannotate, eval and experiments from src/, so the tests do too
 pythonpath = ["src"]
 testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-# src/ is the import root, so autoannotate, eval, experiments and data are first-party
+# src/ is the import root, so autoannotate, eval and experiments are first-party
 src = ["src"]
 
 [tool.ruff.lint]
