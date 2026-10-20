@@ -77,3 +77,9 @@ convention = "google"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["notebooks", "scripts"]
+
+[tool.marimo.runtime]
+# Re-import edited notebooks/analysis modules and rerun the cells that use them.
+auto_reload = "autorun"
+# With `marimo edit --watch`, run cells changed on disk instead of marking them stale.
+watcher_on_save = "autorun"

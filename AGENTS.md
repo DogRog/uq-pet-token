@@ -28,6 +28,11 @@ uv run marimo check notebooks/bert_token_uq.py
 `uv run notebooks/bert_token_uq.py` renders synthetic records; it downloads and trains
 only with a validated `--config-json`.
 
+A project hook runs `marimo check` after every notebook edit. For a live notebook, the
+user starts `MARIMO_ENABLE_HOST=1 uv run marimo edit notebooks/ --watch --no-token`;
+use `uv run marimo pair` against it to read errors, outputs, and variables.
+`pyproject.toml` makes it re-import edited `notebooks/analysis` modules on its own.
+
 ## Rules
 
 - Scoring takes label-free pool inputs; read a pool label only after its candidate is
