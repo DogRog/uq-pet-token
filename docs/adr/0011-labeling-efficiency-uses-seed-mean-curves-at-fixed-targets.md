@@ -1,6 +1,6 @@
 # Labeling efficiency uses seed-mean curves at fixed targets
 
-Labeling efficiency and every pool-to-target number (chapters 4, 6, and 7 of `notebooks/paper_results.py`) are read where a model's seed-mean learning curve first reaches a target that is one fixed number per model: a share of its seed-mean final random score, a share of its supervised score, or the best LLM's score. The efficiency is random's pool divided by the uncertainty arm's, averaged across models geometrically. This follows Beck et al. (2021), who define labeling efficiency on averaged curves at fixed accuracies, and it keeps one noisy test score from setting the target.
+Labeling efficiency and every pool-to-target number (chapters 4, 5, and 6 of `notebooks/paper_results.py`) are read where a model's seed-mean learning curve first reaches a target that is one fixed number per model: a share of its seed-mean final random score, a share of its supervised score, or the best LLM's score. The efficiency is random's pool divided by the uncertainty arm's, averaged across models geometrically. This follows Beck et al. (2021), who define labeling efficiency on averaged curves at fixed accuracies, and it keeps one noisy test score from setting the target.
 
 ## Considered Options
 

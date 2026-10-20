@@ -31,12 +31,12 @@ def _(mo):
       them in proportion to their scores (ADR 0009).
     - The floating panel switches every chapter between exact match (headline, tuning
       objective) and partial match (reported only, ADR 0010). It also picks the
-      acquisition shown in chapters 3–7, the UQ metric of chapters 3 and 6, and the gap
-      of chapters 2, 9, and 10. Chapter 11 marks unmatched entities by the chosen matching.
+      acquisition shown in chapters 3–6, the UQ metric of chapters 3 and 5, and the gap
+      of chapters 2, 8, and 9. Chapter 10 marks unmatched entities by the chosen matching.
     - **F1 average** switches every chapter between micro F1 (pooled over all entities,
       the headline) and macro F1 (the mean of per-type F1, so a rare type weighs as much
       as a common one; reported only). Precision and recall exist for micro F1 only.
-    - **Pool to reach a target** (chapters 4, 6, and 7) is the first observed round at
+    - **Pool to reach a target** (chapters 4, 5, and 6) is the first observed round at
       which a model's seed-mean curve reaches a fixed target, not interpolated (ADR 0011).
       **Labeling efficiency** is random's pool divided by UQ's, so above 1 favours UQ;
       across models it is a geometric mean, and a lower bound (≥) where random never
@@ -274,51 +274,6 @@ def _(mo, pl, pr, sizes, status, winners):
 
 
 @app.cell(hide_code=True)
-def _(bounds, dataset_bounds, mo, score_name):
-    _format = {
-        column: "{:.3f}"
-        for column in ("floor", "ceiling", "ceiling_low", "ceiling_high", "floor_to_ceiling")
-    }
-    mo.vstack(
-        [
-            mo.md(
-                "### Floor and ceiling\n"
-                f"Test {score_name} of the bootstrap model before any acquisition (floor) "
-                "and of the supervised baseline trained on the whole labelled pool "
-                "(ceiling), averaged over the five models. Every gap in later chapters "
-                "sits between the two; chapter 6 measures how much of that room is left."
-            ),
-            mo.ui.table(dataset_bounds, selection=None, format_mapping=_format)
-            if dataset_bounds.height
-            else mo.md("No completed runs yet."),
-            mo.accordion(
-                {
-                    "Per model": mo.ui.table(
-                        bounds,
-                        selection=None,
-                        format_mapping={
-                            "floor": "{:.3f}",
-                            "ceiling": "{:.3f}",
-                            "ceiling_sd": "{:.3f}",
-                        },
-                    ),
-                    "How to read this": mo.md("""
-    - The floor is the random arm's round-0 row, which every arm and sweep shares: the
-      bootstrap model trained on the five bootstrap sentences.
-    - The ceiling interval is a 95% t-interval over every supervised test run of the
-      dataset (five models × their seeds), so it covers model choice as well as seeds.
-    - The supervised baseline is an upper bound of this protocol, not of the task: the
-      annotators' own agreement is the real limit, and the small test splits (84 PET,
-      41 Quishpi sentences) make every score noisy.
-    """),
-                }
-            ),
-        ]
-    )
-    return
-
-
-@app.cell(hide_code=True)
 def _(alt, gap, gap_names, mo, pl, pr, score_name, seeds):
     _gap = gap.value
     _other = "final_gap" if _gap == "gap_auc" else "gap_auc"
@@ -426,7 +381,7 @@ def _(alt, gap, gap_names, mo, pl, pr, score_name, seeds):
       final F1 gap: the last round's UQ-minus-random test entity F1, after both arms
       acquired the whole pool. The final gap is noisy on Quishpi (41 test sentences) and only reflects
       learning order. Gap AUC is the headline.
-    - Chapter 10 checks the same comparison at 30 sampled configurations instead of
+    - Chapter 9 checks the same comparison at 30 sampled configurations instead of
       one tuned configuration.
     """),
                 }
@@ -1043,6 +998,57 @@ def _(
 
 
 @app.cell(hide_code=True)
+def _(bounds, dataset_bounds, mo, score_name):
+    _format = {
+        column: "{:.3f}"
+        for column in ("floor", "ceiling", "ceiling_low", "ceiling_high", "floor_to_ceiling")
+    }
+    mo.vstack(
+        [
+            mo.md(
+                "## 5. Against the supervised ceiling\n"
+                "A gap only means something next to the room it has to grow in. This "
+                "chapter bounds every score between the bootstrap model and the supervised "
+                "baseline, checks where both arms end against the ceiling, and measures how "
+                "much of the remaining room UQ closes."
+            ),
+            mo.md(
+                "### Floor and ceiling\n"
+                f"Test {score_name} of the bootstrap model before any acquisition (floor) "
+                "and of the supervised baseline trained on the whole labelled pool "
+                "(ceiling), averaged over the five models."
+            ),
+            mo.ui.table(dataset_bounds, selection=None, format_mapping=_format)
+            if dataset_bounds.height
+            else mo.md("No completed runs yet."),
+            mo.accordion(
+                {
+                    "Per model": mo.ui.table(
+                        bounds,
+                        selection=None,
+                        format_mapping={
+                            "floor": "{:.3f}",
+                            "ceiling": "{:.3f}",
+                            "ceiling_sd": "{:.3f}",
+                        },
+                    ),
+                    "How to read this": mo.md("""
+    - The floor is the random arm's round-0 row, which every arm and sweep shares: the
+      bootstrap model trained on the five bootstrap sentences.
+    - The ceiling interval is a 95% t-interval over every supervised test run of the
+      dataset (five models × their seeds), so it covers model choice as well as seeds.
+    - The supervised baseline is an upper bound of this protocol, not of the task: the
+      annotators' own agreement is the real limit, and the small test splits (84 PET,
+      41 Quishpi sentences) make every score noisy.
+    """),
+                }
+            ),
+        ]
+    )
+    return
+
+
+@app.cell(hide_code=True)
 def _(
     acquisition,
     alt,
@@ -1105,7 +1111,7 @@ def _(
     mo.vstack(
         [
             mo.md(
-                "## 5. Against the supervised upper bound\n"
+                "### Final scores\n"
                 "Final-round test F1 of both arms after acquiring the whole pool, next to "
                 f"the supervised baseline, {acquisition.value} acquisition. Both arms end "
                 "close to the supervised score, so sequential acquisition with replay costs "
@@ -1176,7 +1182,7 @@ def _(
     mo.stop(
         _runs.is_empty(),
         mo.md(
-            "## 6. How much is left to gain\n"
+            "### How much is left to gain\n"
             "Needs completed best-UQ runs with a finished supervised sweep for the same "
             "dataset and model."
         ),
@@ -1309,9 +1315,8 @@ def _(
     mo.vstack(
         [
             mo.md(
-                "## 6. How much is left to gain\n"
-                "A gap only means something next to the room it has to grow in. Each "
-                f"panel averages the five models' seeds for {uq_metric.value} and "
+                "### How much is left to gain\n"
+                f"Each panel averages the five models' seeds for {uq_metric.value} and "
                 f"random ({acquisition.value} acquisition) between the round-0 floor (grey "
                 "dots) and the supervised ceiling (green band, 95% interval). The table "
                 "reads the same curves at fixed pool budgets: **headroom** is how far "
@@ -1401,7 +1406,7 @@ def _(
     mo.stop(
         llm.is_empty(),
         mo.md(
-            "## 7. Against LLM annotation\n"
+            "## 6. Against LLM annotation\n"
             "No finished LLM runs in `llm-annotation-eval/res/pred/`; run "
             "`configs/<dataset>/md-test-sentences.yaml` there."
         ),
@@ -1575,7 +1580,7 @@ def _(
     mo.vstack(
         [
             mo.md(
-                "## 7. Against LLM annotation\n"
+                "## 6. Against LLM annotation\n"
                 "Test score of LLMs that annotate each test sentence from instructions and "
                 "the 5 bootstrap sentences, with no training, next to a band of token "
                 f"classifier scores ({llm_band.selected_key.lower()}, lowest to highest "
@@ -1625,7 +1630,7 @@ def _(
       single runs instead, with the median over models × seeds.
     - In the table, random and UQ rows are a classifier's final round, mean ± SD over
       model seeds (`runs`); UQ rows are one per metric, `config` is the classifier.
-    - Chapter 11 can show an LLM's predictions next to the token classifiers'.
+    - Chapter 10 can show an LLM's predictions next to the token classifiers'.
     """),
                 }
             ),
@@ -1686,7 +1691,7 @@ def _(alt, mo, pl, pr, seeds, stats):
     mo.vstack(
         [
             mo.md(
-                "## 8. Top-K or Gumbel noise?\n"
+                "## 7. Top-K or Gumbel noise?\n"
                 "Each point is one dataset, model, and UQ metric at the validation winner. "
                 "Above the diagonal, Gumbel noise beat Top-K."
             ),
@@ -1802,7 +1807,7 @@ def _(alt, gap, gap_names, mo, pl, pr, seeds, series_color):
     mo.vstack(
         [
             mo.md(
-                "## 9. Which UQ metric?\n"
+                "## 8. Which UQ metric?\n"
                 f"Bars are the mean {_name} over the five models; ticks are the individual "
                 "models. Each table counts how often each metric gave a model its largest "
                 "gap with that acquisition (5 models per dataset)."
@@ -1936,7 +1941,7 @@ def _(
     mo.vstack(
         [
             mo.md(
-                "## 10. Robustness: UQ (Top-K) against random at 30 sampled configurations\n"
+                "## 9. Robustness: UQ (Top-K) against random at 30 sampled configurations\n"
                 "The same 30 configurations, sampled from the tuning search space before any "
                 "results, run with both arms on the test split. This asks whether the "
                 "headline depends on tuning: a positive mean here means UQ helps across "
@@ -2288,13 +2293,13 @@ def _(
     mo.vstack(
         [
             mo.md(
-                "## 11. Gold and predicted entities on the test split\n"
+                "## 10. Gold and predicted entities on the test split\n"
                 "Each best-UQ run saves the predicted tags behind every evaluation row, so "
                 "any round of either arm can be read sentence by sentence. Red dashed "
                 f"outlines mark entities with no {matching} match: on a predicted line, "
                 "spurious entities; on the gold line, entities the first predicted line "
                 "shown missed. The LLM line shows one run of an LLM configuration from "
-                "chapter 7, which annotates the test sentences without training, so it does "
+                "chapter 6, which annotates the test sentences without training, so it does "
                 "not change with the round; grey spans are types outside the schema."
             ),
             mo.hstack(
@@ -2317,7 +2322,7 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md("""
-    ## 12. Caveats
+    ## 11. Caveats
 
     - **Test split sizes.** Quishpi tests on 41 sentences and PET on 84, so single-round
       scores move by several F1 points between seeds. Gap AUC averages over every round
@@ -2327,7 +2332,7 @@ def _(mo):
     - **Shared arms.** A model's three UQ metrics, and its Top-K and Gumbel runs, share one
       bootstrap and one random arm. They are not independent replications.
     - **One tuned configuration.** Chapter 2 tunes the random arm on the validation holdout
-      and gives UQ the same settings; chapter 10 is the check that the result does not
+      and gives UQ the same settings; chapter 9 is the check that the result does not
       hinge on that choice. The test-tuned random oracle is not part of this rerun.
     - **Partial match** is reported only (ADR 0010); tuning and the headline use exact match.
     """)

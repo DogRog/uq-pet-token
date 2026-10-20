@@ -389,7 +389,7 @@ bash scripts/run_stochastic_uq_all_models.sh --dry-run
 bash scripts/run_stochastic_uq_all_models.sh
 ```
 
-Chapter 8 of `notebooks/paper_results.py` compares Gumbel noise with top-K. No notebook
+Chapter 7 of `notebooks/paper_results.py` compares Gumbel noise with top-K. No notebook
 analyzes word form cap runs; they are not part of the paper rerun.
 
 ### 3. Supervised upper bound
@@ -453,8 +453,9 @@ uv run marimo edit notebooks/paper_results.py
 
 The notebook reads saved files and does not train models. It compares every dataset and
 model across the stages, in numbered chapters: progress and random-baseline validation
-winners, the headline gap, learning curves, label efficiency, the supervised bound, top-K
-against Gumbel noise, UQ metrics, the random sweep, and a test-split entity viewer.
+winners, the headline gap, learning curves, label efficiency, the supervised ceiling and how
+much room is left, LLM annotation, top-K against Gumbel noise, UQ metrics, the random sweep,
+and a test-split entity viewer.
 
 ### 5. Appendix: test-tuned random oracle
 
