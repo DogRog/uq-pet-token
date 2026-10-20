@@ -31,7 +31,7 @@ def _(mo):
       them in proportion to their scores (ADR 0009).
     - The floating panel switches every chapter between exact match (headline, tuning
       objective) and partial match (reported only, ADR 0010), and picks the acquisition
-      shown in chapters 3–6. Chapter 10 marks unmatched entities by the chosen matching.
+      shown in chapters 3–7. Chapter 11 marks unmatched entities by the chosen matching.
     - **F1 average** switches every chapter between micro F1 (pooled over all entities,
       the headline) and macro F1 (the mean of per-type F1, so a rare type weighs as much
       as a common one; reported only). Precision and recall exist for micro F1 only.
@@ -112,7 +112,7 @@ def _(FloatingPanel, mo):
         label="Entity matching",
     )
     acquisition = mo.ui.dropdown(
-        ["Top-K", "Gumbel noise"], value="Top-K", label="Acquisition (ch. 3–6)"
+        ["Top-K", "Gumbel noise"], value="Top-K", label="Acquisition (ch. 3–7)"
     )
     f1_average = mo.ui.dropdown({"micro": "", "macro": "_macro"}, value="micro", label="F1 average")
     pool_percent = mo.ui.slider(
@@ -218,6 +218,69 @@ def _(mo, pl, pr, sizes, status, winners):
             )
             if winners.height
             else mo.md(""),
+        ]
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(curves, field, mo, pl, pr, score_name, supervised):
+    _bounds = pr.floor_and_ceiling(curves, supervised, field)
+    _rows = []
+    for (_dataset,), _group in _bounds.group_by("dataset", maintain_order=True):
+        _ceiling, _low, _high = pr.mean_interval(
+            supervised.filter(pl.col("dataset") == _dataset)[field].to_list()
+        )
+        _floor = _group["floor"].mean()
+        _rows.append(
+            {
+                "dataset": _dataset,
+                "floor": _floor,
+                "ceiling": _ceiling,
+                "ceiling_low": _low,
+                "ceiling_high": _high,
+                "floor_to_ceiling": _ceiling - _floor,
+                "models": _group.drop_nulls("ceiling").height,
+            }
+        )
+    _format = {
+        column: "{:.3f}"
+        for column in ("floor", "ceiling", "ceiling_low", "ceiling_high", "floor_to_ceiling")
+    }
+    mo.vstack(
+        [
+            mo.md(
+                "### Floor and ceiling\n"
+                f"Test {score_name} of the bootstrap model before any acquisition (floor) "
+                "and of the supervised baseline trained on the whole labelled pool "
+                "(ceiling), averaged over the five models. Every gap in later chapters "
+                "sits between the two; chapter 6 measures how much of that room is left."
+            ),
+            mo.ui.table(pl.DataFrame(_rows), selection=None, format_mapping=_format)
+            if _rows
+            else mo.md("No completed runs yet."),
+            mo.accordion(
+                {
+                    "Per model": mo.ui.table(
+                        _bounds,
+                        selection=None,
+                        format_mapping={
+                            "floor": "{:.3f}",
+                            "ceiling": "{:.3f}",
+                            "ceiling_sd": "{:.3f}",
+                        },
+                    ),
+                    "How to read this": mo.md("""
+    - The floor is the random arm's round-0 row, which every arm and sweep shares: the
+      bootstrap model trained on the five bootstrap sentences.
+    - The ceiling interval is a 95% t-interval over every supervised test run of the
+      dataset (five models × their seeds), so it covers model choice as well as seeds.
+    - The supervised baseline is an upper bound of this protocol, not of the task: the
+      annotators' own agreement is the real limit, and the small test splits (84 PET,
+      41 Quishpi sentences) make every score noisy.
+    """),
+                }
+            ),
         ]
     )
     return
@@ -341,7 +404,7 @@ def _(alt, headline_gap, mo, pl, pr, score_name, seeds):
       the last round's UQ-minus-random test entity F1, after both arms acquired the whole
       pool. The final gap is noisy on Quishpi (41 test sentences) and only reflects
       learning order. Gap AUC is the headline.
-    - Chapter 9 checks the same comparison at 30 sampled configurations instead of
+    - Chapter 10 checks the same comparison at 30 sampled configurations instead of
       one tuned configuration.
     """),
                 }
@@ -956,6 +1019,233 @@ def _(
     return
 
 
+@app.cell(hide_code=True)
+def _(mo, pr):
+    headroom_metric = mo.ui.dropdown(pr.UQ_METRICS, value="entropy", label="UQ metric")
+    ceiling_fraction = mo.ui.slider(
+        start=0.8,
+        stop=1.0,
+        step=0.01,
+        value=0.95,
+        label="Share of the ceiling to reach",
+        show_value=True,
+    )
+    return ceiling_fraction, headroom_metric
+
+
+@app.cell(hide_code=True)
+def _(
+    acquisition,
+    alt,
+    ceiling_fraction,
+    curves,
+    field,
+    headroom_metric,
+    mo,
+    pl,
+    pr,
+    score_name,
+    series_color,
+    supervised,
+):
+    BUDGETS = [10.0, 25.0, 50.0]
+    _runs = curves.filter(
+        (pl.col("acquisition") == acquisition.value)
+        & (pl.col("uq_metric") == headroom_metric.value)
+    )
+    _bounds = pr.floor_and_ceiling(curves, supervised, field).drop_nulls("ceiling")
+    _runs = _runs.join(_bounds.select("dataset", "model"), on=["dataset", "model"])
+    mo.stop(
+        _runs.is_empty(),
+        mo.md(
+            "## 6. How much is left to gain\n"
+            "Needs completed best-UQ runs with a finished supervised sweep for the same "
+            "dataset and model."
+        ),
+    )
+    _datasets = [d for d in pr.DATASET_ORDER if d in _runs["dataset"].unique().to_list()]
+    _grid = pr.scores_at_budgets(_runs, field, [float(b) for b in range(0, 101, 2)])
+    _curve = (
+        _grid.with_columns(
+            series=pl.when(pl.col("arm") == "random")
+            .then(pl.lit("random"))
+            .otherwise(pl.col("uq_metric"))
+        )
+        .group_by("dataset", "series", "budget")
+        .agg((100 * pl.col("score")).mean().alias("score"))
+    )
+    _ceilings = []
+    for _dataset in _datasets:
+        _mean, _low, _high = pr.mean_interval(
+            supervised.filter(pl.col("dataset") == _dataset)[field].to_list()
+        )
+        _ceilings.append(
+            {
+                "dataset": _dataset,
+                "ceiling": 100 * _mean,
+                "low": 100 * _low,
+                "high": 100 * _high,
+                "floor": 100 * _bounds.filter(pl.col("dataset") == _dataset)["floor"].mean(),
+            }
+        )
+    _ceilings = pl.DataFrame(_ceilings)
+    _color = series_color(["random", headroom_metric.value, "supervised"])
+    _x = alt.X("budget:Q", title="Pool acquired (%)", scale=alt.Scale(domain=[0, 100]))
+
+    def _panel(dataset):
+        bound = _ceilings.filter(pl.col("dataset") == dataset)
+        band = bound.with_columns(series=pl.lit("supervised"))
+        return alt.layer(
+            alt.Chart(band).mark_rect(opacity=0.18).encode(y="low:Q", y2="high:Q", color=_color),
+            alt.Chart(band)
+            .mark_rule(strokeDash=[6, 4], strokeWidth=2)
+            .encode(
+                y=alt.Y("ceiling:Q", title=f"Test {score_name} (%)"),
+                color=_color,
+                tooltip=[
+                    alt.Tooltip("ceiling:Q", title="supervised", format=".1f"),
+                    alt.Tooltip("low:Q", format=".1f"),
+                    alt.Tooltip("high:Q", format=".1f"),
+                ],
+            ),
+            alt.Chart(bound)
+            .mark_rule(color="gray", strokeDash=[2, 3])
+            .encode(y="floor:Q", tooltip=[alt.Tooltip("floor:Q", title="round 0", format=".1f")]),
+            alt.Chart(_curve.filter(pl.col("dataset") == dataset))
+            .mark_line(strokeWidth=2.5)
+            .encode(
+                x=_x,
+                y="score:Q",
+                color=_color,
+                tooltip=["series", "budget", alt.Tooltip("score:Q", format=".1f")],
+            ),
+        ).properties(title=dataset, width=330, height=240)
+
+    _figure = alt.hconcat(*[_panel(d) for d in _datasets]).resolve_scale(color="shared")
+    _at = pr.scores_at_budgets(_runs, field, BUDGETS)
+    _order = {
+        "dataset": pl.col("dataset").replace_strict(
+            pr.DATASET_ORDER, list(range(len(pr.DATASET_ORDER)))
+        ),
+        "model": pl.col("model").replace_strict(pr.MODEL_ORDER, list(range(5))),
+    }
+    _by_dataset = pr.headroom_summary(_at, _bounds, ["dataset"]).sort(_order["dataset"], "budget")
+    _by_model = pr.headroom_summary(_at, _bounds, ["dataset", "model"]).sort(
+        _order["dataset"], _order["model"], "budget"
+    )
+    _reach = (
+        pr.pool_to_ceiling(_runs, field, _bounds, ceiling_fraction.value)
+        .with_columns(reached=pl.col("pool").is_not_null(), pool=pl.col("pool").fill_null(1e9))
+        .group_by("dataset", "arm")
+        .agg(pl.col("pool").median(), pl.col("reached").sum(), pl.len().alias("runs"))
+    )
+
+    def _pool(dataset, arm):
+        row = _reach.filter((pl.col("dataset") == dataset) & (pl.col("arm") == arm)).row(
+            0, named=True
+        )
+        pool = "not reached" if row["pool"] > 100 else f"{row['pool']:.0f}%"
+        return pool, f"{row['reached']}/{row['runs']}"
+
+    _cards = []
+    for _dataset in _datasets:
+        _uq_pool, _uq_reached = _pool(_dataset, "uncertainty")
+        _random_pool, _random_reached = _pool(_dataset, "random")
+        _cards.append(
+            mo.stat(
+                f"{_uq_pool} vs {_random_pool}",
+                label=f"{_dataset}: pool to {ceiling_fraction.value:.0%} of the ceiling",
+                caption=f"UQ vs random, median run; reached by {_uq_reached} vs {_random_reached}",
+                bordered=True,
+            )
+        )
+
+    def _table(summary, keys):
+        return summary.select(
+            *keys,
+            pl.col("budget").alias("pool_pct"),
+            (100 * pl.col("random")).alias("random"),
+            *[pl.col(c) * 100 for c in ("uq", "gap", "gap_low", "gap_high", "ceiling", "headroom")],
+            (100 * pl.col("share_closed")).alias("share_closed_pct"),
+            "pairs",
+        )
+
+    _pp = {
+        column: "{:+.1f}" if column.startswith("gap") else "{:.1f}"
+        for column in (
+            "random",
+            "uq",
+            "gap",
+            "gap_low",
+            "gap_high",
+            "ceiling",
+            "headroom",
+            "share_closed_pct",
+        )
+    }
+    _half = _by_dataset.filter(pl.col("budget") == 25.0)
+    _lines = [
+        f"- **{row['dataset']}**: at 25% of the pool random is "
+        f"{100 * row['headroom']:.1f} pp below the ceiling; UQ closes "
+        + (
+            f"{100 * row['share_closed']:.0f}% of that"
+            if row["share_closed"] is not None
+            else "nothing, because random is already at the ceiling"
+        )
+        + f" ({100 * row['gap']:+.1f} pp, 95% CI {100 * row['gap_low']:+.1f} to "
+        f"{100 * row['gap_high']:+.1f})."
+        for row in _half.iter_rows(named=True)
+    ]
+    mo.vstack(
+        [
+            mo.md(
+                "## 6. How much is left to gain\n"
+                "A gap only means something next to the room it has to grow in. Each "
+                f"panel averages the five models' seeds for {headroom_metric.value} and "
+                f"random ({acquisition.value} acquisition) between the round-0 floor (grey "
+                "dots) and the supervised ceiling (green band, 95% interval). The table "
+                "reads the same curves at fixed pool budgets: **headroom** is how far "
+                "random still is from the ceiling, **share closed** the part of it UQ "
+                "gains."
+            ),
+            headroom_metric,
+            mo.ui.altair_chart(_figure),
+            mo.callout(mo.md("\n".join(_lines)), kind="neutral") if _lines else mo.md(""),
+            mo.ui.table(_table(_by_dataset, ["dataset"]), selection=None, format_mapping=_pp),
+            ceiling_fraction,
+            mo.hstack(_cards, justify="start", gap=1, wrap=True),
+            mo.accordion(
+                {
+                    "Per model": mo.ui.table(
+                        _table(_by_model, ["dataset", "model"]),
+                        selection=None,
+                        page_size=15,
+                        format_mapping=_pp,
+                    ),
+                    "How to read this": mo.md("""
+    - Everything is in F1 points (pp). Models acquire a different K per round, so each
+      run is interpolated linearly onto the same pool percentages before averaging.
+    - **Gap** pairs each model seed's UQ and random scores; its 95% t-interval runs over
+      those pairs (five models × five seeds). Pairs of one model share a bootstrap, so the
+      interval is optimistic.
+    - **Headroom** is the mean supervised score minus the mean random score, each model
+      against its own supervised baseline; **share closed** is the mean gap divided by
+      it, left empty when random already matches the ceiling. Above 100% UQ passes the
+      supervised score; below 0% it trails random.
+    - The ceiling is an upper bound of this protocol, trained on the whole labelled pool
+      (ADR 0006); arms can pass it, which makes headroom negative.
+    - **Pool to the ceiling** is the first observed round at which a run reaches the
+      chosen share of its model's supervised score, unlike chapter 4, whose target is
+      random's own final score. The median counts runs that never reach it as beyond
+      the pool.
+    """),
+                }
+            ),
+        ]
+    )
+    return
+
+
 @app.cell
 def _(mo, pr):
     llm_band = mo.ui.dropdown(
@@ -989,7 +1279,7 @@ def _(
     mo.stop(
         llm.is_empty(),
         mo.md(
-            "## 6. Against LLM annotation\n"
+            "## 7. Against LLM annotation\n"
             "No finished LLM runs in `llm-annotation-eval/res/pred/`; run "
             "`configs/<dataset>/md-test-sentences.yaml` there."
         ),
@@ -1189,7 +1479,7 @@ def _(
     mo.vstack(
         [
             mo.md(
-                "## 6. Against LLM annotation\n"
+                "## 7. Against LLM annotation\n"
                 "Test score of LLMs that annotate each test sentence from instructions and "
                 "the 5 bootstrap sentences, with no training, next to a band of token "
                 f"classifier scores ({llm_band.selected_key.lower()}, lowest to highest "
@@ -1233,7 +1523,7 @@ def _(
       blank cell means the curve never gets there.
     - In the table, random and UQ rows are a classifier's final round, mean ± SD over
       model seeds (`runs`); UQ rows are one per metric, `config` is the classifier.
-    - Chapter 10 can show an LLM's predictions next to the token classifiers'.
+    - Chapter 11 can show an LLM's predictions next to the token classifiers'.
     """),
                 }
             ),
@@ -1294,7 +1584,7 @@ def _(alt, mo, pl, pr, seeds, stats):
     mo.vstack(
         [
             mo.md(
-                "## 7. Top-K or Gumbel noise?\n"
+                "## 8. Top-K or Gumbel noise?\n"
                 "Each point is one dataset, model, and UQ metric at the validation winner. "
                 "Above the diagonal, Gumbel noise beat Top-K."
             ),
@@ -1419,7 +1709,7 @@ def _(alt, gap_names, metric_gap, mo, pl, pr, seeds, series_color):
     mo.vstack(
         [
             mo.md(
-                "## 8. Which UQ metric?\n"
+                "## 9. Which UQ metric?\n"
                 f"Bars are the mean {_name} over the five models; ticks are the individual "
                 "models. Each table counts how often each metric gave a model its largest "
                 "gap with that acquisition (5 models per dataset)."
@@ -1555,7 +1845,7 @@ def _(alt, gap_names, mo, pl, pr, score_name, status, sweep, sweep_gap):
     mo.vstack(
         [
             mo.md(
-                "## 9. Robustness: UQ (Top-K) against random at 30 sampled configurations\n"
+                "## 10. Robustness: UQ (Top-K) against random at 30 sampled configurations\n"
                 "The same 30 configurations, sampled from the tuning search space before any "
                 "results, run with both arms on the test split. This asks whether the "
                 "headline depends on tuning: a positive mean here means UQ helps across "
@@ -1933,13 +2223,13 @@ def _(
     mo.vstack(
         [
             mo.md(
-                "## 10. Gold and predicted entities on the test split\n"
+                "## 11. Gold and predicted entities on the test split\n"
                 "Each best-UQ run saves the predicted tags behind every evaluation row, so "
                 "any round of either arm can be read sentence by sentence. Red dashed "
                 f"outlines mark entities with no {matching} match: on a predicted line, "
                 "spurious entities; on the gold line, entities the first predicted line "
                 "shown missed. The LLM line shows one run of an LLM configuration from "
-                "chapter 6, which annotates the test sentences without training, so it does "
+                "chapter 7, which annotates the test sentences without training, so it does "
                 "not change with the round; grey spans are types outside the schema."
             ),
             mo.hstack(
@@ -1962,7 +2252,7 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md("""
-    ## 11. Caveats
+    ## 12. Caveats
 
     - **Test split sizes.** Quishpi tests on 41 sentences and PET on 84, so single-round
       scores move by several F1 points between seeds. Gap AUC averages over every round
@@ -1972,7 +2262,7 @@ def _(mo):
     - **Shared arms.** A model's three UQ metrics, and its Top-K and Gumbel runs, share one
       bootstrap and one random arm. They are not independent replications.
     - **One tuned configuration.** Chapter 2 tunes the random arm on the validation holdout
-      and gives UQ the same settings; chapter 9 is the check that the result does not
+      and gives UQ the same settings; chapter 10 is the check that the result does not
       hinge on that choice. The test-tuned random oracle is not part of this rerun.
     - **Partial match** is reported only (ADR 0010); tuning and the headline use exact match.
     - **Still running.** Chapter 1 lists unfinished sweeps; reload to include them.

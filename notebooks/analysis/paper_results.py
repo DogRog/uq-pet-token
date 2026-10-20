@@ -511,3 +511,120 @@ def config_gap_ttests(comparisons: pl.DataFrame, gap: str = "gap_auc") -> pl.Dat
         )
         .drop("rank")
     )
+
+
+def mean_interval(values: list[float]) -> tuple[float, float, float]:
+    """Mean and two-sided 95% t-interval of `values`; one value gives a zero-width interval."""
+    from scipy import stats
+
+    mean = _mean(values)
+    if len(values) < 2:
+        return mean, mean, mean
+    sd = (sum((value - mean) ** 2 for value in values) / (len(values) - 1)) ** 0.5
+    half = stats.t.ppf(0.975, len(values) - 1) * sd / len(values) ** 0.5
+    return mean, mean - half, mean + half
+
+
+def floor_and_ceiling(curves: pl.DataFrame, supervised: pl.DataFrame, field: str) -> pl.DataFrame:
+    """Per dataset and model: the round-0 test score (floor) and the supervised one (ceiling).
+
+    Round 0 is the bootstrap model both arms start from, so the floor averages the random
+    arm's round-0 rows over seeds and sweeps. The ceiling averages the supervised test
+    runs' seeds.
+    """
+    floor = (
+        curves.filter((pl.col("round") == 0) & (pl.col("arm") == "random"))
+        .group_by("dataset", "model")
+        .agg(pl.col(field).mean().alias("floor"))
+    )
+    ceiling = supervised.group_by("dataset", "model").agg(
+        pl.col(field).mean().alias("ceiling"),
+        pl.col(field).std().alias("ceiling_sd"),
+        pl.len().alias("ceiling_seeds"),
+    )
+    return floor.join(ceiling, on=["dataset", "model"], how="full", coalesce=True).sort(
+        pl.col("dataset").replace_strict(DATASET_ORDER, list(range(len(DATASET_ORDER)))),
+        pl.col("model").replace_strict(MODEL_ORDER, list(range(len(MODEL_ORDER)))),
+    )
+
+
+def scores_at_budgets(curves: pl.DataFrame, field: str, budgets: list[float]) -> pl.DataFrame:
+    """Each run's `field` at the given pool percentages, linearly interpolated between rounds.
+
+    Models acquire different K per round, so their rounds land on different pool
+    percentages; interpolating puts every run on the same budgets. One row per setting,
+    seed, arm, and budget.
+    """
+    import numpy as np
+
+    rows = []
+    for key, run in curves.group_by([*SETTING, "seed", "arm"], maintain_order=True):
+        run = run.sort("round")
+        scores = np.interp(budgets, run["percent_acquired"].to_numpy(), run[field].to_numpy())
+        rows += [
+            dict(zip([*SETTING, "seed", "arm"], key, strict=True))
+            | {"budget": float(budget), "score": float(score)}
+            for budget, score in zip(budgets, scores, strict=True)
+        ]
+    return pl.DataFrame(rows)
+
+
+def headroom_summary(
+    at_budgets: pl.DataFrame, ceilings: pl.DataFrame, by: list[str]
+) -> pl.DataFrame:
+    """How far each arm is from the ceiling at each budget, and how much of that UQ closes.
+
+    `at_budgets` comes from `scores_at_budgets`; `ceilings` has a `ceiling` per dataset and
+    model. Each (model, seed) pairs its UQ and random scores, so the gap interval is a
+    95% t-interval over those pairs. Headroom is the mean ceiling minus the mean random
+    score; the share closed is the mean gap over the headroom, left empty when nothing
+    is left to gain.
+    """
+    paired = (
+        at_budgets.pivot(on="arm", index=[*SETTING, "seed", "budget"], values="score")
+        .rename({"uncertainty": "uq"})
+        .join(ceilings.select("dataset", "model", "ceiling"), on=["dataset", "model"])
+        .with_columns(gap=pl.col("uq") - pl.col("random"))
+    )
+    rows = []
+    for key, group in paired.group_by([*by, "budget"], maintain_order=True):
+        gap, low, high = mean_interval(group["gap"].to_list())
+        random, ceiling = group["random"].mean(), group["ceiling"].mean()
+        headroom = ceiling - random
+        rows.append(
+            dict(zip([*by, "budget"], key, strict=True))
+            | {
+                "random": random,
+                "uq": group["uq"].mean(),
+                "gap": gap,
+                "gap_low": low,
+                "gap_high": high,
+                "ceiling": ceiling,
+                "headroom": headroom,
+                "share_closed": gap / headroom if headroom > 0 else None,
+                "pairs": group.height,
+            }
+        )
+    return pl.DataFrame(rows).sort([*by, "budget"])
+
+
+def pool_to_ceiling(
+    curves: pl.DataFrame, field: str, ceilings: pl.DataFrame, fraction: float
+) -> pl.DataFrame:
+    """Pool percentage at which each run first reaches `fraction` of its model's ceiling.
+
+    The target is `fraction` times the mean supervised score of the run's dataset and
+    model. Crossings are observed rounds, as in `pool_to_reach`; a run that never
+    reaches the target gets a null.
+    """
+    targets = ceilings.select("dataset", "model", (fraction * pl.col("ceiling")).alias("target"))
+    runs = curves.select(*SETTING, "seed", "arm").unique()
+    reached = (
+        curves.join(targets, on=["dataset", "model"])
+        .filter(pl.col(field) >= pl.col("target"))
+        .group_by(*SETTING, "seed", "arm")
+        .agg(pl.col("percent_acquired").min().alias("pool"))
+    )
+    return runs.join(reached, on=[*SETTING, "seed", "arm"], how="left").sort(
+        *SETTING, "seed", "arm"
+    )

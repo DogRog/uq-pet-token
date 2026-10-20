@@ -6,11 +6,15 @@ import pytest
 from analysis import paper_results
 from analysis.paper_results import (
     curve_auc,
+    floor_and_ceiling,
+    headroom_summary,
     llm_test_scores,
     match_entities,
+    pool_to_ceiling,
     pool_to_match,
     random_sweep_comparisons,
     read_llm_predictions,
+    scores_at_budgets,
     tuning_winners,
 )
 
@@ -221,3 +225,81 @@ def test_pool_to_match_uses_seed_mean_curves_and_shares_the_random_arm():
         "margin": None,
         "random": None,
     }
+
+
+def _curve(model, seed, arm, points, metric="entropy"):
+    """Rows of one run: (percent acquired, entity F1) per round, in round order."""
+    return [
+        {
+            "dataset": "PET",
+            "model": model,
+            "acquisition": "Top-K",
+            "uq_metric": metric,
+            "seed": seed,
+            "arm": arm,
+            "round": round_,
+            "percent_acquired": percent,
+            "entity_f1": f1,
+        }
+        for round_, (percent, f1) in enumerate(points)
+    ]
+
+
+CURVES = pl.DataFrame(
+    _curve("BERT", 0, "random", [(0, 0.2), (40, 0.4), (100, 0.6)])
+    + _curve("BERT", 0, "uncertainty", [(0, 0.2), (40, 0.6), (100, 0.6)])
+    + _curve("BERT", 1, "random", [(0, 0.2), (50, 0.4), (100, 0.6)])
+    + _curve("BERT", 1, "uncertainty", [(0, 0.2), (50, 0.5), (100, 0.6)])
+)
+CEILINGS = pl.DataFrame({"dataset": ["PET"], "model": ["BERT"], "ceiling": [0.7]})
+
+
+def test_floor_and_ceiling_average_round_zero_and_supervised_seeds():
+    supervised = pl.DataFrame(
+        {"dataset": ["PET", "PET"], "model": ["BERT", "BERT"], "entity_f1": [0.6, 0.8]}
+    )
+    row = floor_and_ceiling(CURVES, supervised, "entity_f1").row(0, named=True)
+    assert row["floor"] == pytest.approx(0.2)
+    assert row["ceiling"] == pytest.approx(0.7)
+    assert row["ceiling_sd"] == pytest.approx(0.1414, abs=1e-4)
+    assert row["ceiling_seeds"] == 2
+
+
+def test_scores_at_budgets_interpolate_between_each_runs_rounds():
+    at = scores_at_budgets(CURVES, "entity_f1", [20, 50])
+    scores = {(r["seed"], r["arm"], r["budget"]): r["score"] for r in at.iter_rows(named=True)}
+    assert scores[0, "random", 20.0] == pytest.approx(0.3)
+    assert scores[0, "random", 50.0] == pytest.approx(0.4 + 0.2 * 10 / 60)
+    assert scores[1, "uncertainty", 20.0] == pytest.approx(0.32)
+    assert scores[1, "uncertainty", 50.0] == pytest.approx(0.5)
+
+
+def test_headroom_summary_pairs_seeds_and_divides_the_mean_gap_by_the_headroom():
+    at = scores_at_budgets(CURVES, "entity_f1", [50, 100])
+    summary = headroom_summary(at, CEILINGS, ["dataset"])
+    half = summary.filter(pl.col("budget") == 50).row(0, named=True)
+    random = (0.4 + 0.2 * 10 / 60 + 0.4) / 2
+    uq = (0.6 + 0.5) / 2
+    assert half["random"] == pytest.approx(random)
+    assert half["gap"] == pytest.approx(uq - random)
+    assert half["gap_low"] < half["gap"] < half["gap_high"]
+    assert half["headroom"] == pytest.approx(0.7 - random)
+    assert half["share_closed"] == pytest.approx((uq - random) / (0.7 - random))
+    assert half["pairs"] == 2
+    # At the full pool both arms sit at 0.6 under a 0.7 ceiling: no gap, headroom left.
+    full = summary.filter(pl.col("budget") == 100).row(0, named=True)
+    assert full["share_closed"] == pytest.approx(0.0)
+    above = headroom_summary(at, CEILINGS.with_columns(ceiling=pl.lit(0.5)), ["dataset"])
+    assert above.filter(pl.col("budget") == 100)["share_closed"].to_list() == [None]
+
+
+def test_pool_to_ceiling_finds_the_first_round_at_the_target_or_leaves_it_empty():
+    reach = pool_to_ceiling(CURVES, "entity_f1", CEILINGS, 0.8)
+    pools = {(r["seed"], r["arm"]): r["pool"] for r in reach.iter_rows(named=True)}
+    assert pools == {
+        (0, "random"): 100.0,
+        (0, "uncertainty"): 40.0,
+        (1, "random"): 100.0,
+        (1, "uncertainty"): 100.0,
+    }
+    assert pool_to_ceiling(CURVES, "entity_f1", CEILINGS, 1.0)["pool"].null_count() == 4
