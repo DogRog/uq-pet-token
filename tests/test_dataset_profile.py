@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 import pytest
 
 from analysis.dataset_profile import (
@@ -8,7 +6,6 @@ from analysis.dataset_profile import (
     overview,
     pool_profile,
     size_matched_profile,
-    subword_fertility,
     type_frequencies,
 )
 
@@ -48,9 +45,8 @@ def test_pool_profile_measures_a_hand_counted_pool():
     # "Clerk" opens a sentence and is left out; "Clerk Office" is the one capitalised of three.
     assert profile["capitalised_share"] == pytest.approx(1 / 3)
     assert profile["unseen_entity_rate"] == 0.25
-    # "signs" is an Activity once and O once: 2 of 8 words, one bit each.
+    # "signs" is an Activity once and O once: 2 of 8 words.
     assert profile["ambiguous_word_share"] == 0.25
-    assert profile["type_entropy_given_word"] == 0.25
     # The lookup finds 3 of 4 gold entities and predicts nothing else.
     assert profile["lookup_f1"] == pytest.approx(6 / 7)
 
@@ -97,16 +93,3 @@ def test_size_matched_profile_uses_a_small_pool_whole_and_seeds_its_draws():
     assert sampled["draws"].unique().to_list() == [20]
     assert sampled.equals(size_matched_profile(datasets, pool_sentences=1, draws=20, seed=3))
     assert sampled.height == len(MEASURES)
-
-
-def test_subword_fertility_counts_subwords_without_special_tokens():
-    def tokenizer(batch, is_split_into_words, add_special_tokens):
-        assert is_split_into_words and not add_special_tokens
-        # Every word of six or more characters splits in two: Office, checks, Manager, checks.
-        word_ids = [
-            [index for index, word in enumerate(words) for _ in range(1 + (len(word) > 5))]
-            for words in batch
-        ]
-        return SimpleNamespace(word_ids=lambda row: word_ids[row])
-
-    assert subword_fertility(TEST, tokenizer) == pytest.approx(9 / 5)

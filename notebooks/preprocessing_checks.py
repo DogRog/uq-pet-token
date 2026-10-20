@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.25.1"
+__generated_with = "0.25.2"
 app = marimo.App(width="full")
 
 
@@ -40,7 +40,7 @@ def _(mo):
       `uv run hf auth login` once.
     - **Splits and statistics** and the **Document viewer** switch between datasets;
       **Lexical diversity** and the **Difficulty profile** compare all of them at once.
-    - Raw files and the five models' tokenizers are downloaded only when missing.
+    - Raw files are downloaded only when missing.
       Nothing is trained, and the validation holdout is not covered.
     """)
                 }
@@ -1154,29 +1154,6 @@ def _(WORD_SETS, alt, datasets, ld, lexicon, mo, pl, ttr_window, ttr_windows):
     )
     _tests = ld.pairwise_window_tests(_windows, _order)
 
-    def _finding(row):
-        verb = (
-            "does not clearly differ from"
-            if row["holm_p"] >= 0.05
-            else "is more diverse than"
-            if row["ttr"] > row["against_ttr"]
-            else "is less diverse than"
-        )
-        return (
-            f"- **{row['dataset']}** ({row['ttr']:.3f}) {verb} **{row['against']}** "
-            f"({row['against_ttr']:.3f}); Holm p = {row['holm_p']:.2g}, "
-            f"{row['windows']} vs {row['against_windows']} windows"
-        )
-
-    _findings = [
-        f"**{kept.capitalize()}**, mean TTR per {ttr_window.value}-word window:\n\n"
-        + "\n".join(
-            _finding(row)
-            for row in _tests.filter(pl.col("words_kept") == kept).iter_rows(named=True)
-        )
-        for kept in WORD_SETS
-        if _tests.height and kept in _tests["words_kept"].to_list()
-    ]
     mo.vstack(
         [
             mo.md(
@@ -1203,9 +1180,6 @@ def _(WORD_SETS, alt, datasets, ld, lexicon, mo, pl, ttr_window, ttr_windows):
                     "window_ttr_context": "{:.3f}",
                 },
             ),
-            mo.callout(mo.md("\n\n".join(_findings)), kind="neutral")
-            if _findings
-            else mo.md("Too few windows to compare the datasets; shrink the window."),
             mo.accordion(
                 {
                     "Pairwise tests": mo.ui.table(
@@ -1257,34 +1231,13 @@ def _(dp, profile_input):
     return PROFILE_DRAWS, profile, profile_pool_sentences
 
 
-@app.cell
-def _(dp, pl, profile_input):
-    from analysis.paper_results import MODELS
-    from uq_pet.token_model import load_tokenizer
-
-    _rows = []
-    for _checkpoint, _model in MODELS.items():
-        _tokenizer = load_tokenizer(_checkpoint)
-        _rows += [
-            {
-                "dataset": name,
-                "measure": f"fertility_{_model}",
-                "mean": dp.subword_fertility(sentences, _tokenizer),
-            }
-            for name, (sentences, _) in profile_input.items()
-        ]
-    fertility = pl.DataFrame(_rows)
-    return MODELS, fertility
-
-
 @app.cell(hide_code=True)
 def _(
-    MODELS,
     PROFILE_DRAWS,
+    WORD_SETS,
     alt,
     datasets,
     dp,
-    fertility,
     mo,
     pl,
     profile,
@@ -1296,14 +1249,15 @@ def _(
     _order = list(datasets)
     _labels = {
         **{measure: label.format(rare_below=10) for measure, label in dp.MEASURES.items()},
-        "window_ttr_context": f"Entity-context TTR per {ttr_window.value}-word window",
-        **{f"fertility_{model}": f"Subwords per word, {model}" for model in MODELS.values()},
+        **{
+            f"window_ttr_{kept}": f"TTR per {ttr_window.value}-word window, {kept}"
+            for kept in WORD_SETS
+        },
     }
-    _contexts = (
-        ttr_windows.filter(pl.col("words_kept") == "entity contexts")
-        .group_by("dataset")
+    _windows = (
+        ttr_windows.group_by("dataset", "words_kept")
         .agg(pl.col("ttr").mean().alias("mean"))
-        .with_columns(measure=pl.lit("window_ttr_context"))
+        .select("dataset", measure=pl.format("window_ttr_{}", "words_kept"), mean="mean")
     )
 
     def _cell(mean, low, high):
@@ -1314,10 +1268,7 @@ def _(
     _long = pl.concat(
         [
             profile.select("dataset", "measure", "mean", "low", "high"),
-            _contexts.select("dataset", "measure", "mean").with_columns(
-                low=pl.lit(None, pl.Float64), high=pl.lit(None, pl.Float64)
-            ),
-            fertility.with_columns(low=pl.lit(None, pl.Float64), high=pl.lit(None, pl.Float64)),
+            _windows.with_columns(low=pl.lit(None, pl.Float64), high=pl.lit(None, pl.Float64)),
         ]
     ).with_columns(
         value=pl.struct("mean", "low", "high").map_elements(
@@ -1371,13 +1322,12 @@ def _(
       Name-like entities start with a capital; process phrases mostly do not.
     - **Memorisability.** A test entity is unseen when its lowercased words never form an
       entity in the drawn pool. A word's form is ambiguous when the pool tags it with
-      more than one type (O included); the entropy weighs every pool word by its form's
-      type distribution. Function words such as "the" open many entities and are O
-      elsewhere, so they make up much of the ambiguous share. The lookup baseline tags each test word with its form's most
-      frequent pool type, unknown words with O, and scores exact-match entity F1.
-    - **Context diversity** follows the window in chapter 6 and uses every split.
-    - **Subwords per word** splits every sentence of every split with each model's
-      tokenizer, without truncation; a word stands for its first subword (ADR 0001).
+      more than one type (O included). Function words such as "the" open many entities
+      and are O elsewhere, so they make up much of the ambiguous share. The lookup
+      baseline tags each test word with its form's most frequent pool type, unknown words
+      with O, and scores exact-match entity F1.
+    - **Window TTR** repeats chapter 6's means: all words, entity words, and entity
+      contexts, over every split, following its window size. Lower means more repetition.
     - Unseen rates, rare types, ambiguity, and the lookup baseline all grow or shrink with
       pool size, which is why pools are drawn to one size; the drawn pools are read with
       their labels, which the experiments reveal only on acquisition. Draws per dataset:

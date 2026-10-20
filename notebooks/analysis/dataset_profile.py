@@ -24,7 +24,6 @@ MEASURES = {
     "capitalised_share": "Entities starting with a capital",
     "unseen_entity_rate": "Test entities unseen in the pool",
     "ambiguous_word_share": "Words whose form has several types",
-    "type_entropy_given_word": "Type entropy given the word (bits)",
     "lookup_f1": "Lookup-baseline test F1",
 }
 
@@ -150,11 +149,6 @@ def pool_profile(
         for word, tag in zip(sentence["tokens"], _names(sentence, tags), strict=True):
             word_types.setdefault(word.lower(), Counter())[_type(tag)] += 1
     words = sum(counts.total() for counts in word_types.values())
-    conditional_entropy = -sum(
-        count * math.log2(count / counts.total())
-        for counts in word_types.values()
-        for count in counts.values()
-    )
     gold = [_names(sentence, tags) for sentence in test]
     return {
         "entity_words_pct": 100 * sum(m["words"] for m in pool_mentions) / words,
@@ -173,7 +167,6 @@ def pool_profile(
             counts.total() for counts in word_types.values() if len(counts) > 1
         )
         / words,
-        "type_entropy_given_word": conditional_entropy / words,
         "lookup_f1": evaluate_predictions(gold, lookup_predictions(pool, test, tags))["entity_f1"],
     }
 
@@ -215,17 +208,3 @@ def size_matched_profile(
                 }
             )
     return pl.DataFrame(rows)
-
-
-def subword_fertility(sentences: list[dict], tokenizer) -> float:
-    """Subwords per word when the tokenizer splits these pre-split words, untruncated."""
-    encoding = tokenizer(
-        [sentence["tokens"] for sentence in sentences],
-        is_split_into_words=True,
-        add_special_tokens=False,
-    )
-    subwords = sum(
-        sum(word is not None for word in encoding.word_ids(index))
-        for index in range(len(sentences))
-    )
-    return subwords / sum(len(sentence["tokens"]) for sentence in sentences)
