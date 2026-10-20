@@ -90,6 +90,10 @@ _Avoid_: Strict match, span match
 A predicted entity that shares at least one word with a gold entity of the same type; each gold entity is matched at most once.
 _Avoid_: Overlap match, lenient match, relaxed match
 
+**Labeling efficiency**:
+How many times the labelled words the random arm needs, compared with the uncertainty arm, to first reach the same target score; above 1 favours uncertainty.
+_Avoid_: Label efficiency, data efficiency, label savings, speedup
+
 ### Runs
 
 **Model seed**:

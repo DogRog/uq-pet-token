@@ -37,9 +37,10 @@ def _(mo):
       the headline) and macro F1 (the mean of per-type F1, so a rare type weighs as much
       as a common one; reported only). Precision and recall exist for micro F1 only.
     - **Pool to reach a target** (chapters 4, 6, and 7) is the first observed round at
-      which a run reaches its target, not interpolated. Summaries are medians over runs,
-      and a run that never reaches the target ranks beyond the pool, so a median is
-      "not reached" once half the runs miss.
+      which a model's seed-mean curve reaches a fixed target, not interpolated (ADR 0011).
+      **Labeling efficiency** is random's pool divided by UQ's, so above 1 favours UQ;
+      across models it is a geometric mean, and a lower bound (≥) where random never
+      reaches the target. Each chapter's **Robustness** table reads single runs instead.
     - Nothing is downloaded or trained.
     """)
                 }
@@ -823,7 +824,7 @@ def _(
 
 
 @app.cell(hide_code=True)
-def _(acquisition, mo):
+def _(acquisition, mo, uq_metric):
     target_fraction = mo.ui.slider(
         start=0.80,
         stop=1.0,
@@ -836,9 +837,12 @@ def _(acquisition, mo):
         [
             mo.md(
                 "## 4. Label efficiency\n"
-                "How much of the pool each arm needs before its test entity F1 first "
-                "reaches a share of what random scores after acquiring the whole pool, "
-                f"{acquisition.value} acquisition. Fewer labelled words is better."
+                "How much of the pool each model's seed-mean curve needs before its test "
+                "entity F1 first reaches a share of what random scores, averaged over seeds, "
+                f"after acquiring the whole pool ({acquisition.value} acquisition). "
+                "**Labeling efficiency** is random's pool divided by UQ's: random needs "
+                f"that many times the labelled words {uq_metric.value} needs. Above 1 "
+                "favours UQ."
             ),
             target_fraction,
         ]
@@ -855,34 +859,49 @@ def _(
     mo,
     pl,
     pr,
-    seeds,
     series_color,
     sizes,
     target_fraction,
+    uq_metric,
 ):
-    # Each seed's target is a share of its own random arm's full-pool score.
-    _targets = (
-        seeds.filter(pl.col("acquisition") == acquisition.value)
-        .select(
-            "dataset",
-            "model",
-            "acquisition",
-            "seed",
-            (target_fraction.value * pl.col("random_final")).alias("target"),
+    _arms = curves.filter(pl.col("acquisition") == acquisition.value)
+    _curves = pr.mean_curves(_arms, field)
+    # Each model's seed-mean final random score; a target is a share of it.
+    _random_final = _curves.filter(
+        (pl.col("series") == "random") & (pl.col("round") == pl.col("round").max().over(pr.CURVE))
+    ).select("dataset", "model", "acquisition", pl.col(field).alias("final"))
+
+    def _targets(fraction):
+        return _random_final.select(
+            "dataset", "model", "acquisition", (fraction * pl.col("final")).alias("target")
         )
-        .unique()
+
+    def _efficiency(fraction):
+        pools = pr.first_round_reaching(_curves, field, _targets(fraction), pr.CURVE)
+        return pools, pr.labeling_efficiency(pools)
+
+    _pools, _efficiencies = _efficiency(target_fraction.value)
+    _summary = pr.efficiency_summary(
+        _efficiencies.filter(pl.col("uq_metric") == uq_metric.value), ["dataset"]
     )
-    _reach = pr.first_round_reaching(
-        pr.arm_series(curves.filter(pl.col("acquisition") == acquisition.value)),
-        field,
-        _targets,
-    )
-    _unreached = _reach.filter(pl.col("arm") == "uncertainty")["pool"]
-    _points = (
-        pr.median_pool(_reach, ["dataset", "model", "series"])
-        .join(sizes.select("dataset", "scoreable_pool_words"), on="dataset", how="left")
-        .with_columns(words=(pl.col("pool") * pl.col("scoreable_pool_words") / 100).round(0))
-    )
+
+    def _times(value, lower_bound=False):
+        return "–" if value is None else f"{'≥ ' if lower_bound else ''}{value:.1f}×"
+
+    _cards = [
+        mo.stat(
+            _times(row["efficiency"], row["lower_bound"]),
+            label=f"{row['dataset']}: random's labels per {uq_metric.value} label",
+            caption=f"geometric mean over {row['models']} model{'s' * (row['models'] != 1)}, "
+            f"{_times(row['low'])}–{_times(row['high'])}"
+            + (f"; UQ misses for {row['uq_missed']}" if row["uq_missed"] else ""),
+            bordered=True,
+        )
+        for row in _summary.iter_rows(named=True)
+    ]
+    _points = _pools.join(
+        sizes.select("dataset", "scoreable_pool_words"), on="dataset", how="left"
+    ).with_columns(words=(pl.col("pool") * pl.col("scoreable_pool_words") / 100).round(0))
     _missing = _points.filter(pl.col("pool").is_null())
     _points = _points.drop_nulls("pool")
     _span = _points.group_by("dataset", "model").agg(
@@ -910,72 +929,116 @@ def _(
                     "series",
                     alt.Tooltip("pool:Q", format=".1f"),
                     "words",
-                    "reached",
-                    "runs",
                 ],
             ),
         ).properties(title=dataset, width=380, height=180)
-        for dataset in pr.DATASET_ORDER
-        if dataset in _points["dataset"].unique().to_list()
+        for dataset in _points["dataset"].unique().sort().to_list()
     ]
-    _summary = pr.median_pool(_reach, ["dataset", "arm"])
-
-    def _pool(row):
-        return "not reached" if row["pool"] is None else f"{row['pool']:.0f}%"
-
-    def _card(dataset):
-        rows = {
-            row["arm"]: row
-            for row in _summary.filter(pl.col("dataset") == dataset).iter_rows(named=True)
-        }
-        uq, random = rows["uncertainty"], rows["random"]
-        return mo.stat(
-            f"{_pool(uq)} vs {_pool(random)}",
-            label=f"{dataset}: pool needed, UQ vs random",
-            caption=(
-                f"UQ labels {1 - uq['pool'] / random['pool']:.0%} fewer words"
-                if uq["pool"] is not None and random["pool"]
-                else f"UQ reached it in {uq['reached']}/{uq['runs']} runs"
+    # The same ratio over a range of targets, so no single share carries the result.
+    _sweep = pl.concat(
+        [
+            pr.efficiency_summary(
+                _efficiency(fraction)[1].filter(pl.col("uq_metric") == uq_metric.value),
+                ["dataset"],
+            ).with_columns(target=pl.lit(100 * fraction))
+            for fraction in [0.80 + 0.01 * step for step in range(21)]
+        ]
+    )
+    _sweep_chart = alt.layer(
+        alt.Chart(_sweep)
+        .mark_line(point=True)
+        .encode(
+            x=alt.X("target:Q", title="Target: share of random's full-pool F1 (%)"),
+            y=alt.Y(
+                "efficiency:Q",
+                title=f"Random's labels per {uq_metric.value} label",
+                scale=alt.Scale(type="log"),
             ),
-            bordered=True,
-        )
-
+            color=alt.Color("dataset:N", title=None, sort=pr.DATASET_ORDER),
+            tooltip=[
+                "dataset",
+                alt.Tooltip("target:Q", format=".0f"),
+                alt.Tooltip("efficiency:Q", format=".2f"),
+                alt.Tooltip("low:Q", format=".2f"),
+                alt.Tooltip("high:Q", format=".2f"),
+                "lower_bound",
+                "uq_missed",
+            ],
+        ),
+        alt.Chart(_sweep).mark_rule(color="gray", strokeDash=[4, 4]).encode(y=alt.datum(1)),
+        alt.Chart(_sweep).mark_rule(color="red").encode(x=alt.datum(100 * target_fraction.value)),
+    ).properties(width=420, height=220)
+    # Robustness: single runs against the same targets, summarized by their median.
+    _runs = pr.first_round_reaching(
+        pr.arm_series(_arms),
+        field,
+        _targets(target_fraction.value),
+        [*pr.RUN, "series"],
+    )
+    _per_run = pr.median_pool(_runs, ["dataset", "series"])
     mo.vstack(
         [
-            mo.hstack(
-                [_card(dataset) for dataset in _summary["dataset"].unique(maintain_order=True)],
-                justify="start",
-                gap=1,
-            ),
+            mo.hstack(_cards, justify="start", gap=1),
             mo.ui.altair_chart(alt.hconcat(*_charts).resolve_scale(color="shared")),
             mo.md(
-                f"UQ never reached the target in **{_unreached.null_count()}** of "
-                f"{_unreached.len()} runs."
-                + (
-                    " Medians not reached, left out of the chart: "
-                    + ", ".join(
-                        f"{row['dataset']} {row['model']} {row['series']}"
-                        for row in _missing.iter_rows(named=True)
-                    )
-                    + "."
-                    if _missing.height
-                    else ""
+                "Never reached by the seed-mean curve, left out of the chart: "
+                + ", ".join(
+                    f"{row['dataset']} {row['model']} {row['series']}"
+                    for row in _missing.iter_rows(named=True)
                 )
+                + "."
             )
-            if _unreached.null_count()
+            if _missing.height
             else mo.md(""),
+            mo.md("### Labeling efficiency across targets"),
+            mo.ui.altair_chart(_sweep_chart),
             mo.accordion(
                 {
+                    "Per model and UQ metric": mo.ui.table(
+                        _efficiencies.select(
+                            "dataset",
+                            "model",
+                            "uq_metric",
+                            "uq_pool",
+                            "random_pool",
+                            "efficiency",
+                            "lower_bound",
+                        ),
+                        selection=None,
+                        page_size=15,
+                        format_mapping={
+                            "uq_pool": "{:.1f}",
+                            "random_pool": "{:.1f}",
+                            "efficiency": "{:.2f}",
+                        },
+                    ),
+                    "Robustness: single runs": mo.vstack(
+                        [
+                            mo.md(
+                                "Each model seed's own curve against the same target, "
+                                "summarized by the median over runs (models × seeds); "
+                                "a run that never reaches the target ranks beyond the "
+                                "pool."
+                            ),
+                            mo.ui.table(
+                                _per_run.rename({"curves": "runs"}),
+                                selection=None,
+                                format_mapping={"pool": "{:.1f}"},
+                            ),
+                        ]
+                    ),
                     "How to read this": mo.md("""
-    - The target is per model seed: the chosen share of that seed's random-arm F1 after
-      the whole pool is acquired. Random always reaches it by 100%.
-    - Each point is the median over the 5 model seeds; the cards take the median over
-      every run of the dataset (models × seeds, and UQ metrics for UQ). Hover a point for
-      its pool share in words and how many runs reached the target.
-    - Crossings are the first observed round at or above the target, not interpolated;
-      a later round can dip below again. A run that never reaches the target ranks
-      beyond the pool.
-    """)
+    - The target is fixed per model: the chosen share of its random arm's final-round F1,
+      averaged over the 5 model seeds. Random's seed-mean curve always reaches it by 100%.
+    - Each point is the first observed round at which the model's seed-mean curve
+      reaches the target, not interpolated; a later round can dip below again. Hover for
+      the pool share in words.
+    - Labeling efficiency is random's pool divided by UQ's, as in Beck et al. (2021); the
+      cards and the line chart take its geometric mean over models, so 2× and 0.5×
+      cancel out.
+    - **Robustness** reads each seed's own curve instead of the seed mean. Single runs
+      are noisier, which shows in the spread, not in the cards.
+    """),
                 }
             ),
         ]
@@ -1176,34 +1239,45 @@ def _(
     _at = pr.scores_at_budgets(_runs, field, _budgets)
     _by_dataset = pr.headroom_summary(_at, _bounds, ["dataset"])
     _by_model = pr.headroom_summary(_at, _bounds, ["dataset", "model"])
-    _reach = pr.median_pool(
-        pr.first_round_reaching(
-            _runs,
-            field,
-            _bounds.select(
-                "dataset", "model", (ceiling_fraction.value * pl.col("ceiling")).alias("target")
-            ),
-        ),
-        ["dataset", "arm"],
+    _ceiling_targets = _bounds.select(
+        "dataset", "model", (ceiling_fraction.value * pl.col("ceiling")).alias("target")
     )
+    _ceiling_pools = pr.first_round_reaching(
+        pr.mean_curves(_runs, field), field, _ceiling_targets, pr.CURVE
+    )
+    _reach = pr.median_pool(_ceiling_pools, ["dataset", "series"])
+    _ceiling_efficiency = pr.efficiency_summary(pr.labeling_efficiency(_ceiling_pools), ["dataset"])
+    _run_reach = pr.median_pool(
+        pr.first_round_reaching(pr.arm_series(_runs), field, _ceiling_targets, [*pr.RUN, "series"]),
+        ["dataset", "series"],
+    ).rename({"curves": "runs"})
 
-    def _pool(dataset, arm):
-        rows = _reach.filter((pl.col("dataset") == dataset) & (pl.col("arm") == arm))
+    def _pool(dataset, series):
+        rows = _reach.filter((pl.col("dataset") == dataset) & (pl.col("series") == series))
         if rows.is_empty():
             return "–", "0/0"
         row = rows.row(0, named=True)
         pool = "not reached" if row["pool"] is None else f"{row['pool']:.0f}%"
-        return pool, f"{row['reached']}/{row['runs']}"
+        return pool, f"{row['reached']}/{row['curves']}"
+
+    def _ratio(dataset):
+        rows = _ceiling_efficiency.filter(pl.col("dataset") == dataset)
+        if rows.is_empty() or rows["efficiency"][0] is None:
+            return ""
+        row = rows.row(0, named=True)
+        bound = "≥ " if row["lower_bound"] else ""
+        return f"; random needs {bound}{row['efficiency']:.1f}× the labels"
 
     _cards = []
     for _dataset in _datasets:
-        _uq_pool, _uq_reached = _pool(_dataset, "uncertainty")
+        _uq_pool, _uq_reached = _pool(_dataset, uq_metric.value)
         _random_pool, _random_reached = _pool(_dataset, "random")
         _cards.append(
             mo.stat(
                 f"{_uq_pool} vs {_random_pool}",
                 label=f"{_dataset}: pool to {ceiling_fraction.value:.0%} of the ceiling",
-                caption=f"UQ vs random, median run; reached by {_uq_reached} vs {_random_reached}",
+                caption=f"UQ vs random, median model; reached by {_uq_reached} vs "
+                f"{_random_reached} models{_ratio(_dataset)}",
                 bordered=True,
             )
         )
@@ -1261,6 +1335,16 @@ def _(
                         page_size=15,
                         format_mapping=_pp,
                     ),
+                    "Pool to the ceiling, per model": mo.ui.table(
+                        _ceiling_pools.pivot(
+                            on="series", index=["dataset", "model"], values="pool"
+                        ),
+                        selection=None,
+                        format_mapping={"random": "{:.1f}", uq_metric.value: "{:.1f}"},
+                    ),
+                    "Robustness: pool to the ceiling, single runs": mo.ui.table(
+                        _run_reach, selection=None, format_mapping={"pool": "{:.1f}"}
+                    ),
                     "How to read this": mo.md("""
     - Everything is in F1 points (pp). Models acquire a different K per round, so each
       run is interpolated linearly onto the same pool percentages before averaging.
@@ -1273,10 +1357,12 @@ def _(
       supervised score; below 0% it trails random.
     - The ceiling is an upper bound of this protocol, trained on the whole labelled pool
       (ADR 0006); arms can pass it, which makes headroom negative.
-    - **Pool to the ceiling** is the first observed round at which a run reaches the
-      chosen share of its model's supervised score, unlike chapter 4, whose target is
-      random's own final score. The cards show the median run, which is "not reached"
-      once half the runs never get there.
+    - **Pool to the ceiling** is the first observed round at which a model's seed-mean
+      curve reaches the chosen share of its supervised score, unlike chapter 4, whose
+      target is random's own final score. The cards show the median model, "not
+      reached" once half the models never get there, and the geometric-mean labeling
+      efficiency where UQ gets there; it is a lower bound (≥) when random does not.
+      **Robustness** reads single runs instead.
     """),
                 }
             ),
@@ -1314,6 +1400,7 @@ def _(
     series_color,
     series_colors,
     supervised,
+    uq_metric,
 ):
     mo.stop(
         llm.is_empty(),
@@ -1415,19 +1502,25 @@ def _(
 
     _chart = alt.hconcat(*[_panel(d) for d in _datasets]).resolve_scale(x="independent")
 
-    # Each run's pool to reach the best LLM's score of its dataset.
-    _reach = pr.first_round_reaching(
-        pr.arm_series(_arms), field, _best.select("dataset", target="f1")
+    # Each model's seed-mean curve against the best LLM's score of its dataset.
+    _llm_target = _best.select("dataset", target="f1")
+    _pools = pr.first_round_reaching(pr.mean_curves(_arms, field), field, _llm_target, pr.CURVE)
+    _by_series = pr.median_pool(_pools, ["dataset", "series"])
+    _efficiency = pr.efficiency_summary(
+        pr.labeling_efficiency(_pools).filter(pl.col("uq_metric") == uq_metric.value),
+        ["dataset"],
     )
-    _by_series = pr.median_pool(_reach, ["dataset", "model", "series"])
-    _by_arm = pr.median_pool(_reach, ["dataset", "arm"])
+    _run_reach = pr.median_pool(
+        pr.first_round_reaching(pr.arm_series(_arms), field, _llm_target, [*pr.RUN, "series"]),
+        ["dataset", "series"],
+    ).rename({"curves": "runs"})
     _series = ["random", *pr.UQ_METRICS]
     _reach_table = (
-        _by_series.pivot(on="series", index=["dataset", "model"], values="pool")
-        .select("dataset", "model", *[s for s in _series if s in set(_by_series["series"])])
+        _pools.pivot(on="series", index=["dataset", "model"], values="pool")
+        .select("dataset", "model", *[s for s in _series if s in set(_pools["series"])])
         .sort("dataset", "model")
     )
-    _reach_points = _by_series.drop_nulls("pool")
+    _reach_points = _pools.drop_nulls("pool")
     _reach_chart = (
         alt.Chart(_reach_points)
         .mark_point(size=110, filled=True, opacity=0.9)
@@ -1440,24 +1533,30 @@ def _(
             y=alt.Y("model:N", title=None, sort=pr.MODEL_ORDER),
             color=series_color(_reach_points["series"].to_list()),
             shape=alt.Shape("series:N", title=None, legend=None),
-            tooltip=[
-                "dataset",
-                "model",
-                "series",
-                alt.Tooltip("pool:Q", format=".1f"),
-                "reached",
-                "runs",
-            ],
+            tooltip=["dataset", "model", "series", alt.Tooltip("pool:Q", format=".1f")],
         )
         .properties(width=380, height=200)
         .facet(column=alt.Column("dataset:N", title=None, sort=pr.DATASET_ORDER))
     )
 
-    def _median_pool(dataset, arm):
-        rows = _by_arm.filter((pl.col("dataset") == dataset) & (pl.col("arm") == arm))
-        row = rows.row(0, named=True)
+    def _median_pool(dataset, series):
+        row = _by_series.filter((pl.col("dataset") == dataset) & (pl.col("series") == series)).row(
+            0, named=True
+        )
         pool = "not reached" if row["pool"] is None else f"{row['pool']:.0f}%"
-        return f"{pool} ({row['reached']}/{row['runs']} runs reach it)"
+        return f"{pool} ({row['reached']}/{row['curves']} models reach it)"
+
+    def _ratio(dataset):
+        rows = _efficiency.filter(pl.col("dataset") == dataset)
+        if rows.is_empty() or rows["efficiency"][0] is None:
+            return ""
+        row = rows.row(0, named=True)
+        bound = "≥ " if row["lower_bound"] else ""
+        return (
+            f" Random needs {bound}{row['efficiency']:.1f}× the labels "
+            f"(geometric mean over the {row['models']} "
+            f"model{'s' * (row['models'] != 1)} where UQ gets there)."
+        )
 
     def _summary(dataset):
         best = _best.filter(pl.col("dataset") == dataset).row(0, named=True)
@@ -1467,12 +1566,14 @@ def _(
             if sup.height
             else ""
         )
-        if _by_arm.filter(pl.col("dataset") == dataset).height < 2:
+        series = set(_by_series.filter(pl.col("dataset") == dataset)["series"])
+        if not {"random", uq_metric.value} <= series:
             return f"- **{dataset}**: best LLM {best['config']}, {best['f1']:.3f}{sup_text}."
         return (
             f"- **{dataset}**: best LLM {best['config']}, {best['f1']:.3f}{sup_text}. "
-            f"Median pool to match it: UQ {_median_pool(dataset, 'uncertainty')}, "
-            f"random {_median_pool(dataset, 'random')}."
+            f"Median model's pool to match it: {uq_metric.value} "
+            f"{_median_pool(dataset, uq_metric.value)}, random "
+            f"{_median_pool(dataset, 'random')}.{_ratio(dataset)}"
         )
 
     mo.vstack(
@@ -1501,10 +1602,13 @@ def _(
             mo.ui.altair_chart(_reach_chart),
             mo.accordion(
                 {
-                    "Pool acquired (%) to match the best LLM, median per model": mo.ui.table(
+                    "Pool acquired (%) to match the best LLM, per model": mo.ui.table(
                         _reach_table,
                         selection=None,
                         format_mapping={s: "{:.1f}" for s in _series},
+                    ),
+                    "Robustness: single runs": mo.ui.table(
+                        _run_reach, selection=None, format_mapping={"pool": "{:.1f}"}
                     ),
                     "How to read this": mo.md("""
     - The LLM runs are `llm-annotation-eval`'s `md-test-sentences` task: each test sentence
@@ -1518,9 +1622,11 @@ def _(
       split, so the panel's matching and F1 average apply. Types outside the dataset's
       schema count as wrong.
     - The best LLM is picked on the test split, which favours the LLM. The pool share is
-      each run's first observed round at or above its score, not interpolated; points
-      and the table show the median over model seeds, the summary the median over every
-      run of the arm. A blank cell means the median run never gets there.
+      the first observed round at which a model's seed-mean curve reaches its score, not
+      interpolated; a blank cell means it never gets there. The summary takes the median
+      model for the panel's UQ metric and random, and the geometric-mean labeling
+      efficiency, a lower bound (≥) where random never gets there. **Robustness** reads
+      single runs instead, with the median over models × seeds.
     - In the table, random and UQ rows are a classifier's final round, mean ± SD over
       model seeds (`runs`); UQ rows are one per metric, `config` is the classifier.
     - Chapter 11 can show an LLM's predictions next to the token classifiers'.

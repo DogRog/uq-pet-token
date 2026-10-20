@@ -10,11 +10,14 @@ from analysis.paper_results import (
     comparison_curves,
     config_scores,
     dataset_bounds,
+    efficiency_summary,
     first_round_reaching,
     floor_and_ceiling,
     headroom_summary,
+    labeling_efficiency,
     llm_test_scores,
     match_entities,
+    mean_curves,
     median_pool,
     read_llm_predictions,
     scores_at_budgets,
@@ -269,7 +272,7 @@ def test_headroom_summary_pairs_seeds_and_divides_the_mean_gap_by_the_headroom()
 
 def test_first_round_reaching_finds_the_first_round_at_the_target_or_leaves_it_empty():
     targets = CEILINGS.select("dataset", "model", target=0.8 * pl.col("ceiling"))
-    reach = first_round_reaching(CURVES, "entity_f1", targets)
+    reach = first_round_reaching(CURVES, "entity_f1", targets, paper_results.RUN)
     pools = {(r["seed"], r["arm"]): r["pool"] for r in reach.iter_rows(named=True)}
     assert pools == {
         (0, "random"): 100.0,
@@ -278,7 +281,8 @@ def test_first_round_reaching_finds_the_first_round_at_the_target_or_leaves_it_e
         (1, "uncertainty"): 100.0,
     }
     unreachable = CEILINGS.select("dataset", "model", target=pl.col("ceiling"))
-    assert first_round_reaching(CURVES, "entity_f1", unreachable)["pool"].null_count() == 4
+    reach = first_round_reaching(CURVES, "entity_f1", unreachable, paper_results.RUN)
+    assert reach["pool"].null_count() == 4
 
 
 def test_arm_series_keeps_one_copy_of_the_shared_random_arm():
@@ -294,7 +298,7 @@ def test_arm_series_keeps_one_copy_of_the_shared_random_arm():
     ]
 
 
-def test_median_pool_ranks_runs_that_never_reach_the_target_beyond_the_pool():
+def test_median_pool_ranks_curves_that_never_reach_the_target_beyond_the_pool():
     reach = pl.DataFrame(
         {
             "dataset": ["PET"] * 5,
@@ -305,9 +309,68 @@ def test_median_pool_ranks_runs_that_never_reach_the_target_beyond_the_pool():
     assert median_pool(reach, ["arm"]).rows() == [
         # The miss ranks last: the median of 30, 50, and beyond is 50.
         ("random", 50.0, 2, 3),
-        # Half the runs miss, so the median run never reaches the target.
+        # Half the curves miss, so the median curve never reaches the target.
         ("uncertainty", None, 1, 2),
     ]
+
+
+def test_mean_curves_average_seeds_per_round_and_keep_one_random_arm():
+    margin = pl.DataFrame(_curve("BERT", 0, "random", [(0, 0.2), (40, 0.4), (100, 0.6)], "margin"))
+    means = mean_curves(pl.concat([CURVES, margin]), "entity_f1")
+    random = means.filter(pl.col("series") == "random")
+    # Seeds 0 and 1 reach 40% and 50% in round 1; the margin copy of random is dropped.
+    assert random["percent_acquired"].to_list() == pytest.approx([0.0, 45.0, 100.0])
+    assert random["entity_f1"].to_list() == pytest.approx([0.2, 0.4, 0.6])
+    assert random["seeds"].to_list() == [2, 2, 2]
+    uq = means.filter(pl.col("series") == "entropy")
+    assert uq["entity_f1"].to_list() == pytest.approx([0.2, 0.55, 0.6])
+
+
+def _pools(rows):
+    """`first_round_reaching` rows on mean curves: (model, series, pool)."""
+    return pl.DataFrame(
+        [
+            {
+                "dataset": "PET",
+                "model": model,
+                "acquisition": "Top-K",
+                "series": series,
+                "pool": pool,
+            }
+            for model, series, pool in rows
+        ],
+        schema_overrides={"pool": pl.Float64},
+    )
+
+
+def test_labeling_efficiency_divides_random_pool_by_uq_pool():
+    efficiency = labeling_efficiency(
+        _pools(
+            [
+                ("BERT", "random", 40.0),
+                ("BERT", "entropy", 20.0),
+                # Random never reaches it: counted at the whole pool, a lower bound.
+                ("RoBERTa", "random", None),
+                ("RoBERTa", "entropy", 25.0),
+                # UQ never reaches it: no ratio.
+                ("DistilBERT", "random", 60.0),
+                ("DistilBERT", "entropy", None),
+            ]
+        )
+    )
+    rows = {
+        r["model"]: (r["efficiency"], r["lower_bound"]) for r in efficiency.iter_rows(named=True)
+    }
+    assert rows == {
+        "BERT": (pytest.approx(2.0), False),
+        "RoBERTa": (pytest.approx(4.0), True),
+        "DistilBERT": (None, False),
+    }
+    summary = efficiency_summary(efficiency, ["dataset"]).row(0, named=True)
+    # Geometric mean of 2 and 4; the lower bound makes the mean one too.
+    assert summary["efficiency"] == pytest.approx(8**0.5)
+    assert (summary["low"], summary["high"]) == (pytest.approx(2.0), pytest.approx(4.0))
+    assert (summary["lower_bound"], summary["models"], summary["uq_missed"]) == (True, 2, 1)
 
 
 def test_dataset_bounds_put_a_t_interval_around_every_supervised_run():

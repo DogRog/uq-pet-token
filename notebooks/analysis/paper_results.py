@@ -329,38 +329,105 @@ def final_scores(curves: pl.DataFrame, field: str) -> pl.DataFrame:
     )
 
 
-def first_round_reaching(curves: pl.DataFrame, field: str, targets: pl.DataFrame) -> pl.DataFrame:
-    """Pool percentage at which each run's `field` first reaches its target, else null.
+# One seed-mean curve: a model's series under one acquisition.
+CURVE = ["dataset", "model", "acquisition", "series"]
 
-    `targets` holds a `target` per its other columns, all of them curve columns. Crossings
-    are observed rounds, not interpolated; a later round can dip below again. A `series`
-    column from `arm_series` is kept.
+
+def mean_curves(curves: pl.DataFrame, field: str) -> pl.DataFrame:
+    """Each model's seed-mean curve per series: `field` and pool percentage per round.
+
+    A model's rounds acquire the same number of words for every seed, so they land on the
+    same pool percentages. The random arm appears once, as `arm_series` keeps it.
+    """
+    return (
+        arm_series(curves)
+        .group_by(*CURVE, "round")
+        .agg(pl.col(field).mean(), pl.col("percent_acquired").mean(), pl.len().alias("seeds"))
+        .sort(*CURVE, "round")
+    )
+
+
+def first_round_reaching(
+    curves: pl.DataFrame, field: str, targets: pl.DataFrame, by: list[str]
+) -> pl.DataFrame:
+    """Pool percentage at which each curve's `field` first reaches its target, else null.
+
+    A curve is one `by` group: `CURVE` for `mean_curves`, or `[*RUN, "series"]` for single
+    runs from `arm_series`. `targets` holds a `target` per its other columns, all of them
+    curve columns. Crossings are observed rounds, not interpolated; a later round can dip
+    below again.
     """
     keys = [column for column in targets.columns if column != "target"]
-    runs = RUN + ["series"] * ("series" in curves.columns)
     joined = curves.join(targets, on=keys)
     reached = (
         joined.filter(pl.col(field) >= pl.col("target"))
-        .group_by(runs)
+        .group_by(by)
         .agg(pl.col("percent_acquired").min().alias("pool"))
     )
-    return joined.select(runs).unique().join(reached, on=runs, how="left").sort(runs)
+    return joined.select(by).unique().join(reached, on=by, how="left").sort(by)
 
 
 def median_pool(reach: pl.DataFrame, by: list[str]) -> pl.DataFrame:
-    """Median `first_round_reaching` pool per group, and how many runs reach the target.
+    """Median `first_round_reaching` pool per group, and how many curves reach the target.
 
-    Runs that never reach it rank beyond the pool, so the median is null once half or
-    more of the group's runs miss.
+    Curves that never reach it rank beyond the pool, so the median is null once half or
+    more of the group's curves miss.
     """
     return (
         reach.group_by(by)
         .agg(
             pl.col("pool").fill_null(float("inf")).median(),
             pl.col("pool").is_not_null().sum().alias("reached"),
-            pl.len().alias("runs"),
+            pl.len().alias("curves"),
         )
         .with_columns(pool=pl.when(pl.col("pool").is_finite()).then(pl.col("pool")))
+        .sort(by)
+    )
+
+
+def labeling_efficiency(pools: pl.DataFrame) -> pl.DataFrame:
+    """Random's pool over each UQ metric's pool, per dataset, model, and acquisition.
+
+    `pools` comes from `first_round_reaching` on `mean_curves`. Above 1, random needs that
+    many times the labelled words UQ needs to reach the same target. When only random
+    misses, it counts as the whole pool and `lower_bound` marks the ratio. The ratio is
+    null when UQ misses or reaches the target before acquiring anything.
+    """
+    model = ["dataset", "model", "acquisition"]
+    random = pools.filter(pl.col("series") == "random").select(
+        *model, pl.col("pool").alias("random_pool")
+    )
+    return (
+        pools.filter(pl.col("series") != "random")
+        .rename({"series": "uq_metric", "pool": "uq_pool"})
+        .join(random, on=model, how="left")
+        .with_columns(
+            efficiency=pl.when(pl.col("uq_pool") > 0).then(
+                pl.col("random_pool").fill_null(100.0) / pl.col("uq_pool")
+            ),
+            lower_bound=pl.col("random_pool").is_null() & (pl.col("uq_pool") > 0),
+        )
+        .sort(*model, "uq_metric")
+    )
+
+
+def efficiency_summary(efficiency: pl.DataFrame, by: list[str]) -> pl.DataFrame:
+    """Geometric mean of `labeling_efficiency` per group, with its range over models.
+
+    Ratios average geometrically, so 2× and 0.5× cancel out. The mean is a lower bound when
+    any ratio in it is; models where UQ never reaches the target are left out and counted.
+    """
+    ratio = pl.col("efficiency").drop_nulls()
+    return (
+        efficiency.group_by(by)
+        .agg(
+            ratio.log().mean().exp().alias("efficiency"),
+            ratio.min().alias("low"),
+            ratio.max().alias("high"),
+            pl.col("lower_bound").any(),
+            ratio.len().alias("models"),
+            pl.col("uq_pool").is_null().sum().alias("uq_missed"),
+        )
         .sort(by)
     )
 
