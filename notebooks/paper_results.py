@@ -1174,7 +1174,6 @@ def _(
     uq_metric,
 ):
     _budgets = [10.0, 25.0, 50.0]
-    _headline_budget = 25.0
     _bounds = bounds.drop_nulls("ceiling")
     _runs = curves.filter(
         (pl.col("acquisition") == acquisition.value) & (pl.col("uq_metric") == uq_metric.value)
@@ -1300,18 +1299,6 @@ def _(
         column: "{:+.1f}" if column.startswith("gap") else "{:.1f}"
         for column in ("random", *_pp_columns, "share_closed_pct")
     }
-    _lines = [
-        f"- **{row['dataset']}**: at {_headline_budget:.0f}% of the pool random is "
-        f"{100 * row['headroom']:.1f} pp below the ceiling; UQ closes "
-        + (
-            f"{100 * row['share_closed']:.0f}% of that"
-            if row["share_closed"] is not None
-            else "nothing, because random is already at the ceiling"
-        )
-        + f" ({100 * row['gap']:+.1f} pp, 95% CI {100 * row['gap_low']:+.1f} to "
-        f"{100 * row['gap_high']:+.1f})."
-        for row in _by_dataset.filter(pl.col("budget") == _headline_budget).iter_rows(named=True)
-    ]
     mo.vstack(
         [
             mo.md(
@@ -1324,7 +1311,6 @@ def _(
                 "gains."
             ),
             mo.ui.altair_chart(_figure),
-            mo.callout(mo.md("\n".join(_lines)), kind="neutral") if _lines else mo.md(""),
             mo.ui.table(_table(_by_dataset, ["dataset"]), selection=None, format_mapping=_pp),
             ceiling_fraction,
             mo.hstack(_cards, justify="start", gap=1, wrap=True),
@@ -1398,7 +1384,6 @@ def _(
     pl,
     pr,
     score_name,
-    series_color,
     series_colors,
     supervised,
     uq_metric,
@@ -1521,24 +1506,6 @@ def _(
         .select("dataset", "model", *[s for s in _series if s in set(_pools["series"])])
         .sort("dataset", "model")
     )
-    _reach_points = _pools.drop_nulls("pool")
-    _reach_chart = (
-        alt.Chart(_reach_points)
-        .mark_point(size=110, filled=True, opacity=0.9)
-        .encode(
-            x=alt.X(
-                "pool:Q",
-                title="Pool acquired (%) to match the best LLM",
-                scale=alt.Scale(domain=[0, 100]),
-            ),
-            y=alt.Y("model:N", title=None, sort=pr.MODEL_ORDER),
-            color=series_color(_reach_points["series"].to_list()),
-            shape=alt.Shape("series:N", title=None, legend=None),
-            tooltip=["dataset", "model", "series", alt.Tooltip("pool:Q", format=".1f")],
-        )
-        .properties(width=380, height=200)
-        .facet(column=alt.Column("dataset:N", title=None, sort=pr.DATASET_ORDER))
-    )
 
     def _median_pool(dataset, series):
         row = _by_series.filter((pl.col("dataset") == dataset) & (pl.col("series") == series)).row(
@@ -1600,7 +1567,6 @@ def _(
                 page_size=25,
                 format_mapping={c: "{:.3f}" for c in ("f1", "sd", "precision", "recall")},
             ),
-            mo.ui.altair_chart(_reach_chart),
             mo.accordion(
                 {
                     "Pool acquired (%) to match the best LLM, per model": mo.ui.table(
