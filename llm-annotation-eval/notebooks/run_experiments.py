@@ -362,12 +362,6 @@ def _(
         )
         _tabs[f"{_step}: document"] = stack(
             mo.md(f"The user message, {len(_user.split()):,} words."),
-            mo.md(
-                "The relation step gets the document with the predicted mentions; here the "
-                "gold mentions stand in for them."
-            )
-            if _step == "relations"
-            else None,
             pre(_user),
         )
     _problems = [

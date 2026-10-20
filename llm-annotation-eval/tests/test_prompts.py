@@ -2,7 +2,7 @@ import pathlib
 
 import pytest
 
-from autoannotate import LLMMentionAnnotator, MentionParser, RelationParser, prompts, util
+from autoannotate import LLMMentionAnnotator, MentionParser, prompts
 from eval import datasets
 from experiments import definitions
 
@@ -38,9 +38,8 @@ def test_template_from_text():
     assert prompts.Prompt(text="{{a}} and {{b}}")(a="x", b="y") == "x and y"
 
 
-@pytest.mark.parametrize("name", ["mentions.txt", "relations.txt"])
-def test_annotator_templates_take_definitions_and_the_datasets_values(name):
-    template = prompts.Prompt(PROMPT_DIR / name)
+def test_mention_template_takes_definitions_and_the_datasets_values():
+    template = prompts.Prompt(PROMPT_DIR / "mentions.txt")
     assert template.template_params == {"type_definitions", *definitions.TEMPLATE_VALUES}
 
 
@@ -133,46 +132,3 @@ def test_mention_example_lists_mentions_in_text_order():
         "the clerk\tActor\t0\nchecks\tActivity\t0\npay\tActivity\t2"
     )
 
-
-def test_relation_example_parses():
-    dataset = datasets.DATASETS["pet"]
-    relation_definitions, values = definitions.relation_prompt(dataset)
-    given, answer = example_parts(values["example"])
-    document = definitions.relation_example_document(dataset)
-    parser = RelationParser()
-
-    parsed = parser.parse(document.copy(clear=["relations"]), "\n".join(answer))
-
-    assert given == [util.format_document_text_with_entity_mentions(document)]
-    assert parser.issues == []
-    assert parsed.relations == document.relations
-    assert {r.type for r in parsed.relations} <= {d.type for d in relation_definitions}
-
-
-def test_relation_example_is_the_bootstrap_sentences_with_their_gold():
-    """The mentions in the bootstrap sentences, in text order, and the relations between them."""
-    dataset = datasets.DATASETS["pet"]
-    document = definitions.relation_example_document(dataset)
-    bootstrap = dataset.bootstrap()
-
-    assert [[t.text for t in s] for s in document.sentences] == [r["tokens"] for r in bootstrap]
-    starts = [m.token_document_indices[0] for m in document.mentions]
-    assert starts == sorted(starts)
-    # PET v1.1 tags the bootstrap sentences like res/gold/pet.jsonl
-    first = 0
-    spans = []
-    for r in bootstrap:
-        spans += [
-            (first + b, first + e, t.lower()) for b, e, t in datasets.mention_spans(r["ner-tags"])
-        ]
-        first += len(r["tokens"])
-    assert [
-        (m.token_document_indices[0], m.token_document_indices[-1] + 1, m.type)
-        for m in document.mentions
-    ] == spans
-    assert {r.type for r in document.relations} >= {"uses", "flow", "actor performer"}
-
-
-def test_only_pet_has_relations():
-    with pytest.raises(ValueError, match="no relations"):
-        definitions.relation_prompt(datasets.DATASETS["quishpi"])

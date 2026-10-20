@@ -27,7 +27,6 @@ def document_from_string(text: str, doc_id: str) -> data.Document:
         tokens=tokens,
         mentions=[],
         entities=[],
-        relations=[],
     )
 
 

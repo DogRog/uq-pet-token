@@ -28,7 +28,6 @@ def gold_file(tmp_path, make_doc):
             # the second sentence tells the documents apart in the prompt
             ["the clerk checks the form", f"{doc_id} ends"],
             mentions=[data.Mention("actor", (1,)), data.Mention("activity", (2,)), data.Mention("activity data", (3, 4))],
-            relations=[data.Relation("actor performer", 1, 0), data.Relation("uses", 1, 2)],
             doc_id=doc_id,
         )
         for doc_id in ("doc-a", "doc-b", "doc-c")
@@ -57,11 +56,9 @@ def test_file(tmp_path, test):
 
 def answer(params, fail_on=None):
     """Answers like a decent LLM: finds the clerk and the checking, but misses the form."""
-    instruction, user = (m["content"][0]["text"] for m in params["messages"])
+    user = params["messages"][1]["content"][0]["text"]
     if fail_on is not None and fail_on in user:
         raise TimeoutError("request timed out")
-    if "relations between" in instruction:
-        return "actor performer\t1\t0"
     return "Mentions:\nclerk\tActor\t0\nchecks\tActivity\t0"
 
 
@@ -85,14 +82,12 @@ def test_run_writes_predictions_calls_and_manifest(tmp_path, gold_file, client):
 
     runner.annotate_run(CONFIG, 1, directory, gold_file, client)
 
-    predicted = JsonImporter(runner.predictions_file(directory, "end-to-end")).do_import()
+    predicted = JsonImporter(runner.predictions_file(directory, "md")).do_import()
     assert [d.id for d in predicted] == ["doc-a", "doc-b", "doc-c"]
-    assert predicted[0].relations == [data.Relation("actor performer", 1, 0)]
 
     calls = read_calls(directory)
     assert [(c["document_id"], c["step"]) for c in calls] == [
-        ("doc-a", "mentions"), ("doc-a", "relations"), ("doc-b", "mentions"), ("doc-b", "relations"),
-        ("doc-c", "mentions"), ("doc-c", "relations"),
+        ("doc-a", "mentions"), ("doc-b", "mentions"), ("doc-c", "mentions"),
     ]
     assert calls[0]["response"] == "Mentions:\nclerk\tActor\t0\nchecks\tActivity\t0"
     assert calls[0]["reasoning"] == "thinking"
@@ -107,11 +102,11 @@ def test_run_writes_predictions_calls_and_manifest(tmp_path, gold_file, client):
     manifest = read_manifest(directory)
     assert manifest["config"] == "test-config" and manifest["run"] == 1
     assert manifest["settings"] == {
-        "dataset": "pet", "task": "end-to-end", "provider": "nhr", "model": "org/Model-1", "reasoning_effort": "low"
+        "dataset": "pet", "task": "md", "provider": "nhr", "model": "org/Model-1", "reasoning_effort": "low"
     }
     assert manifest["api"]["instruction_role"] == "system"
     assert manifest["api"]["extra_body"] == {"cache": {"no-cache": True}}
-    assert "relations between" in manifest["prompts"]["relations"]
+    assert list(manifest["prompts"]) == ["mentions"]
     [session] = manifest["sessions"]
     assert session["outcome"] == "completed"
     assert session["documents_to_do"] == 3
@@ -119,13 +114,13 @@ def test_run_writes_predictions_calls_and_manifest(tmp_path, gold_file, client):
     assert len(session["gold_sha256"]) == 64
     totals = manifest["totals"]
     assert totals["documents"] == 3 and totals["discarded_calls"] == 0
-    assert totals["all"]["prompt_tokens"] == 600
-    assert totals["all"]["reasoning_tokens"] == 24
-    assert totals["all"]["cached_tokens"] == 540
+    assert totals["all"]["prompt_tokens"] == 300
+    assert totals["all"]["reasoning_tokens"] == 12
+    assert totals["all"]["cached_tokens"] == 270
     assert totals["all"]["cache_write_tokens"] is None
     assert totals["mentions"]["predicted"] == 6
     assert totals["mentions"]["issues"] == {"ignored_line": 3}
-    assert totals["relations"]["finish_reasons"] == {"stop": 3}
+    assert totals["mentions"]["finish_reasons"] == {"stop": 3}
 
 
 def test_max_documents(tmp_path, gold_file, client):
@@ -163,7 +158,7 @@ def test_temporary_failure_skips_the_document_until_the_next_start(tmp_path, gol
     assert [s["outcome"] for s in manifest["sessions"]] == ["incomplete", "completed"]
     assert manifest["sessions"][1]["documents_to_do"] == 1
     assert manifest["totals"]["documents"] == 3
-    assert manifest["totals"]["all"]["calls"] == 6
+    assert manifest["totals"]["all"]["calls"] == 3
     assert manifest["totals"]["discarded_calls"] == 1
 
 
@@ -179,7 +174,7 @@ def test_provider_error_mid_answer_skips_the_document(tmp_path, gold_file, fake_
 
     [session] = read_manifest(directory)["sessions"]
     assert session["outcome"] == "incomplete" and session["failed_documents"] == ["doc-b"]
-    predicted = JsonImporter(runner.predictions_file(directory, "end-to-end")).do_import()
+    predicted = JsonImporter(runner.predictions_file(directory, "md")).do_import()
     assert [d.id for d in predicted] == ["doc-a", "doc-c"]
 
 
@@ -212,9 +207,14 @@ def test_failures_in_a_row_stop_the_run(tmp_path, gold_file, fake_client):
 def test_first_document_is_annotated_alone(tmp_path, gold_file, fake_client):
     # the provider caches the shared instruction during the first document, so the workers that
     # start afterwards read it from the cache instead of all computing it at once
+    events = []
+
     def slow_first(params):
         if "doc-a" in params["messages"][1]["content"][0]["text"]:
             time.sleep(0.05)
+            events.append("doc-a done")
+        else:
+            events.append("other started")
         return answer(params)
 
     client = fake_client(slow_first)
@@ -222,9 +222,7 @@ def test_first_document_is_annotated_alone(tmp_path, gold_file, fake_client):
 
     runner.annotate_run(CONFIG, 1, directory, gold_file, client, workers=3)
 
-    started = [c["messages"][1]["content"][0]["text"] for c in client.calls]
-    assert all("doc-a" in text for text in started[:2])
-    assert len(started) == 6
+    assert events == ["doc-a done", "other started", "other started"]
 
 
 def test_openrouter_run(tmp_path, gold_file, fake_client):
@@ -248,8 +246,8 @@ def test_openrouter_run(tmp_path, gold_file, fake_client):
     manifest = read_manifest(directory)
     assert manifest["settings"]["upstream"] == ["alibaba"]
     assert manifest["api"]["extra_body"] == body and manifest["api"]["cache_instruction"]
-    assert manifest["totals"]["all"]["cost"] == pytest.approx(0.006)
-    assert manifest["totals"]["all"]["upstream_providers"] == {"Alibaba": 6}
+    assert manifest["totals"]["all"]["cost"] == pytest.approx(0.003)
+    assert manifest["totals"]["all"]["upstream_providers"] == {"Alibaba": 3}
 
 
 def test_unpinned_openrouter_run_routes_by_session(tmp_path, gold_file, fake_client):
@@ -267,12 +265,12 @@ def test_parallel_workers(tmp_path, gold_file, client):
 
     runner.annotate_run(CONFIG, 1, directory, gold_file, client, workers=3)
 
-    predicted = JsonImporter(runner.predictions_file(directory, "end-to-end")).do_import()
+    predicted = JsonImporter(runner.predictions_file(directory, "md")).do_import()
     assert sorted(d.id for d in predicted) == ["doc-a", "doc-b", "doc-c"]
-    assert len(read_calls(directory)) == 6
+    assert len(read_calls(directory)) == 3
     manifest = read_manifest(directory)
     assert manifest["sessions"][0]["workers"] == 3
-    assert manifest["totals"]["all"]["calls"] == 6
+    assert manifest["totals"]["all"]["calls"] == 3
 
 
 def test_mention_detection_only(tmp_path, gold_file, client, test):
@@ -285,20 +283,15 @@ def test_mention_detection_only(tmp_path, gold_file, client, test):
     [row] = report.write_summary(pred_dir)
 
     assert [d.id for d in JsonImporter(runner.predictions_file(directory, "md")).do_import()] == ["doc-a", "doc-b", "doc-c"]
-    assert not (directory / "end-to-end").exists()
     assert {c["step"] for c in read_calls(directory)} == {"mentions"}
     manifest = read_manifest(directory)
     assert list(manifest["prompts"]) == ["mentions"]
-    assert manifest["totals"]["relations"]["calls"] == 0
     assert set(metrics) == {"documents", "md", "test"}
     # the clerk and the checking match exactly, the form is missed
     assert metrics["test"]["entity_precision"] == 1.0
     assert metrics["test"]["entity_recall"] == pytest.approx(2 / 3)
     assert row["test_f1"] == pytest.approx(0.8)
     assert row["task"] == "md" and row["md_f1"] == pytest.approx(0.8)
-    assert row["re_f1"] is None
-    with open(pred_dir / "runs.csv") as f:
-        assert next(csv.DictReader(f))["re_f1"] == ""
     report.print_summary([row])
 
 
@@ -316,7 +309,7 @@ def test_complete_run_is_not_started_again(tmp_path, gold_file, client, fake_cli
 def test_resuming_with_other_settings_fails(tmp_path, gold_file, client):
     directory = runner.run_dir(tmp_path, CONFIG, 1)
     runner.annotate_run(CONFIG, 1, directory, gold_file, client)
-    (directory / "end-to-end" / "pet.jsonl").unlink()
+    (directory / "md" / "pet.jsonl").unlink()
     changed = RunConfig(name=CONFIG.name, provider="nhr", model="org/Model-1", reasoning_effort="high")
 
     with pytest.raises(RuntimeError, match="settings of test-config changed"):
@@ -326,7 +319,7 @@ def test_resuming_with_other_settings_fails(tmp_path, gold_file, client):
 def test_resuming_with_other_prompts_fails(tmp_path, gold_file, client, monkeypatch):
     directory = runner.run_dir(tmp_path, CONFIG, 1)
     runner.annotate_run(CONFIG, 1, directory, gold_file, client)
-    (directory / "end-to-end" / "pet.jsonl").unlink()
+    (directory / "md" / "pet.jsonl").unlink()
     prompt_dir = tmp_path / "prompts"
     shutil.copytree(runner.definitions.PROMPT_DIR, prompt_dir)
     pet = prompt_dir / "pet.yaml"
@@ -345,7 +338,7 @@ def test_score_and_summarize_repeated_runs(tmp_path, gold_file, client, fake_cli
     for run, run_client in enumerate(clients, start=1):
         directory = runner.run_dir(pred_dir, config, run)
         runner.annotate_run(config, run, directory, gold_file, run_client)
-        metrics = report.score_run(directory, gold_file, "end-to-end", test, PET_TYPES)
+        metrics = report.score_run(directory, gold_file, "md", test, PET_TYPES)
         assert json.loads((directory / "metrics.json").read_text()) == metrics
 
     summary = report.write_summary(pred_dir)
@@ -355,27 +348,26 @@ def test_score_and_summarize_repeated_runs(tmp_path, gold_file, client, fake_cli
     assert [(r["config"], r["run"], r["documents"], r["complete"]) for r in runs] == [
         ("repeated", "1", "3", "True"), ("repeated", "2", "3", "True"),
     ]
-    # run 1 finds 2 of 3 mentions with 2 predictions, and 1 of 2 relations with 1 prediction
+    # run 1 finds 2 of 3 mentions with 2 predictions
     assert float(runs[0]["md_precision"]) == 1.0
     assert float(runs[0]["md_recall"]) == pytest.approx(2 / 3)
-    assert float(runs[0]["re_micro_recall"]) == 0.5
-    assert runs[0]["reasoning_tokens"] == "24" and runs[1]["reasoning_tokens"] == ""
-    assert runs[0]["cached_tokens"] == "540" and runs[1]["cached_tokens"] == ""
+    assert runs[0]["reasoning_tokens"] == "12" and runs[1]["reasoning_tokens"] == ""
+    assert runs[0]["cached_tokens"] == "270" and runs[1]["cached_tokens"] == ""
     assert runs[1]["dropped_mention_lines"] == "0"
 
     [row] = summary
     assert row["runs"] == 2 and row["documents"] == "3"
     assert row["md_recall"] == pytest.approx(1 / 3)
     assert row["md_recall_sd_runs"] == pytest.approx(0.4714, abs=1e-4)
-    assert row["prompt_tokens"] == 450
+    assert row["prompt_tokens"] == 225
     # only one run reported reasoning tokens
-    assert row["reasoning_tokens"] == 24 and row["reasoning_tokens_sd_runs"] is None
+    assert row["reasoning_tokens"] == 12 and row["reasoning_tokens_sd_runs"] is None
     assert (pred_dir / "summary.csv").exists()
     report.print_summary(summary)
 
 
 def test_summary_ignores_folders_without_run_logs(tmp_path):
-    (tmp_path / "old-model" / "end-to-end").mkdir(parents=True)
+    (tmp_path / "old-model" / "md").mkdir(parents=True)
     assert report.write_summary(tmp_path) == []
 
 
@@ -410,7 +402,7 @@ def test_runs_from_before_datasets_resume_as_pet(tmp_path, gold_file, client):
     manifest = read_manifest(directory)
     del manifest["settings"]["dataset"]
     runner.write_json(directory / "run.json", manifest)
-    (directory / "end-to-end" / "pet.jsonl").unlink()
+    (directory / "md" / "pet.jsonl").unlink()
 
     runner.annotate_run(CONFIG, 1, directory, gold_file, client)
 

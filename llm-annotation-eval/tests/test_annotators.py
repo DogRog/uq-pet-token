@@ -7,7 +7,6 @@ import autoannotate
 from autoannotate import data
 
 MENTION_DEFS = [autoannotate.MentionDefinition(type="Actor", description="who does it", priority=1)]
-RELATION_DEFS = [autoannotate.RelationDefinition(type="uses", description="what is used")]
 PROMPT_DIR = pathlib.Path(__file__).parent.parent / "prompts"
 TEMPLATE_VALUES = {
     "procedure": "PROCEDURE", "disambiguation": "DISAMBIGUATION", "example": "EXAMPLE",
@@ -18,14 +17,6 @@ def mention_annotator(client, **kwargs):
     return autoannotate.LLMMentionAnnotator(
         client=client, language_model="test-model", mention_definitions=MENTION_DEFS,
         template_values=TEMPLATE_VALUES, template=PROMPT_DIR / "mentions.txt",
-        **{"reasoning_effort": None, **kwargs},
-    )
-
-
-def relation_annotator(client, **kwargs):
-    return autoannotate.LLMRelationsAnnotator(
-        client=client, language_model="test-model", type_definitions=RELATION_DEFS,
-        template_values=TEMPLATE_VALUES, template=PROMPT_DIR / "relations.txt",
         **{"reasoning_effort": None, **kwargs},
     )
 
@@ -63,16 +54,6 @@ def test_mention_prompt_contains_definitions_example_and_numbered_sentences(fake
     assert user.endswith("0: the clerk works\n1: he rests")
 
 
-def test_relation_prompt_contains_tagged_mentions(fake_client, make_doc):
-    doc = make_doc(["the clerk works"], mentions=[data.Mention("actor", (1,))])
-
-    instruction, user = map(message_text, relation_annotator(fake_client("")).get_messages(doc))
-
-    assert " - **uses**: what is used" in instruction
-    assert "{{" not in instruction
-    assert user.endswith("the <actor id=0> clerk </actor> works")
-
-
 def test_annotate_sends_one_request_and_parses_the_answer(fake_client, make_doc):
     client = fake_client("clerk\tActor\t0", prompt_tokens=100, completion_tokens=5)
 
@@ -81,16 +62,6 @@ def test_annotate_sends_one_request_and_parses_the_answer(fake_client, make_doc)
     assert len(client.calls) == 1
     assert annotation.doc.mentions == [data.Mention("actor", (1,))]
     assert (annotation.prompt_tokens, annotation.completion_tokens) == (100, 5)
-
-
-def test_end_to_end_mentions_then_relations(fake_client, make_doc):
-    doc = make_doc(["the clerk checks the form"])
-
-    doc = mention_annotator(fake_client("clerk\tActor\t0\nchecks\tActivity\t0")).annotate(doc).doc
-    doc = relation_annotator(fake_client("actor performer\t1\t0")).annotate(doc).doc
-
-    assert doc.mentions == [data.Mention("actor", (1,)), data.Mention("activity", (2,))]
-    assert doc.relations == [data.Relation("actor performer", head_mention_index=1, tail_mention_index=0)]
 
 
 class TestProviders:
@@ -179,11 +150,10 @@ def test_annotate_without_cost_or_upstream_provider(fake_client, make_doc):
     assert annotation.cost is None and annotation.upstream_provider is None
 
 
-@pytest.mark.parametrize("make_annotator", [mention_annotator, relation_annotator])
-def test_cache_marker_ends_the_instruction_only(fake_client, make_doc, make_annotator):
+def test_cache_marker_ends_the_instruction_only(fake_client, make_doc):
     # Anthropic and Alibaba models cache the prompt up to the marker, so it goes after the
     # instruction every call shares and before the document, which differs
-    annotator = make_annotator(fake_client(""), cache_instruction=True)
+    annotator = mention_annotator(fake_client(""), cache_instruction=True)
 
     instruction, user = annotator.get_params(make_doc(["a"]))["messages"]
 
@@ -235,9 +205,8 @@ def test_issues_are_reset_for_every_document(fake_client, make_doc):
     assert len(annotator.annotate(make_doc(["the clerk works"])).issues) == 1
 
 
-@pytest.mark.parametrize("make_annotator", [mention_annotator, relation_annotator])
-def test_instruction_is_the_first_message(fake_client, make_doc, make_annotator):
-    annotator = make_annotator(fake_client(""))
+def test_instruction_is_the_first_message(fake_client, make_doc):
+    annotator = mention_annotator(fake_client(""))
     assert annotator.get_messages(make_doc(["a"]))[0]["content"][0]["text"] == annotator.get_instruction()
 
 

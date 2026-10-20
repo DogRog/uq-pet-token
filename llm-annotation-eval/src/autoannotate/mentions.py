@@ -135,7 +135,7 @@ class MentionParser(base.BaseParser):
             for i, mention in zip(positions, aligned):
                 mentions[i] = mention
 
-        doc = document.copy(clear=["mentions", "relations", "entities"])
+        doc = document.copy(clear=["mentions", "entities"])
         doc.mentions = [m for m in mentions if m is not None]
         return doc
 

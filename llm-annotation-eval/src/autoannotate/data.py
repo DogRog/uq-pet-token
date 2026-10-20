@@ -15,7 +15,6 @@ class Document:
     tokens: typing.List["Token"]
     entities: typing.List["Entity"]
     mentions: typing.List["Mention"]
-    relations: typing.List["Relation"]
 
     @property
     def sentences(self) -> typing.List[typing.List["Token"]]:
@@ -36,9 +35,6 @@ class Document:
             category=self.category,
             tokens=[t.copy() for t in self.tokens],
             mentions=[] if "mentions" in clear else [m.copy() for m in self.mentions],
-            relations=(
-                [] if "relations" in clear else [r.copy() for r in self.relations]
-            ),
             entities=[] if "entities" in clear else [e.copy() for e in self.entities],
         )
 
@@ -62,20 +58,6 @@ class Document:
             if new_entity not in new_entities:
                 new_entities.append(new_entity)
 
-        new_relations = self.relations
-        for relation in other.relations:
-            if relation.head_mention_index not in new_mention_ids:
-                continue
-            if relation.tail_mention_index not in new_mention_ids:
-                continue
-            new_relation = Relation(
-                type=relation.type,
-                head_mention_index=new_mention_ids[relation.head_mention_index],
-                tail_mention_index=new_mention_ids[relation.tail_mention_index],
-            )
-            if new_relation not in new_relations:
-                new_relations.append(new_relation)
-
         return Document(
             name=self.name,
             text=self.text,
@@ -84,7 +66,6 @@ class Document:
             tokens=self.tokens,
             mentions=new_mentions,
             entities=new_entities,
-            relations=new_relations,
         )
 
     def to_dict(self) -> dict[str, typing.Any]:
@@ -98,34 +79,8 @@ class Document:
         data["tokens"] = [token.to_dict() for token in self.tokens]  # recursive serialization
         data["mentions"] = [mention.to_dict() for mention in self.mentions]  # recursive serialization
         data["entities"] = [entity.to_dict() for entity in self.entities]  # recursive serialization
-        data["relations"] = [relation.to_dict() for relation in self.relations]  # recursive serialization
 
         return data
-
-    def remove_mention(self, mention_index: int) -> None:
-        self.mentions.pop(mention_index)
-        new_relations: typing.List[Relation] = []
-        for i, relation in enumerate(self.relations):
-            if relation.head_mention_index == mention_index:
-                continue
-            if relation.tail_mention_index == mention_index:
-                continue
-
-            r = relation
-            if relation.head_mention_index > mention_index:
-                r = Relation(
-                    type=r.type,
-                    head_mention_index=r.head_mention_index - 1,
-                    tail_mention_index=r.tail_mention_index,
-                )
-            if relation.tail_mention_index > mention_index:
-                r = Relation(
-                    type=r.type,
-                    head_mention_index=r.head_mention_index,
-                    tail_mention_index=r.tail_mention_index - 1,
-                )
-            new_relations.append(r)
-        self.relations = new_relations
 
 
 @dataclasses.dataclass(frozen=True)
@@ -213,35 +168,6 @@ class Entity:
 
 
 @dataclasses.dataclass(frozen=True, eq=True)
-class Relation:
-    type: str
-    head_mention_index: int
-    tail_mention_index: int
-
-    def copy(self) -> "Relation":
-        return Relation(
-            head_mention_index=self.head_mention_index,
-            tail_mention_index=self.tail_mention_index,
-            type=self.type.lower().strip(),
-        )
-
-    def pretty_dump(self, document: Document) -> str:
-        head = document.mentions[self.head_mention_index].pretty_dump(document)
-        tail = document.mentions[self.tail_mention_index].pretty_dump(document)
-        return f"{head} -{self.type}-> {tail}"
-
-    def to_dict(self) -> dict[str, typing.Any]:
-        """Get document attributes as a dictionary."""
-        data = dict()
-        # put data in the dict
-        data["headMentionIndex"] = self.head_mention_index
-        data["tailMentionIndex"] = self.tail_mention_index
-        data["type"] = self.type
-
-        return data
-
-
-@dataclasses.dataclass(frozen=True, eq=True)
 class Token:
     text: str
     index_in_document: int
@@ -313,7 +239,6 @@ class DictExporter:
             "tokens": list(map(self.export_token, document.tokens)),
             "mentions": list(map(self.export_mention, document.mentions)),
             "entities": list(map(self.export_entity, document.entities)),
-            "relations": list(map(self.export_relation, document.relations)),
         }
 
     def export_token(self, token: Token) -> typing.Dict:
@@ -328,13 +253,6 @@ class DictExporter:
         return {
             "type": mention.type,
             "tokenDocumentIndices": list(mention.token_document_indices),
-        }
-
-    def export_relation(self, relation: Relation) -> typing.Dict:
-        return {
-            "headMentionIndex": relation.head_mention_index,
-            "tailMentionIndex": relation.tail_mention_index,
-            "type": relation.type,
         }
 
     def export_entity(self, entity: Entity) -> typing.Dict:
@@ -394,38 +312,13 @@ class DictImporter:
         return Entity(json_entity["mentionIndices"])
 
     @staticmethod
-    def read_relations_from_dict(
-            json_relations: typing.List[typing.Dict],
-    ) -> typing.List[Relation]:
-        relations = []
-        for json_relation in json_relations:
-            relations.append(
-                DictImporter.read_relation_from_dict(
-                    json_relation
-                )
-            )
-        return relations
-
-    @staticmethod
-    def read_relation_from_dict(relation_dict: typing.Dict) -> Relation:
-        head_mention_index = relation_dict["headMentionIndex"]
-        tail_mention_index = relation_dict["tailMentionIndex"]
-        return Relation(
-            head_mention_index=head_mention_index,
-            tail_mention_index=tail_mention_index,
-            type=relation_dict["type"].lower().strip(),
-        )
-
-    @staticmethod
     def read_document_from_dict(json_data: typing.Dict) -> Document:
+        # files from before relation extraction was removed also have "relations"; ignored
         mentions = DictImporter.read_mentions_from_dict(
             json_data["mentions"]
         )
         entities = DictImporter.read_entities_from_dict(
             json_data["entities"]
-        )
-        relations = DictImporter.read_relations_from_dict(
-            json_data["relations"]
         )
         tokens = DictImporter.read_tokens_from_dict(
             json_data["tokens"]
@@ -437,7 +330,6 @@ class DictImporter:
             category=json_data["category"],
             tokens=tokens,
             mentions=mentions,
-            relations=relations,
             entities=entities,
         )
         return document

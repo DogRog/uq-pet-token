@@ -9,7 +9,6 @@ from autoannotate import data
 def make_document(
         sentences: typing.List[str],
         mentions: typing.Sequence[data.Mention] = (),
-        relations: typing.Sequence[data.Relation] = (),
         doc_id: str = "doc-1",
 ) -> data.Document:
     """Builds a document from whitespace-tokenized sentences."""
@@ -29,7 +28,6 @@ def make_document(
         category="",
         tokens=tokens,
         mentions=list(mentions),
-        relations=list(relations),
         entities=[],
     )
 

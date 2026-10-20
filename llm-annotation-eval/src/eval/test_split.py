@@ -7,8 +7,8 @@ pet-v1.1-test.jsonl`` holds those 84 sentences, in the split's order and with th
 tags, generated with uq-pet-token's ``load_pet_splits`` at commit 1ea66af (datasets 2.19.2,
 PETv1.1-entities.jsonl with sha256 11c42b26...). ``res/gold/pet-v1.1.jsonl`` is that file, all 417
 sentences; the functions here work on any list of its sentences, not only the test split. PET
-v1.1 corrects some labels of the PET release in ``res/gold/pet.jsonl`` and has no overlapping
-mentions, so test scores use its tags.
+v1.1 corrects some labels of the original PET release and has no overlapping mentions; this
+project uses only v1.1.
 
 uq-pet-token splits Quishpi and MedicalProcessInstruks the same way (41 and 65 test sentences);
 eval.datasets lists every dataset with its files and mention types.
@@ -60,7 +60,6 @@ def sentence_documents(test: typing.List[Row]) -> typing.List[data.Document]:
             category="",
             tokens=tokens,
             mentions=[],
-            relations=[],
             entities=[],
         ))
     return documents

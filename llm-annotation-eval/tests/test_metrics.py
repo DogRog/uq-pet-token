@@ -31,8 +31,8 @@ class TestStats:
         assert Stats(1, 2, 1) + Stats(3, 4, 2) == Stats(4, 6, 3)
 
 
-def mentions_doc(make_doc, *mentions, relations=(), doc_id="doc-1"):
-    return make_doc(SENTENCES, mentions=[data.Mention(t, i) for t, i in mentions], relations=relations, doc_id=doc_id)
+def mentions_doc(make_doc, *mentions, doc_id="doc-1"):
+    return make_doc(SENTENCES, mentions=[data.Mention(t, i) for t, i in mentions], doc_id=doc_id)
 
 
 class TestMentionMetrics:
@@ -53,36 +53,3 @@ class TestMentionMetrics:
 
         assert stats == Stats(num_pred=2, num_gold=1, num_ok=1)
 
-
-class TestRelationMetrics:
-    def test_head_and_tail_must_overlap_and_type_must_match(self, make_doc):
-        mentions = [("actor", (1,)), ("activity", (2,)), ("activity data", (3, 4)), ("actor", (7,)), ("activity", (8,))]
-        gold = mentions_doc(make_doc, *mentions, relations=[
-            data.Relation("actor performer", 1, 0),
-            data.Relation("uses", 1, 2),
-            data.Relation("actor performer", 4, 3),
-        ])
-        # predicted mentions are listed in another order and with other spans than in gold
-        pred = mentions_doc(
-            make_doc, ("activity", (2,)), ("actor", (0, 1)), ("activity data", (4,)), ("activity", (8,)), ("actor", (6, 7)),
-            relations=[
-                data.Relation("actor performer", 0, 1),  # match
-                data.Relation("flow", 0, 2),  # wrong type
-                data.Relation("actor performer", 3, 1),  # wrong tail
-            ],
-        )
-
-        stats = scoring.total(scoring.relation_stats(gold, pred))
-
-        assert stats == Stats(num_pred=3, num_gold=3, num_ok=1)
-
-    def test_each_gold_relation_matches_once(self, make_doc):
-        gold = mentions_doc(make_doc, ("actor", (1,)), ("activity", (2,)), relations=[data.Relation("actor performer", 1, 0)])
-        pred = mentions_doc(make_doc, ("actor", (1,)), ("activity", (2,)), relations=[
-            data.Relation("actor performer", 1, 0),
-            data.Relation("actor performer", 1, 0),
-        ])
-
-        stats = scoring.total(scoring.relation_stats(gold, pred))
-
-        assert stats == Stats(num_pred=2, num_gold=1, num_ok=1)

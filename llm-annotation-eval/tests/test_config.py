@@ -38,7 +38,7 @@ def test_full_config(write_config):
 
 def test_settings_are_what_changes_predictions(write_config):
     config = load_config(write_config("provider: nhr\nmodel: m\nreasoning_effort: low\nrepeats: 2"))
-    assert config.settings() == {"dataset": "pet", "task": "end-to-end", "provider": "nhr", "model": "m", "reasoning_effort": "low"}
+    assert config.settings() == {"dataset": "pet", "task": "md", "provider": "nhr", "model": "m", "reasoning_effort": "low"}
 
 
 def test_upstream_pins_openrouter_providers(write_config):
@@ -71,7 +71,7 @@ def test_upstream_per_model(write_config):
     ("provider: nhr\nmodel: m\nreasoning_effort: max", "reasoning_effort"),
     ("provider: nhr\nmodel: m\ntask: re", "task must be one of"),
     ("provider: nhr\nmodel: m\ndataset: conll2003", "dataset must be one of"),
-    ("provider: nhr\nmodel: m\ndataset: quishpi", "quishpi has no relations"),
+    ("provider: nhr\nmodel: m\ntask: end-to-end", "task must be one of"),
     ("provider: nhr\nmodel: m\nmax_documents: 0", "max_documents"),
     ("provider: nhr\nmodel: m\nrepeats: 0", "repeats"),
     ("provider: nhr\nmodel: m\nrepeats: '3'", "repeats"),

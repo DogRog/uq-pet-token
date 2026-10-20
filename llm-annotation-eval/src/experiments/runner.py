@@ -3,8 +3,8 @@
 A run folder (res/pred/<config>/run-<i>/) contains:
 
 - <task>/pet.jsonl: the predicted documents, each appended as soon as it is done; <task> is
-  "end-to-end", "md" or "md-test-sentences", see experiments.config; the file is called pet.jsonl
-  for every dataset
+  "md" or "md-test-sentences", see experiments.config; the file is called pet.jsonl for every
+  dataset
 - calls.jsonl: one line per LLM call, with tokens, duration, raw response, reasoning and parser issues
 - run.json: the manifest, with settings, prompts, code and package versions per session, and totals
 - metrics.json: the scores, written by experiments.report
@@ -207,7 +207,7 @@ def _call(
         "cache_write_tokens": annotation.cache_write_tokens,
         "cost": annotation.cost,
         "upstream_provider": annotation.upstream_provider,
-        "num_predicted": len(doc.mentions) if step == "mentions" else len(doc.relations),
+        "num_predicted": len(doc.mentions),
         "issues": annotation.issues,
         "response": annotation.response,
         "reasoning": annotation.reasoning,
@@ -270,9 +270,9 @@ def totals(directory: pathlib.Path, task: str) -> typing.Dict[str, typing.Any]:
         "documents": len(done_ids),
         # failed calls, and calls of documents that were annotated again
         "discarded_calls": len(calls) - len(kept),
-        "all": sums(["mentions", "relations"]),
+        # every step of a run; mention detection is the only one
+        "all": sums(["mentions"]),
         "mentions": {**sums(["mentions"]), "predicted": sum(c["num_predicted"] for c in kept if c["step"] == "mentions")},
-        "relations": {**sums(["relations"]), "predicted": sum(c["num_predicted"] for c in kept if c["step"] == "relations")},
     }
 
 
@@ -292,7 +292,7 @@ def input_documents(task: str, input_file: pathlib.Path) -> typing.List[data.Doc
 def build_annotators(
         config: RunConfig, client, run: typing.Optional[int] = None
 ) -> typing.Dict[str, autoannotate.BaseAnnotator]:
-    """The annotators of a run by step, "mentions" and for end-to-end runs "relations".
+    """The annotators of a run by step; mention detection, "mentions", is the only step.
 
     The prompt preview builds them without a client (None) and run, as get_instruction and
     get_messages don't call the LLM.
@@ -314,19 +314,6 @@ def build_annotators(
             cache_instruction=provider.cache_instruction,
         )
     }
-    if config.task == "end-to-end":
-        relation_definitions, relation_values = definitions.relation_prompt(dataset)
-        annotators["relations"] = autoannotate.LLMRelationsAnnotator(
-            client=client,
-            language_model=config.model,
-            template_values=relation_values,
-            type_definitions=relation_definitions,
-            reasoning_effort=config.reasoning_effort,
-            template=definitions.relation_template(),
-            instruction_role=provider.instruction_role,
-            extra_body=extra_body,
-            cache_instruction=provider.cache_instruction,
-        )
     return annotators
 
 
@@ -387,7 +374,7 @@ def annotate_run(
 
     def annotate_document(document: data.Document) -> None:
         print(f"Annotating {document.name}...")
-        document = document.copy(clear=["mentions", "relations", "entities"])
+        document = document.copy(clear=["mentions", "entities"])
         for step, annotator in annotators.items():
             document = _call(annotator, step, document, calls_file)
         with _write_lock:

@@ -1,6 +1,6 @@
 # llm-annotation-eval
 
-Uses LLMs to annotate business process descriptions from the [PET dataset](https://huggingface.co/datasets/patriziobellan/PET) with process element mentions and the relations between them, then scores the predictions against the gold annotations. Mention detection also runs on the two other datasets of [uq-pet-token](../README.md), the repository this folder is part of: [Quishpi](https://github.com/PADS-UPC/atdp-extractor/tree/bpm2020/input) and [MedicalProcessInstruks](https://huggingface.co/datasets/dagrat/MedicalProcessInstruks) (see [Datasets](#datasets)).
+Uses LLMs to annotate business process descriptions from [PET v1.1](https://github.com/patriziobellan86/PETv1.1) with process element mentions, then scores the predictions against the gold annotations. Mention detection also runs on the two other datasets of [uq-pet-token](../README.md), the repository this folder is part of: [Quishpi](https://github.com/PADS-UPC/atdp-extractor/tree/bpm2020/input) and [MedicalProcessInstruks](https://huggingface.co/datasets/dagrat/MedicalProcessInstruks) (see [Datasets](#datasets)).
 
 ## Setup
 
@@ -27,7 +27,7 @@ Each experiment is a config file in `configs/`, e.g.:
 provider: nhr                             # or openai, openrouter
 model: deepseek-ai/DeepSeek-V4.1-Flash
 dataset: quishpi                          # optional: pet (default), quishpi or medical
-task: md                                  # optional: md = mentions only, default end-to-end
+task: md                                  # optional: md (default) or md-test-sentences
 reasoning_effort: low                     # optional, left out: not sent
 max_documents: 5                          # optional, for a quick test
 repeats: 3                                # optional, default 1
@@ -41,7 +41,7 @@ A file can also list several models, each with its reasoning efforts, instead of
 uv run marimo edit notebooks/run_experiments.py
 ```
 
-In it you pick a config file and can change it in place (or save it), choose which of its configs to run, see the runs it makes and their state (to do, to resume, done, or can't be resumed as its settings or prompts changed), and preview the exact request of each step for any document. Running shows the progress and the scores so far after every document: mention (and relation) F1 on the documents done, and exact and partial F1 on the test sentences among them. Without the editor, e.g. on a server, the notebook runs a config as a script:
+In it you pick a config file and can change it in place (or save it), choose which of its configs to run, see the runs it makes and their state (to do, to resume, done, or can't be resumed as its settings or prompts changed), and preview the exact request of each step for any document. Running shows the progress and the scores so far after every document: mention F1 on the documents done, and exact and partial F1 on the test sentences among them. Without the editor, e.g. on a server, the notebook runs a config as a script:
 
 ```bash
 uv run python notebooks/run_experiments.py --config configs/pet/md.yaml --only 'gemma-4-31b-*' --workers 4
@@ -49,10 +49,10 @@ uv run python notebooks/run_experiments.py --config configs/pet/md.yaml --only '
 
 `--only` takes a pattern of config names (`*` for any text) and can be repeated; one config file per call. `--workers` sets how many documents are annotated at the same time (default 4); a run's first document is annotated alone, so the provider can cache the instruction every call starts with before the others start. A document whose request times out or hits a server error is skipped and annotated when you start the config again; a rejected request, or 3 failed documents in a row, stops that config and the next one is run. Each run of a config gets its own folder, `res/pred/<config name>/run-<i>/`, containing:
 
-- `end-to-end/pet.jsonl` (or `md/pet.jsonl` for `task: md`): the predicted documents
+- `md/pet.jsonl` (`md-test-sentences/pet.jsonl` for that task): the predicted documents
 - `calls.jsonl`: one line per LLM call, with token usage (including reasoning tokens, and prompt tokens read from or written to the provider's prompt cache, where the provider reports them), the cost and upstream provider on OpenRouter, duration, finish reason, the raw response, the reasoning text, and the lines the parser had to drop or fix
 - `run.json`: the settings, the exact prompts, and per session the start and end time, git commit, Python and package versions, and a hash of the gold file, plus totals over all calls
-- `metrics.json`: precision, recall and F1 for mentions (`md`) and, for end-to-end runs, relations (`re`), as the mean ± SD over documents (macro), micro-averaged, and per type
+- `metrics.json`: precision, recall and F1 for mentions (`md`), as the mean ± SD over documents (macro), micro-averaged, and per type, plus the test-split scores
 
 After the configs are run, two tables are rebuilt from all run folders:
 
@@ -67,17 +67,17 @@ Each document is saved as soon as it is annotated. If a run is interrupted (Ctrl
 uv run marimo edit notebooks/eval_table.py
 ```
 
-The notebook scores every `pet.jsonl` in `res/pred/` against the gold annotations, including predictions from before the configs (`res/pred/<folder>/<task>/pet.jsonl`), and shows one row per folder and task: precision, recall and F1 for mentions (`md`) and, where predicted, relations (`re`), and output tokens per sentence. Scores are macro-averaged over documents; a dropdown switches ± between the standard deviation over runs and over documents. Only runs with all their documents are included.
+The notebook scores every `pet.jsonl` in `res/pred/` against the gold annotations, including predictions from before the configs (`res/pred/<folder>/<task>/pet.jsonl`), and shows one row per folder and task: precision, recall and F1 for mentions (`md`), and output tokens per sentence. Scores are macro-averaged over documents; a dropdown switches ± between the standard deviation over runs and over documents. Only runs with all their documents are included.
 
-A dropdown chooses the dataset, another what to evaluate on: all documents as above (for PET its 45 gold documents), or the test split of [uq-pet-token](../README.md), for which these LLMs are a baseline (see below). Two more tables compare, on the test split, whole-document with single-sentence input for each model and reasoning effort, and, for whole-document runs, the scores on all 417 PET v1.1 sentences with those on the 84 test sentences (same tags and scoring), which shows how representative the test split is.
+A dropdown chooses the dataset, another what to evaluate on: all documents as above (for PET its 45 documents), or the test split of [uq-pet-token](../README.md), for which these LLMs are a baseline (see below). Two more tables compare, on the test split, whole-document with single-sentence input for each model and reasoning effort, and, for whole-document runs, the scores on all 417 PET v1.1 sentences with those on the 84 test sentences (same tags and scoring), which shows how representative the test split is.
 
 ### Datasets
 
-uq-pet-token runs its experiments on PET, Quishpi and MedicalProcessInstruks, each cut into sentences and split 80/20 the same way. A config's `dataset` key chooses which one the LLM annotates; Quishpi and MedicalProcessInstruks only have mention tasks (`md`, `md-test-sentences`).
+uq-pet-token runs its experiments on PET, Quishpi and MedicalProcessInstruks, each cut into sentences and split 80/20 the same way. A config's `dataset` key chooses which one the LLM annotates.
 
 | Dataset | Mention types | Sentences | Test sentences | Whole-document runs annotate |
 |---|---|---|---|---|
-| `pet` | Actor, Activity, Activity Data, Further Specification, XOR Gateway, Condition Specification, AND Gateway | 417 | 84 | `res/gold/pet.jsonl` (45 documents, with relations) |
+| `pet` | Actor, Activity, Activity Data, Further Specification, XOR Gateway, Condition Specification, AND Gateway | 417 | 84 | the sentences grouped into their 45 documents |
 | `quishpi` | Action, Entity, Condition | 201 | 41 | the sentences grouped into their 18 texts |
 | `medical` | T03 … T43 (19 types, tagged by id; named by the dataset's authors, e.g. T03 Activity) | 325 | 65 | the sentences grouped into their 13 guidelines |
 
@@ -95,7 +95,7 @@ Before reporting results next to uq-pet-token's, check that both are on the same
 uv run python notebooks/run_experiments.py --check
 ```
 
-It compares the test gold stored in each of uq-pet-token's reported supervised test runs with `res/gold/`, rescores those runs' predictions with `eval.test_split.evaluate` against their `results.csv`, checks that every run here used today's gold files (their sha256 in `run.json`) and that no test sentence is in a prompt, and fails if one doesn't hold (`src/experiments/checks.py`). Optionally (`--check-rebuild`) it also rebuilds every split with uq-pet-token's code, the script above with `--check`, which writes nothing. It also lists the PET test sentences labelled differently in `pet.jsonl` and PET v1.1.
+It compares the test gold stored in each of uq-pet-token's reported supervised test runs with `res/gold/`, rescores those runs' predictions with `eval.test_split.evaluate` against their `results.csv`, checks that every run here used today's gold files (their sha256 in `run.json`) and that no test sentence is in a prompt, and fails if one doesn't hold (`src/experiments/checks.py`). Optionally (`--check-rebuild`) it also rebuilds every split with uq-pet-token's code, the script above with `--check`, which writes nothing.
 
 The prompts differ per dataset ([prompts/](prompts/README.md)). Every dataset's mention definitions are written by hand; Quishpi's follow its annotations, which mark mostly single verbs as actions, the objects they act on as entities (not who performs them), and condition clauses. MedicalProcessInstruks tags its types by id, so the types keep those names (T03 … T43) and each description starts with the name its authors gave the type (e.g. T03 Activity, T41 Actor), with examples from the training sentences only. Every format example shows uq-pet-token's 5 bootstrap sentences. No test sentence appears in a prompt.
 
@@ -103,8 +103,8 @@ The prompts differ per dataset ([prompts/](prompts/README.md)). Every dataset's 
 
 uq-pet-token trains token classifiers on PET v1.1 and evaluates them on 84 test sentences (41 for Quishpi, 65 for MedicalProcessInstruks, scored the same way). To compare the LLMs with them on the same data and metric:
 
-- `res/gold/pet-v1.1-test.jsonl` holds those 84 sentences with their PET v1.1 BIO tags, in uq-pet-token's format and order. It was generated with uq-pet-token's `load_pet_splits` at commit 1ea66af (an 80/20 split of the 417 sentences with seed 3407); `src/eval/test_split.py` documents the details. PET v1.1 corrects some labels of `res/gold/pet.jsonl`, in 8 of the 84 test sentences.
-- Runs of the usual tasks annotate whole documents; only their mentions in the test sentences are scored. Runs with `task: md-test-sentences` (configs in `configs/<dataset>/md-test-sentences.yaml`) instead send each test sentence on its own, without the rest of its document, the input uq-pet-token's models get; their predictions are single sentences with ids like `doc-2.1#27`, scored only on the test split. Mentions are converted to BIO tags (of overlapping mentions, the one listed first is kept). Scores use seqeval like uq-pet-token: a mention counts only if its type and both span boundaries match, micro-averaged over the test split. They are therefore lower than the overlap-based scores on all documents.
+- `res/gold/pet-v1.1-test.jsonl` holds those 84 sentences with their PET v1.1 BIO tags, in uq-pet-token's format and order. It was generated with uq-pet-token's `load_pet_splits` at commit 1ea66af (an 80/20 split of the 417 sentences with seed 3407); `src/eval/test_split.py` documents the details. The original PET release is not used: v1.1 corrects some of its labels.
+- `md` runs annotate whole documents; only their mentions in the test sentences are scored. Runs with `task: md-test-sentences` (configs in `configs/<dataset>/md-test-sentences.yaml`) instead send each test sentence on its own, without the rest of its document, the input uq-pet-token's models get; their predictions are single sentences with ids like `doc-2.1#27`, scored only on the test split. Mentions are converted to BIO tags (of overlapping mentions, the one listed first is kept). Scores use seqeval like uq-pet-token: a mention counts only if its type and both span boundaries match, micro-averaged over the test split. They are therefore lower than the overlap-based scores on all documents.
 - Every run gets a `test-predictions.jsonl` next to its `pet.jsonl` (the predictions file has that name for every dataset): the test sentences of its dataset with predicted tags, for uq-pet-token to score with its own `evaluate_predictions`. Each run writes it when it is scored; to write it for every run again, e.g. for predictions made before, use "Export test predictions" in `notebooks/run_experiments.py`, or:
 
 ```bash
@@ -127,7 +127,6 @@ uv run pytest
 - `src/autoannotate/`: annotators, response parsers and provider configs
 - `src/eval/`: matching and metrics; `datasets.py` lists the datasets with their files and mention types
 - `scripts/uq-pet-token-splits.py`: writes the Quishpi and medical sentence files with uq-pet-token's code
-- `res/gold/pet.jsonl`: gold annotations
 - `res/gold/pet-v1.1.jsonl`: all 417 PET v1.1 sentences with BIO tags (uq-pet-token's `PETv1.1-entities.jsonl`)
 - `res/gold/pet-v1.1-test.jsonl`: uq-pet-token's test split, with PET v1.1 tags
 - `res/gold/quishpi.jsonl`, `res/gold/quishpi-test.jsonl`: Quishpi's sentences and test split

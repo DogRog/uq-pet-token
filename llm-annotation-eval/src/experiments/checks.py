@@ -15,9 +15,6 @@
    sha256 in run.json) must be today's file. Prediction folders without run.json can't be checked
    and are noted.
 5. Prompts: no test sentence of five words or more appears in a dataset's prompt.
-
-Also notes, without failing, the PET test sentences whose labels in res/gold/pet.jsonl (what PET
-whole-document runs annotate) differ from PET v1.1, as only test scores use the latter.
 """
 import csv
 import dataclasses
@@ -182,10 +179,6 @@ def check_prompts(report: Report) -> None:
             continue
         mention_definitions, values = definitions.mention_prompt(dataset)
         parts = [d.description for d in mention_definitions] + list(values.values())
-        if dataset.documents_file is not None:  # PET, the only dataset with relations
-            relation_definitions, relation_values = definitions.relation_prompt(dataset)
-            parts += [d.description for d in relation_definitions]
-            parts += list(relation_values.values())
         prompt = _normalized(" ".join(parts))
         test = test_split.load_test_split(dataset.test_file)
         sentences = {test_split.sentence_id(r): _normalized(" ".join(r["tokens"])) for r in test}
@@ -198,22 +191,6 @@ def check_prompts(report: Report) -> None:
         )
 
 
-def note_pet_versions(report: Report) -> None:
-    pet = datasets.DATASETS["pet"]
-    documents = {d.id: d for d in datasets.read_documents(pet.documents_file)}
-    differing = []
-    for row in test_split.load_test_split(pet.test_file):
-        document = documents[row["document name"]]
-        tags, _ = test_split.sentence_tags(document, row["sentence-ID"], pet.types)
-        if tags != row["ner-tags"]:
-            differing.append(test_split.sentence_id(row))
-    report.notes.append(
-        f"{len(differing)} PET test sentences are labelled differently in pet.jsonl and PET v1.1: "
-        f"{', '.join(differing)}. Whole-document PET runs are scored against pet.jsonl in "
-        "metrics.json, and against v1.1 only in test_*."
-    )
-
-
 def run(uq_dir: pathlib.Path = UQ_PET_TOKEN_DIR, rebuild: bool = True) -> Report:
     """All checks; rebuild=False skips rebuilding the splits with uq-pet-token's code."""
     if not uq_dir.is_dir():
@@ -224,5 +201,4 @@ def run(uq_dir: pathlib.Path = UQ_PET_TOKEN_DIR, rebuild: bool = True) -> Report
     check_reported_runs(report, uq_dir)
     check_runs_here(report)
     check_prompts(report)
-    note_pet_versions(report)
     return report

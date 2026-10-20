@@ -140,14 +140,13 @@ def test_export_test_predictions_of_every_run(tmp_path, fake_client):
     assert [p.parent.parent.parent.name for p in skipped] == ["some"]
 
 
-@pytest.mark.parametrize("task", ["md", "end-to-end"])
+@pytest.mark.parametrize("task", ["md", "md-test-sentences"])
 def test_prompt_preview_needs_no_client(task):
     config = RunConfig(name="preview", provider="nhr", model="m", task=task)
     document = datasets.read_documents(PET.gold_file)[0]
 
     annotators = runner.build_annotators(config, None)
 
-    steps = ["mentions", "relations"] if task == "end-to-end" else ["mentions"]
-    assert list(annotators) == steps
+    assert list(annotators) == ["mentions"]
     params = annotators["mentions"].get_params(document)
     assert [m["role"] for m in params["messages"]] == ["system", "user"]

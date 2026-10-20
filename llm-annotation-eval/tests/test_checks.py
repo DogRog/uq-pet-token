@@ -44,11 +44,3 @@ def test_runs_on_other_gold_files_fail(tmp_path):
 
     assert not report.ok and "run-1 of some-config" in report.results[0].message
     assert "old-model" in report.notes[0]
-
-
-def test_pet_versions_note_the_differing_test_sentences():
-    report = checks.Report()
-
-    checks.note_pet_versions(report)
-
-    assert report.ok and report.notes[0].startswith("8 PET test sentences")

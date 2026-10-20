@@ -8,8 +8,8 @@ SENTENCES = ["the clerk checks the form and the manager signs it"]
 # tokens:     0   1     2      3   4    5   6   7       8     9
 
 
-def doc(make_doc, *mentions, relations=(), doc_id="doc-1"):
-    return make_doc(SENTENCES, mentions=[data.Mention(t, i) for t, i in mentions], relations=relations, doc_id=doc_id)
+def doc(make_doc, *mentions, doc_id="doc-1"):
+    return make_doc(SENTENCES, mentions=[data.Mention(t, i) for t, i in mentions], doc_id=doc_id)
 
 
 def test_mention_stats_per_type(make_doc):
@@ -23,31 +23,11 @@ def test_mention_stats_per_type(make_doc):
     }
 
 
-def test_relation_stats_per_type(make_doc):
-    mentions = [("actor", (1,)), ("activity", (2,)), ("activity data", (3, 4))]
-    gold = doc(make_doc, *mentions, relations=[data.Relation("actor performer", 1, 0), data.Relation("uses", 1, 2)])
-    pred = doc(make_doc, *mentions, relations=[data.Relation("actor performer", 1, 0), data.Relation("flow", 0, 1)])
-
-    assert scoring.relation_stats(gold, pred) == {
-        "actor performer": Stats(num_pred=1, num_gold=1, num_ok=1),
-        "flow": Stats(num_pred=1, num_gold=0, num_ok=0),
-        "uses": Stats(num_pred=0, num_gold=1, num_ok=0),
-    }
-
-
 def test_exact_mentions_need_the_same_tokens(make_doc):
     gold = doc(make_doc, ("actor", (0, 1)), ("activity", (2,)))
     pred = doc(make_doc, ("actor", (1,)), ("activity", (2,)))
 
     assert scoring.total(scoring.mention_stats(gold, pred, exact=True)) == Stats(2, 2, 1)
-
-
-def test_exact_relations_need_exact_head_and_tail(make_doc):
-    gold = doc(make_doc, ("actor", (0, 1)), ("activity", (2,)), relations=[data.Relation("actor performer", 1, 0)])
-    pred = doc(make_doc, ("actor", (1,)), ("activity", (2,)), relations=[data.Relation("actor performer", 1, 0)])
-
-    assert scoring.total(scoring.relation_stats(gold, pred)) == Stats(1, 1, 1)
-    assert scoring.total(scoring.relation_stats(gold, pred, exact=True)) == Stats(1, 1, 0)
 
 
 def test_total():
@@ -82,8 +62,7 @@ def test_score_only_scores_predicted_documents(make_doc):
 
     assert result["documents"] == 1
     assert result["md"]["micro"]["f1"] == 1.0
-    # no relations in gold or prediction counts as perfect
-    assert result["re"]["macro"]["f1"]["mean"] == 1.0
+    assert set(result) == {"documents", "md"}
 
 
 def test_score_rejects_documents_not_in_gold(make_doc):

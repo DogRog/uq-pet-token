@@ -1,9 +1,6 @@
 import json
-import pathlib
 
 from autoannotate import data
-
-GOLD_FILE = pathlib.Path(__file__).parent.parent / "res" / "gold" / "pet.jsonl"
 
 
 def test_sentences_group_tokens_by_sentence_index(make_doc):
@@ -15,31 +12,14 @@ def test_copy_clears_requested_fields_and_normalizes_types(make_doc):
     doc = make_doc(
         ["the clerk checks"],
         mentions=[data.Mention(type=" Actor ", token_document_indices=(1,))],
-        relations=[data.Relation(type="Actor Performer", head_mention_index=0, tail_mention_index=0)],
     )
 
-    copied = doc.copy(clear=["relations"])
+    copied = doc.copy(clear=["entities"])
 
-    assert copied.relations == []
+    assert doc.copy(clear=["mentions"]).mentions == []
     assert copied.mentions == [data.Mention(type="actor", token_document_indices=(1,))]
     assert copied.mentions[0].type == "actor"
     assert copied.tokens == doc.tokens and copied.tokens is not doc.tokens
-
-
-def test_remove_mention_drops_its_relations_and_reindexes_the_rest(make_doc):
-    doc = make_doc(
-        ["a b c d"],
-        mentions=[data.Mention("actor", (0,)), data.Mention("activity", (1,)), data.Mention("activity data", (2,))],
-        relations=[
-            data.Relation("actor performer", head_mention_index=1, tail_mention_index=0),
-            data.Relation("uses", head_mention_index=1, tail_mention_index=2),
-        ],
-    )
-
-    doc.remove_mention(0)
-
-    assert doc.mentions == [data.Mention("activity", (1,)), data.Mention("activity data", (2,))]
-    assert doc.relations == [data.Relation("uses", head_mention_index=0, tail_mention_index=1)]
 
 
 def test_mention_equality_ignores_case_and_index_order():
@@ -61,7 +41,6 @@ def _document_with_annotations(make_doc):
     return make_doc(
         ["the clerk checks the form", "then he signs"],
         mentions=[data.Mention("actor", (1,)), data.Mention("activity", (2,)), data.Mention("activity data", (3, 4))],
-        relations=[data.Relation("uses", head_mention_index=1, tail_mention_index=2)],
     )
 
 
@@ -80,14 +59,24 @@ def test_importer_lowercases_types(tmp_path, make_doc):
     doc = make_doc(["the clerk checks"])
     raw = data.DictExporter().export_document(doc)
     raw["mentions"] = [{"type": "Activity Data", "tokenDocumentIndices": [1]}]
-    raw["relations"] = [{"type": " Actor Performer", "headMentionIndex": 0, "tailMentionIndex": 0}]
     path = tmp_path / "docs.jsonl"
     path.write_text(json.dumps(raw))
 
     [imported] = data.JsonImporter(path).do_import()
 
     assert imported.mentions[0].type == "activity data"
-    assert imported.relations[0].type == "actor performer"
+
+
+def test_importer_ignores_relations_of_older_prediction_files(tmp_path, make_doc):
+    raw = data.DictExporter().export_document(make_doc(["the clerk checks"]))
+    assert "relations" not in raw
+    raw["relations"] = [{"type": "uses", "headMentionIndex": 0, "tailMentionIndex": 0}]
+    path = tmp_path / "docs.jsonl"
+    path.write_text(json.dumps(raw))
+
+    [imported] = data.JsonImporter(path).do_import()
+
+    assert imported.tokens == make_doc(["the clerk checks"]).tokens
 
 
 def test_append_creates_file_and_adds_one_line_per_document(tmp_path, make_doc):
@@ -110,17 +99,3 @@ def test_append_after_export_starts_a_new_line(tmp_path, make_doc):
     exporter.append(make_doc(["b"], doc_id="second"))
 
     assert [d.id for d in data.JsonImporter(path).do_import()] == ["first", "second"]
-
-
-def test_gold_file_loads_with_consistent_annotations():
-    documents = data.JsonImporter(GOLD_FILE).do_import()
-
-    assert len(documents) == 45
-    assert len({d.id for d in documents}) == len(documents)
-    for doc in documents:
-        assert [t.index_in_document for t in doc.tokens] == list(range(len(doc.tokens)))
-        for mention in doc.mentions:
-            assert all(0 <= i < len(doc.tokens) for i in mention.token_document_indices)
-        for relation in doc.relations:
-            assert 0 <= relation.head_mention_index < len(doc.mentions)
-            assert 0 <= relation.tail_mention_index < len(doc.mentions)

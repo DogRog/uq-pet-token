@@ -28,7 +28,7 @@ def _(mo):
       copy of its `evaluate_predictions` (seqeval for exact match). P, R and F1 are micro over
       all mentions; macro F1 averages the F1 of the mention types.
     - **Tasks**: `md-test-sentences` sends each test sentence on its own, like uq-pet-token's
-      models see them; `md` sends whole documents and `end-to-end` adds relations (PET only).
+      models see them; `md` sends whole documents.
     - Only runs that annotated every planned document count; chapter 1 lists the others.
     """)
                 }
@@ -132,13 +132,7 @@ def _(
 
     # what the folder holding pet.jsonl says was predicted, and what to score on the gold
     # documents; md-test-sentences runs annotated single test sentences, scored only on the test
-    _scored = {
-        "end-to-end": ("md", "re"),
-        "md": ("md",),
-        "re": ("re",),
-        "isolated-re": ("re",),
-        "md-test-sentences": (),
-    }
+    _scored = {"md": ("md",), "md-test-sentences": ()}
 
     _rows = []
     # runs of a config: <folder>/run-<i>/<task>/pet.jsonl;
@@ -166,10 +160,8 @@ def _(
         _metrics = {"documents": len(_documents)}
         _exact_metrics = None
         if _scored[_task]:
-            _metrics = scoring.score(_gold["documents"], _documents, _scored[_task])
-            _exact_metrics = scoring.score(
-                _gold["documents"], _documents, _scored[_task], exact=True
-            )
+            _metrics = scoring.score(_gold["documents"], _documents)
+            _exact_metrics = scoring.score(_gold["documents"], _documents, exact=True)
         _planned = _manifest["documents_planned"] if _manifest else len(_gold["documents"])
         _row = {
             "dataset": _dataset,
@@ -204,14 +196,14 @@ def _(
                     _row[f"{_prefix}{_s}_{_name}_sd_docs"] = _m[_s]["macro"][_name]["std"]
         # mentions on the test sentences, scored like uq-pet-token's models
         _test_predicted, _ = test_split.predict_test_split(_gold["test"], _documents, _types)
-        if _task not in ("re", "isolated-re") and _test_predicted is not None:
+        if _test_predicted is not None:
             _test_scores = test_split.evaluate(_gold["test"], _test_predicted)
             for _name in ("precision", "recall", "f1", "macro_f1"):
                 _row[f"test_{_name}"] = _test_scores[f"entity_{_name}"]
                 _row[f"test_partial_{_name}"] = _test_scores[f"entity_partial_{_name}"]
         # the same scoring on all the dataset's sentences, for runs that annotated whole documents
         _all_predicted, _ = test_split.predict_test_split(_gold["sentences"], _documents, _types)
-        if _task not in ("re", "isolated-re") and _all_predicted is not None:
+        if _all_predicted is not None:
             _all_scores = test_split.evaluate(_gold["sentences"], _all_predicted)
             _row["all_sentences_f1"] = _all_scores["entity_f1"]
             _row["all_sentences_partial_f1"] = _all_scores["entity_partial_f1"]
@@ -504,17 +496,10 @@ def _(complete_runs, evaluation, matching, mean_sd, partial, pd, spread):
         }
     else:
         _scored_on_documents = complete_runs.get("md_f1", _missing).notna()
-        _scored_on_documents |= complete_runs.get("re_f1", _missing).notna()
         _complete = complete_runs[_scored_on_documents] if len(complete_runs) else complete_runs
-        # relation columns only if some run extracted relations
-        _scored = [s for s in ("md", "re") if _complete.get(f"{s}_f1", pd.Series()).notna().any()]
         # the lenient score of the gold documents is overlap, not uq-pet-token's partial match
         _prefix = "exact_" if matching.value == "exact" else ""
-        _columns = {
-            f"{s} {name}": f"{_prefix}{s}_{name}"
-            for s in _scored
-            for name in ("precision", "recall", "f1")
-        }
+        _columns = {f"md {name}": f"{_prefix}md_{name}" for name in ("precision", "recall", "f1")}
 
     def _mean_sd(group, column):
         if spread.value == "documents":
@@ -556,7 +541,7 @@ def _(
     _gold_file = _dataset.gold_file.relative_to(_dataset.gold_file.parents[2])
     _test_file = _dataset.test_file.relative_to(_dataset.test_file.parents[2])
     _sources = {
-        "pet": "`res/gold/pet.jsonl` (the PET release)",
+        "pet": f"`{_gold_file}` (PET v1.1's sentences, grouped into documents)",
         "quishpi": (
             f"`{_gold_file}` (Quishpi's sentences as cut by uq-pet-token, grouped into documents)"
         ),
@@ -567,8 +552,7 @@ def _(
         "all": f"""
     - Scored against {_sources[dataset.value]}, macro-averaged over documents.
     - A predicted mention is correct if its type matches a gold mention and
-      {_match[matching.value]}; a relation if its type matches and both its head and tail
-      match that way. Each gold annotation matches once.
+      {_match[matching.value]}. Each gold mention matches once.
     - Partial match here is this project's overlap match, not uq-pet-token's partial match;
       the test split uses uq-pet-token's.
     - Runs that only annotated test sentences (`md-test-sentences`) have no score here.
@@ -689,9 +673,6 @@ def _(mo):
     mo.md("""
     ## 5. Caveats
 
-    - **Gold differs on PET.** The test split comes from PET v1.1, whose labels differ from
-      `res/gold/pet.jsonl` in 8 test sentences, so PET's whole-document and test-split
-      scores use slightly different gold.
     - **Different averages.** Whole-document scores are macro over documents; test-split
       scores are micro over mentions. They do not compare directly.
     - **Picked on test.** The best LLM configuration is chosen on the test split; there is no

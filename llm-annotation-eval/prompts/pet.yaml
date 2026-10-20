@@ -1,5 +1,5 @@
-# PET's mention and relation types, procedures, disambiguation hints and format examples,
-# filled into mentions.txt and relations.txt (see README.md).
+# PET's mention types, procedure, disambiguation hints and format example,
+# filled into mentions.txt (see README.md).
 # Each description is one paragraph: YAML joins its lines with spaces (">-").
 mentions:
   types:
@@ -63,64 +63,3 @@ mentions:
     ### Output Example
 
     {{mentions}}
-
-relations:
-  types:
-    uses: >-
-      Focus on mentions of type "activity". Find the "activity_data" mention, that is being
-      used or created during the execution of this activity. If you find one, extract a
-      relation of type "uses". The source mention is the activity, the target mention is the
-      "activity_data" mention.
-    flow: >-
-      Focus on mentions of types "Activity", "XOR_Gateway", "AND_Gateway", and
-      "Condition_Specification". If a condition_specification follows an XOR_Gateway connect
-      the XOR_Gateway (source) to the Condition_Specification (target). If an Activity,
-      XOR_Gateway, or AND_Gateway follows an Activity, connect the one appearing earlier
-      (head) with the latter one (target). If an Activity, XOR_Gateway, AND_Gateway, or
-      Condition_Specification follows an Activity, XOR_Gateway, AND_Gateway, or Condition
-      Specification, connect the earlier one (source) to the latter one (target).
-    actor performer: >-
-      Focus on mentions of type "activity" and look for the "actor", that actively performs
-      the activity (not is passively affected by it!). If you find one, extract a relation of
-      type "actor performer". The source mention is the "activity", and the target mention is
-      the "actor".
-    actor recipient: >-
-      Focus on mentions of type "activity" and look for the "actor", that receives the result
-      of some activity execution, i.e., they are passively affected by the activity. If you
-      find one, extract a relation of type "actor recipient". The source mention is the
-      "Activity", the target mention is the "Actor".
-    same gateway: >-
-      Textual descriptions of gateways are often spread over several phrases, especially the
-      different outgoing paths, this relation links these disjointed descriptions together.
-      Look for elements of type "xor_gateway" and "and_gateway". If you find another mention
-      of the same type, check if they describe the same decision point in the process
-      execution. If they do, extract a relation of type "same gateway", with the source
-      mention being the one that appears earlier in the text, and the target mention being the
-      one that appears later.
-    further specification: >-
-      Focus on mentions of type "activity". Try and find mentions of type
-      "further_specification", that describe how this activity has to be executed, or describe
-      the activity further. If you find one, extract a relation of type
-      "further_specification", where the source mention is the activity and the target mention
-      is the mention of type "further_specification".
-  procedure: |-
-    1. Find the relations of type uses.
-    2. Find the relations of type flow.
-    3. Find the relations of types actor performer and actor recipient: for each Activity, the Actors that perform it or receive its result.
-    4. Find the relations of type same gateway, between XOR Gateways and between AND Gateways.
-    5. Find the relations of type further specification, from Activities to Further Specifications.
-  disambiguation: |-
-    - The direction of a flow relation is the order in which things happen, which is not always the order of the text. In "The clerk files the claim after he checked it.", "checked" happens first, so the flow relation goes from "checked" (source) to "files" (target).
-    - In "The clerk sends the decision to the customer.", "the clerk" is the actor performer of "sends", and "the customer" its actor recipient.
-  # uq-pet-token's bootstrap sentences with their gold mentions tagged and the relations between
-  # them in res/gold/pet.jsonl (relations to other sentences left out): text is the sentences
-  # with the mentions tagged, as the documents are given; relations one line per relation, type,
-  # source and target separated by a tab
-  example: |-
-    ### Input Example
-
-    {{text}}
-
-    ### Output Example
-
-    {{relations}}

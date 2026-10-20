@@ -3,7 +3,7 @@ import pathlib
 
 import pytest
 
-from autoannotate import JsonExporter, JsonImporter, data
+from autoannotate import JsonExporter, data
 from eval import datasets, test_split
 
 RES_DIR = pathlib.Path(__file__).parent.parent / "res" / "gold"
@@ -45,8 +45,10 @@ class TestTestSplitFile:
         by_key = {(r["document name"], r["sentence-ID"]): r for r in all_sentences}
         assert all(by_key[(r["document name"], r["sentence-ID"])] == r for r in test)
 
-    def test_sentences_match_the_gold_documents(self, test):
-        gold = {d.id: d for d in JsonImporter(RES_DIR / "pet.jsonl").do_import()}
+    def test_sentences_match_the_documents_whole_document_runs_annotate(self, test):
+        pet = datasets.DATASETS["pet"]
+        gold = {d.id: d for d in datasets.read_documents(pet.gold_file)}
+        assert len(gold) == 45
         for r in test:
             tokens = [t.text for t in gold[r["document name"]].sentences[r["sentence-ID"]]]
             assert tokens == r["tokens"]

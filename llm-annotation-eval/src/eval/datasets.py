@@ -3,8 +3,7 @@
 uq-pet-token splits PET v1.1, Quishpi and MedicalProcessInstruks into sentences the same way (see
 eval.test_split). For each, ``res/gold/`` holds every sentence, the test split and the bootstrap
 sentences, one sentence per line with BIO tags; ``scripts/uq-pet-token-splits.py`` writes them
-with uq-pet-token's own code. Whole-document runs annotate PET's gold documents
-(``res/gold/pet.jsonl``, with relations), or for the other datasets their sentences grouped back
+with uq-pet-token's own code. Whole-document runs annotate a dataset's sentences grouped back
 into documents, with the tagged mentions as gold.
 
 MedicalProcessInstruks is gated, so its files are not tracked by git; they must be generated
@@ -33,13 +32,11 @@ class Dataset:
     # uq-pet-token's bootstrap sentences: the labelled training sentences its token classifiers
     # start from, and the prompts' examples
     bootstrap_file: pathlib.Path
-    # gold documents for whole-document runs; None: the sentences grouped into documents
-    documents_file: typing.Optional[pathlib.Path] = None
 
     @property
     def gold_file(self) -> pathlib.Path:
-        """What whole-document runs annotate and are scored against, see read_documents."""
-        return self.documents_file or self.sentences_file
+        """What whole-document runs annotate: the sentences, grouped by read_documents."""
+        return self.sentences_file
 
     def input_file(self, task: str) -> pathlib.Path:
         """md-test-sentences runs annotate the test sentences, the others whole documents."""
@@ -82,7 +79,6 @@ DATASETS = {
             sentences_file=GOLD_DIR / "pet-v1.1.jsonl",
             test_file=GOLD_DIR / "pet-v1.1-test.jsonl",
             bootstrap_file=GOLD_DIR / "pet-v1.1-bootstrap.jsonl",
-            documents_file=GOLD_DIR / "pet.jsonl",
         ),
         Dataset(
             name="quishpi",
@@ -157,7 +153,6 @@ def documents_from_sentences(sentences: typing.List[test_split.Row]) -> typing.L
                 category="",
                 tokens=tokens,
                 mentions=mentions,
-                relations=[],
                 entities=[],
             )
         )
@@ -165,7 +160,7 @@ def documents_from_sentences(sentences: typing.List[test_split.Row]) -> typing.L
 
 
 def read_documents(path: pathlib.Path) -> typing.List[data.Document]:
-    """Reads gold documents: PET's document format, or one sentence per line with BIO tags."""
+    """Reads documents: one sentence per line with BIO tags, or the predictions' document format."""
     with open(path, encoding="utf8") as f:
         first = json.loads(next(line for line in f if line.strip()))
     if "ner-tags" in first:

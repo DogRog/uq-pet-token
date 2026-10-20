@@ -8,13 +8,10 @@ import autoannotate
 from eval import datasets
 
 REASONING_EFFORTS = typing.get_args(typing.get_args(autoannotate.ReasoningEffort)[0])
-# "end-to-end": mentions, then relations between them; "md": mention detection only;
-# "md-test-sentences": mention detection on uq-pet-token's test sentences, each sent on its own
-# (see eval.test_split). Also the name of the predictions folder in a run, which the results
-# notebook scores by.
-TASKS = ("end-to-end", "md", "md-test-sentences")
-# relations are only defined for PET
-MENTION_TASKS = ("md", "md-test-sentences")
+# "md": mention detection on whole documents; "md-test-sentences": mention detection on
+# uq-pet-token's test sentences, each sent on its own (see eval.test_split). Also the name of the
+# predictions folder in a run, which the results notebook scores by.
+TASKS = ("md", "md-test-sentences")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -26,7 +23,7 @@ class RunConfig:
     model: str
     # see eval.datasets.DATASETS
     dataset: str = "pet"
-    task: str = "end-to-end"
+    task: str = "md"
     # None: don't send the parameter, many models on the NHR@FAU gateway reject some values
     reasoning_effort: autoannotate.ReasoningEffort = None
     # None: all gold documents
@@ -110,7 +107,7 @@ def parse_configs(text: str, name: str, where: str = "config") -> typing.List[Ru
             for key in ("model", "upstream"):
                 if key in entry:
                     run_values[key] = entry[key]
-            name = run_name(values.get("dataset", "pet"), entry["name"], values.get("task", "end-to-end"), effort)
+            name = run_name(values.get("dataset", "pet"), entry["name"], values.get("task", "md"), effort)
             configs.append(_validated(entry_where, name, run_values))
     return configs
 
@@ -145,10 +142,6 @@ def _validated(where: str, name: str, values: typing.Dict[str, typing.Any]) -> R
         raise ValueError(f"{where}: dataset must be one of {list(datasets.DATASETS)}.")
     if config.task not in TASKS:
         raise ValueError(f"{where}: task must be one of {list(TASKS)}.")
-    if config.dataset != "pet" and config.task not in MENTION_TASKS:
-        raise ValueError(
-            f"{where}: {config.dataset} has no relations, task must be one of {list(MENTION_TASKS)}."
-        )
     if config.reasoning_effort is not None and config.reasoning_effort not in REASONING_EFFORTS:
         raise ValueError(f"{where}: reasoning_effort must be one of {list(REASONING_EFFORTS)}, or left out.")
     if config.max_documents is not None and not (isinstance(config.max_documents, int) and config.max_documents > 0):

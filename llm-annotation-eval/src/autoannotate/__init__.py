@@ -7,15 +7,13 @@ from .data import (
     JsonExporter,
     JsonImporter,
     Mention,
-    Relation,
     Token,
 )
-from .definitions import MentionDefinition, RelationDefinition
+from .definitions import MentionDefinition
 from .entities import EntityParser, LLMEntitiesAnnotator
 from .mentions import LLMMentionAnnotator, MentionParser
 from .prompts import Prompt
 from .providers import PROVIDERS, Provider, get_provider
-from .relations import LLMRelationsAnnotator, RelationParser
 from .util import document_from_string
 
 __all__ = [
@@ -31,10 +29,8 @@ __all__ = [
     "JsonExporter",
     "JsonImporter",
     "Mention",
-    "Relation",
     "Token",
     "MentionDefinition",
-    "RelationDefinition",
     "EntityParser",
     "LLMEntitiesAnnotator",
     "LLMMentionAnnotator",
@@ -43,7 +39,5 @@ __all__ = [
     "PROVIDERS",
     "Provider",
     "get_provider",
-    "LLMRelationsAnnotator",
-    "RelationParser",
     "document_from_string",
 ]

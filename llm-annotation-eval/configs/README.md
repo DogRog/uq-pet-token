@@ -12,7 +12,7 @@ uv run python notebooks/run_experiments.py --config configs/quishpi/md.yaml --on
 
 `--workers` sets how many documents of a run are annotated at the same time (default 4). Each session in `run.json` records it, as parallel requests can slow down each call. `--only` runs just the configs whose names match one of the given patterns (`*` for any text); it can be repeated.
 
-A file with `model` is one config, named after the file, like the end-to-end configs in this folder. A file with `models` lists models with their reasoning efforts, and every model and effort is a config; the other keys apply to all of them:
+A file with `model` is one config, named after the file, like the single-model configs in this folder. A file with `models` lists models with their reasoning efforts, and every model and effort is a config; the other keys apply to all of them:
 
 ```yaml
 task: md
@@ -33,11 +33,11 @@ Its configs are named `<name>-<task>`, followed by `-reasoning-<effort>` unless 
 
 | Key | Required | Meaning |
 |---|---|---|
-| `dataset` | no | `pet` (default), `quishpi` or `medical`, see the README. Quishpi and medical only have the tasks `md` and `md-test-sentences` |
+| `dataset` | no | `pet` (default), `quishpi` or `medical`, see the README |
 | `provider` | yes | `openai`, `nhr` (NHR@FAU gateway) or `openrouter`, see `src/autoannotate/providers.py` |
 | `model` | yes, or `models` | model ID, e.g. `gpt-6-sol` or `deepseek-ai/DeepSeek-V4.1-Flash` |
 | `models` | yes, or `model` | models to run, each with `name`, `model` and `reasoning_effort` (see above) |
-| `task` | no | `end-to-end` (default): mentions, then relations between them. `md`: mention detection only, no relation calls and no relation scores. `md-test-sentences`: mention detection on uq-pet-token's test sentences of the dataset (84 for PET), one sentence per request without its document (see the README) |
+| `task` | no | `md` (default): mention detection on whole documents, the dataset's sentences grouped back into them. `md-test-sentences`: mention detection on uq-pet-token's test sentences of the dataset (84 for PET), one sentence per request without its document (see the README) |
 | `upstream` | no | `openrouter` only: the upstream provider that serves the model, e.g. `alibaba` or `deepinfra/bf16`, or a list tried in order; no fallback to others. With `models`, given per model. Left out, OpenRouter picks one per run (see below) |
 | `reasoning_effort` | no | `none`, `minimal`, `low`, `medium` or `high`. Left out (or `null`), the parameter is not sent and the model uses its default. With `models`, given per model |
 | `max_documents` | no | only annotate the first n gold documents (or test sentences), e.g. for a quick test. Left out: all |

@@ -89,13 +89,11 @@ class TestParse:
     def test_keeps_document_but_drops_previous_annotations(self, doc):
         from autoannotate import data
         doc.mentions.append(data.Mention("activity", (2,)))
-        doc.relations.append(data.Relation("flow", 0, 0))
 
         parsed = MentionParser().parse(doc, "clerk\tActor\t0")
 
         assert parsed.id == doc.id and parsed.tokens == doc.tokens
         assert parsed.mentions == [data.Mention("actor", (1,))]
-        assert parsed.relations == []
 
     @pytest.mark.xfail(strict=True, reason=(
         "LangExtract's aligner can report two lines as exact matches on the same span when the "
