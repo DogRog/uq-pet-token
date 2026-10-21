@@ -63,6 +63,7 @@ def _():
     from wigglystuff import FloatingPanel, ParallelCoordinates
 
     from analysis import paper_results as pr
+    from analysis import suggestion_heatmap as sh
     from analysis.acquisition_analysis import tag_selections
     from analysis.charts import make_tag_category_coverage_chart, make_tag_coverage_chart
 
@@ -104,6 +105,7 @@ def _():
         results_root,
         series_color,
         series_colors,
+        sh,
         stats,
         tag_selections,
     )
@@ -2285,10 +2287,126 @@ def _(
     return
 
 
+@app.cell
+def _(mo, refresh, results_root, sh):
+    refresh.value
+    _files = sh.heatmap_files(results_root)
+    heatmap_file = mo.ui.dropdown(
+        _files, value=next(iter(_files), None), label="Snapshot", searchable=True
+    )
+    return (heatmap_file,)
+
+
+@app.cell
+def _(heatmap_file, mo, sh):
+    mo.stop(
+        heatmap_file.value is None,
+        mo.md(
+            "## 11. Suggestion heatmap\n"
+            "No heatmaps yet: run `scripts/suggestion_heatmap.py train`, then `score`."
+        ),
+    )
+    heatmap = sh.load_heatmap(heatmap_file.value)
+    _documents = sh.document_names(heatmap)
+    heatmap_document = mo.ui.dropdown(
+        _documents,
+        # Open on the document with the most suggestions in this round.
+        value=max(
+            _documents,
+            key=lambda name: sh.suggestion_counts(sh.document_sentences(heatmap, name))[
+                "suggested"
+            ],
+        ),
+        label="Document",
+        searchable=True,
+    )
+    return heatmap, heatmap_document
+
+
+@app.cell(hide_code=True)
+def _(heatmap, heatmap_document, heatmap_file, mo, pr, sh):
+    _sentences = sh.document_sentences(heatmap, heatmap_document.value)
+    _counts = sh.suggestion_counts(_sentences)
+    _model = pr.MODELS.get(heatmap["checkpoint"], heatmap["checkpoint"])
+    mo.vstack(
+        [
+            mo.md(
+                "## 11. Suggestion heatmap\n"
+                "### One round\n"
+                "How the uncertainty arm is used in practice: the model trained on the "
+                "labelled set so far scores every word of an unlabelled document, and the "
+                f"K = {heatmap['k']} most uncertain words across the pool go to the annotator "
+                "next. Shading is the word's score under one round's saved model snapshot "
+                "(`scripts/suggestion_heatmap.py`); outlined words are the next round's "
+                "suggestions, faded words are already labelled, and underlines mark gold "
+                "entities, which the model never sees before a word is labelled."
+            ),
+            mo.hstack([heatmap_file, heatmap_document], justify="start", wrap=True),
+            mo.md(
+                f"{_model} on {pr.DATASETS.get(heatmap['dataset'], heatmap['dataset'])}, "
+                f"{heatmap['uq_metric']}, model seed {heatmap['model_seed']}, after round "
+                f"{heatmap['round']} of {heatmap['total_rounds']}. This document has "
+                f"{_counts['words']} words: {_counts['labelled']} labelled, "
+                f"{_counts['suggested']} suggested for round {heatmap['round'] + 1}, "
+                f"{_counts['suggested_in_entities']} of them inside gold entities."
+            ),
+            mo.Html(sh.legend_html()),
+            mo.Html(sh.heatmap_html(_sentences, heatmap["uq_metric"])),
+            mo.accordion({"LaTeX for the paper": mo.plain_text(sh.heatmap_latex(_sentences))}),
+        ]
+    )
+    return
+
+
+@app.cell
+def _(mo, refresh, results_root, sh):
+    refresh.value
+    _pairs = sh.loop_pairs(results_root)
+    loop_pair = mo.ui.dropdown(_pairs, value=next(iter(_pairs), None), label="Rounds")
+    return (loop_pair,)
+
+
+@app.cell
+def _(loop_pair, mo, sh):
+    mo.stop(
+        loop_pair.value is None,
+        mo.md(
+            "### Active learning loop\n"
+            "Needs heatmaps of two consecutive rounds: `train` with both rounds in "
+            "`--rounds`, then `score` each."
+        ),
+    )
+    loop_before, loop_after = (sh.load_heatmap(path) for path in loop_pair.value)
+    _options = {
+        f"{s['document_name']} · {s['sentence_id']}: {' '.join(s['tokens'][:8])} …": s["pool_idx"]
+        for s in sh.loop_sentences(loop_before, loop_after)
+    }
+    loop_sentences = mo.ui.multiselect(_options, value=list(_options)[:2], label="Sentences")
+    return loop_after, loop_before, loop_sentences
+
+
+@app.cell(hide_code=True)
+def _(loop_after, loop_before, loop_pair, loop_sentences, mo, sh):
+    mo.vstack(
+        [
+            mo.md(
+                "### Active learning loop\n"
+                "The same sentences across one round of the loop. The model suggests its most "
+                "uncertain words, with its own guess in red; the annotator labels them, "
+                "confirming a guess (green tick) or correcting it; the model is updated and "
+                "suggests again. Only sentences with suggestions in both rounds are listed."
+            ),
+            mo.hstack([loop_pair, loop_sentences], justify="start", wrap=True),
+            mo.Html(sh.loop_html(loop_before, loop_after, loop_sentences.value)),
+        ]
+    )
+    return
+
+
 @app.cell(hide_code=True)
 def _(mo):
     mo.md("""
-    ## 11. Caveats
+    ## 12. Caveats
 
     - **Test split sizes.** Quishpi tests on 41 sentences and PET on 84, so single-round
       scores move by several F1 points between seeds. Gap AUC averages over every round

@@ -80,6 +80,14 @@ _Avoid_: Rehearsal, memory
 The share of the pool's candidates that will be labelled by the end of the final round.
 _Avoid_: Pool percent (bare), max pool percent
 
+**Model snapshot**:
+The uncertainty arm's model saved after a round, which the suggestion heatmap scores with.
+_Avoid_: Checkpoint (which names the base model), saved model
+
+**Suggestion heatmap**:
+One pool document shaded by each word's uncertainty under a model snapshot, with the next round's selections outlined.
+_Avoid_: Attention map, saliency map, uncertainty map
+
 ### Evaluation
 
 **Exact match**:

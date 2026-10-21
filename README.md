@@ -76,6 +76,7 @@ at the project root (see [Weights & Biases](#weights--biases)).
 | Tune and train the fully supervised upper bound | `scripts/run_supervised_all_models.sh` |
 | Sample hyperparameters and compare UQ against random | `scripts/run_random_search_all_models.sh` |
 | Compare the paper rerun across datasets and models | `notebooks/paper_results.py` |
+| Save model snapshots and score a pool document for the suggestion heatmap | `scripts/suggestion_heatmap.py` |
 | Check PET, Quishpi, and MedicalProcessInstruks preprocessing against the raw files and compare their lexical diversity and difficulty | `notebooks/preprocessing_checks.py` |
 
 ## Protocol
@@ -455,7 +456,26 @@ The notebook reads saved files and does not train models. It compares every data
 model across the stages, in numbered chapters: progress and random-baseline validation
 winners, the headline gap, learning curves, label efficiency, the supervised ceiling and how
 much room is left, LLM annotation, top-K against Gumbel noise, UQ metrics, the random sweep,
-and a test-split entity viewer.
+a test-split entity viewer, and the suggestion heatmap.
+
+The suggestion heatmap shows the uncertainty arm as it would be used in practice: one
+round's model scores every word of a pool document, and the next round's suggestions are
+outlined. It needs a run that saves model snapshots, by default DistilBERT with margin on
+PET, model seed 0, at the validation winner:
+
+```bash
+uv run scripts/suggestion_heatmap.py train --rounds 0 10 25 50
+uv run scripts/suggestion_heatmap.py score results/suggestion_heatmap/distilbert-base-cased-margin-seed0 --round 10
+```
+
+`train` saves the uncertainty arm's model after each listed round under
+`snapshots/seed<seed>/<metric>/round_<round>/`, next to an ordinary run record. `score`
+loads one snapshot, scores every pool word without labels, checks that the next round's
+suggestions get the scores the run saved, and writes `heatmap_round_<round>.json` with
+each word's score and predicted tag. The notebook chapter renders it, with a LaTeX version
+(`xcolor`) for the paper. Heatmaps of two consecutive rounds (say `--rounds 10 11`, each
+scored) also draw one turn of the active learning loop: the model's suggestions with its
+guessed tags, the annotator's labels, and the updated model's next suggestions.
 
 ### 5. Appendix: test-tuned random oracle
 

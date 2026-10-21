@@ -7,7 +7,7 @@ import multiprocessing
 import random
 import traceback
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import datetime
 from multiprocessing.connection import wait
 from pathlib import Path
@@ -184,6 +184,16 @@ def acquisition_schedule(scoreable_tokens: int, k: int, max_pool_percent: float)
     return rounds, requested_tokens
 
 
+def snapshot_path(snapshot_dir: Path, seed: int, metric: str, round_idx: int) -> Path:
+    """Where the uncertainty arm's model is saved after a round; round 0 is the bootstrap."""
+    return snapshot_dir / f"seed{seed}" / metric / f"round_{round_idx:03d}"
+
+
+def _save_snapshot(model, tokenizer, path: Path) -> None:
+    model.save_pretrained(path)
+    tokenizer.save_pretrained(path)
+
+
 def _result_row(
     seed: int,
     arm: str,
@@ -266,13 +276,16 @@ def run_metric_comparisons(
     random_only: bool = False,
     gumbel_noise: bool = False,
     max_per_word_form: int | None = None,
+    snapshot_dir: Path | None = None,
+    snapshot_rounds: Collection[int] = (),
     progress_callback: Callable[[str, list[dict]], None] | None = None,
 ) -> dict[str, tuple[list[dict], list[dict], list[list[list[str]]]]]:
     """Share one bootstrap and random trajectory per seed across the requested metrics.
 
     Each metric gets its evaluation rows, selections, and the predicted test tags behind
     each row. Learners execute sequentially. CPU bootstrap state and random records live
-    only within this call.
+    only within this call. With ``snapshot_rounds``, the uncertainty arm's model is saved
+    under ``snapshot_dir`` after each of those rounds (see ``snapshot_path``).
     """
     if not uq_metrics or len(set(uq_metrics)) != len(uq_metrics):
         raise ValueError("uq_metrics must be nonempty and unique")
@@ -291,6 +304,10 @@ def run_metric_comparisons(
         raise ValueError("model seeds must be unique")
     if dataset not in DATASET_TAGS:
         raise ValueError(f"dataset must be one of {tuple(DATASET_TAGS)}")
+    if snapshot_rounds and (snapshot_dir is None or random_only):
+        raise ValueError("snapshot_rounds needs snapshot_dir and an uncertainty arm")
+    if any(round_idx < 0 for round_idx in snapshot_rounds):
+        raise ValueError("snapshot_rounds must be non-negative")
     labels = DATASET_TAGS[dataset]
     CONSOLE.print(
         f"[bold cyan]Compute precision:[/] [bold]{precision.upper()}[/]"
@@ -314,6 +331,8 @@ def run_metric_comparisons(
         "max_length": max_length,
         "gumbel_noise": gumbel_noise,
         "max_per_word_form": max_per_word_form,
+        "snapshot_dir": snapshot_dir,
+        "snapshot_rounds": snapshot_rounds,
     }
     if seed_workers > 1 and len(model_seeds) > 1:
         return _run_concurrent_seeds(
@@ -354,6 +373,8 @@ def run_metric_comparisons(
             prepared_batches=pool_batches,
         )
         rounds, token_budget = acquisition_schedule(len(scoreable), k, max_pool_percent)
+        if any(round_idx > rounds for round_idx in snapshot_rounds):
+            raise ValueError(f"snapshot_rounds must not exceed the {rounds} rounds")
         CONSOLE.print(
             f"[bold cyan]acquisition budget[/] [bold]{token_budget}[/] of "
             f"{len(scoreable)} scoreable tokens "
@@ -437,6 +458,12 @@ def run_metric_comparisons(
                 )
                 optimizer.load_state_dict(copy.deepcopy(bootstrap_optimizer_state))
                 optimizers[arm] = optimizer
+            if 0 in snapshot_rounds:
+                _save_snapshot(
+                    models["uncertainty"],
+                    tokenizer,
+                    snapshot_path(snapshot_dir, model_seed, uq_metric, 0),
+                )
             acquired = {arm: set() for arm in active_arms}
             replay_banks = {arm: seed_replay_items(seed_examples) for arm in active_arms}
 
@@ -499,6 +526,12 @@ def run_metric_comparisons(
                     )
                     acquired[arm].update(chosen[arm])
                     replay_banks[arm].extend(new_items)
+                    if arm == "uncertainty" and round_idx in snapshot_rounds:
+                        _save_snapshot(
+                            models[arm],
+                            tokenizer,
+                            snapshot_path(snapshot_dir, model_seed, uq_metric, round_idx),
+                        )
                     metrics, predicted = evaluate_model(
                         models[arm],
                         tokenizer,
