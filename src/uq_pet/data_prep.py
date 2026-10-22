@@ -36,7 +36,6 @@ NER_TAGS = [
     "I-AND Gateway",
 ]
 
-CONLL_TAGS = ["O", "B-PER", "I-PER", "B-ORG", "I-ORG", "B-LOC", "I-LOC", "B-MISC", "I-MISC"]
 QUISHPI_TAGS = ["O", "B-Action", "I-Action", "B-Entity", "I-Entity", "B-Condition", "I-Condition"]
 # MedicalProcessInstruks stores unnamed integer tags: odd ids begin a type and the next id
 # continues it. Only the types that occur are kept, named by their begin id.
@@ -70,14 +69,9 @@ MEDICAL_TYPE_NAMES = {
 }
 DATASET_TAGS = {
     "pet": NER_TAGS,
-    "conll2003": CONLL_TAGS,
     "quishpi": QUISHPI_TAGS,
     "medical": MEDICAL_TAGS,
 }
-
-# The Parquet conversion of the relocated Hub dataset, pinned so splits cannot drift.
-CONLL_REPO = "eriktks/conll2003"
-CONLL_REVISION = "ce85b39f9dd99f552d0739d456814e95fb6a39b0"
 
 # Quishpi et al.'s judge annotations of process texts, pinned at the bpm2020 branch head.
 QUISHPI_REPO = "PADS-UPC/atdp-extractor"
@@ -219,35 +213,6 @@ def _label_free_pool(
         for word_idx, tag in enumerate(example["ner_tags"])
     }
     return pool_inputs, pool_gold
-
-
-def _materialize_conll(dataset: Dataset, split: str) -> list[dict]:
-    return [
-        {
-            "document_name": split,
-            "sentence_id": int(row["id"]),
-            "tokens": [str(token) for token in row["tokens"]],
-            "ner_tags": [int(tag) for tag in row["ner_tags"]],
-        }
-        for row in dataset.to_list()
-    ]
-
-
-def load_conll_splits(
-    *,
-    n_seed_sentences: int = N_SEED_SENTENCES,
-    split_seed: int = SEED,
-    pool_percent: float = 100.0,
-) -> tuple[list[dict], list[dict], dict[TokenKey, int], list[dict]]:
-    """Draw seed and pool from CoNLL train; evaluate on the full CoNLL test split."""
-    dataset = load_dataset(CONLL_REPO, revision=CONLL_REVISION)
-    if dataset["train"].features["ner_tags"].feature.names != CONLL_TAGS:
-        raise ValueError("CoNLL-2003 label order differs from CONLL_TAGS")
-    train = dataset["train"].shuffle(seed=split_seed)
-    seed_examples = _materialize_conll(train.select(range(n_seed_sentences)), "train")
-    raw_pool = _materialize_conll(train.select(range(n_seed_sentences, len(train))), "train")
-    test_examples = _materialize_conll(dataset["test"], "test")
-    return seed_examples, *_label_free_pool(raw_pool, pool_percent), test_examples
 
 
 def download_quishpi(directory: Path = QUISHPI_DIR) -> Path:
@@ -412,9 +377,6 @@ def load_splits(dataset: str, pool_percent: float = 100.0) -> tuple[tuple, dict]
         path = download_pet_ner()
         splits = load_pet_splits(path, pool_percent=pool_percent)
         identity = {"dataset_sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest()}
-    elif dataset == "conll2003":
-        splits = load_conll_splits(pool_percent=pool_percent)
-        identity = {"dataset": CONLL_REPO, "dataset_revision": CONLL_REVISION}
     elif dataset == "quishpi":
         splits = load_quishpi_splits(download_quishpi(), pool_percent=pool_percent)
         identity = {"dataset": QUISHPI_REPO, "dataset_revision": QUISHPI_REVISION}

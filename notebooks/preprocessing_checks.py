@@ -14,8 +14,7 @@ def _(mo):
     Does `data_prep` turn each dataset's raw files into the right sentences, BIO tags, and
     splits? The notebook runs the real pipeline for PET, Quishpi, and
     MedicalProcessInstruks, then checks its output against the raw files and the protocol
-    in the README, ADR 0005, and ADR 0008. CoNLL-2003 ships its own splits and is not
-    covered.
+    in the README, ADR 0005, and ADR 0008.
     """),
             mo.accordion(
                 {

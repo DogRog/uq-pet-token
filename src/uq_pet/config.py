@@ -18,7 +18,7 @@ DEFAULT_CHECKPOINTS = (
     "answerdotai/ModernBERT-base",
 )
 DEFAULT_MODEL_SEEDS = (0, 1, 2, 3, 4)
-Dataset = Literal["pet", "conll2003", "quishpi", "medical"]
+Dataset = Literal["pet", "quishpi", "medical"]
 
 
 IMPLICIT_DEFAULTS = {
@@ -50,10 +50,7 @@ class ExperimentConfig(BaseModel):
     )
     dataset: Dataset = Field(
         default="pet",
-        description=(
-            "PET; CoNLL-2003 with seed and pool from train and the full test split; "
-            "or Quishpi or MedicalProcessInstruks, split like PET."
-        ),
+        description="PET, or Quishpi or MedicalProcessInstruks split like PET.",
     )
     dataset_percent: float = Field(
         default=100.0,

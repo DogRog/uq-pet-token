@@ -6,62 +6,16 @@ import httpx2
 import polars as pl
 import pytest
 import torch
-from datasets import ClassLabel, Dataset, DatasetDict, Features, Sequence, Value
 from huggingface_hub.errors import GatedRepoError
 
 from uq_pet import active_learning, data_prep, search, supervised
 from uq_pet.config import ExperimentConfig, RandomSearchConfig, SupervisedConfig
 from uq_pet.data_prep import (
-    CONLL_TAGS,
     MEDICAL_TAGS,
     QUISHPI_TAGS,
     brat_sentences,
-    load_conll_splits,
     load_splits,
 )
-
-
-def fake_conll(n_train, n_test, names=CONLL_TAGS):
-    features = Features(
-        {
-            "id": Value("string"),
-            "tokens": Sequence(Value("string")),
-            "ner_tags": Sequence(ClassLabel(names=names)),
-        }
-    )
-
-    def split(prefix, n):
-        return Dataset.from_dict(
-            {
-                "id": [str(idx) for idx in range(n)],
-                "tokens": [[f"{prefix}{idx}", "x"] for idx in range(n)],
-                "ner_tags": [[1, 0] for _ in range(n)],
-            },
-            features=features,
-        )
-
-    return DatasetDict({"train": split("train", n_train), "test": split("test", n_test)})
-
-
-def test_conll_uses_full_test_and_nested_pool_percentages(monkeypatch):
-    monkeypatch.setattr(data_prep, "load_dataset", lambda *args, **kwargs: fake_conll(405, 100))
-
-    seed, pool, gold, test = load_conll_splits()
-
-    assert (len(seed), len(pool), len(test)) == (5, 400, 100)
-    assert all("ner_tags" not in example for example in pool)
-    assert [example["pool_idx"] for example in pool] == list(range(400))
-    assert len(gold) == 2 * 400 and set(gold.values()) == {0, 1}
-    seed_tokens = {example["tokens"][0] for example in seed}
-    pool_tokens = {example["tokens"][0] for example in pool}
-    assert not seed_tokens & pool_tokens
-    assert all(example["document_name"] == "test" for example in test)
-    assert load_conll_splits() == (seed, pool, gold, test)
-
-    half_seed, half_pool, half_gold, half_test = load_conll_splits(pool_percent=50)
-    assert (half_seed, half_test) == (seed, test)
-    assert half_pool == pool[:200]
-    assert half_gold == {key: tag for key, tag in gold.items() if key[0] < 200}
 
 
 def test_pet_pool_percent_keeps_seed_and_test(tmp_path):
@@ -86,15 +40,6 @@ def test_pet_pool_percent_keeps_seed_and_test(tmp_path):
     assert (quarter[0], quarter[1], quarter[3]) == (seed, pool[:9], test)
     with pytest.raises(ValueError, match="is empty"):
         data_prep.load_pet_splits(path, pool_percent=1)
-
-
-def test_conll_rejects_changed_label_order(monkeypatch):
-    reordered = [CONLL_TAGS[0], *reversed(CONLL_TAGS[1:])]
-    monkeypatch.setattr(
-        data_prep, "load_dataset", lambda *args, **kwargs: fake_conll(400, 100, reordered)
-    )
-    with pytest.raises(ValueError, match="label order"):
-        load_conll_splits()
 
 
 def brat_span(text, surface):
@@ -304,31 +249,31 @@ def test_load_splits_rejects_unknown_dataset():
 
 def test_full_pet_plans_stay_unchanged_and_other_pools_are_recorded():
     pet = search.sample_plan(RandomSearchConfig(num_configs=1))
-    conll = search.sample_plan(
-        RandomSearchConfig(num_configs=1, dataset="conll2003", dataset_percent=50)
+    medical = search.sample_plan(
+        RandomSearchConfig(num_configs=1, dataset="medical", dataset_percent=50)
     )
     assert not {"dataset", "dataset_percent"} & set(pet["fixed_config"])
-    assert conll["fixed_config"]["dataset"] == "conll2003"
-    assert conll["fixed_config"]["dataset_percent"] == 50
+    assert medical["fixed_config"]["dataset"] == "medical"
+    assert medical["fixed_config"]["dataset_percent"] == 50
 
     assert "dataset" not in supervised.sample_plan(SupervisedConfig())["fixed_config"]
-    conll_supervised = SupervisedConfig(dataset="conll2003", dataset_percent=12.5)
-    assert supervised.sample_plan(conll_supervised)["fixed_config"]["dataset_percent"] == 12.5
-    assert conll_supervised.sweep_name == "distilbert-base-cased-conll2003-12p5pct-supervised"
+    medical_supervised = SupervisedConfig(dataset="medical", dataset_percent=12.5)
+    assert supervised.sample_plan(medical_supervised)["fixed_config"]["dataset_percent"] == 12.5
+    assert medical_supervised.sweep_name == "distilbert-base-cased-medical-12p5pct-supervised"
     assert SupervisedConfig().sweep_name == "distilbert-base-cased-supervised"
 
-    assert "conll2003-50pct" in (
-        ExperimentConfig(dataset="conll2003", dataset_percent=50).resolved_wandb_run_name()
+    assert "medical-50pct" in (
+        ExperimentConfig(dataset="medical", dataset_percent=50).resolved_wandb_run_name()
     )
-    assert "conll2003" not in ExperimentConfig().resolved_wandb_run_name()
+    assert "medical" not in ExperimentConfig().resolved_wandb_run_name()
     assert "quishpi" in ExperimentConfig(dataset="quishpi").resolved_wandb_run_name()
     assert "dataset_percent" not in ExperimentConfig().active_learning_kwargs()
 
 
 def test_supervised_results_are_matched_by_dataset_and_percent(tmp_path):
     pools = (
-        ("a_conll_half", {"dataset": "conll2003", "dataset_percent": 50.0}),
-        ("b_conll", {"dataset": "conll2003"}),
+        ("a_medical_half", {"dataset": "medical", "dataset_percent": 50.0}),
+        ("b_medical", {"dataset": "medical"}),
         ("c_pet", {}),
     )
     for sweep, pool in pools:
@@ -341,8 +286,8 @@ def test_supervised_results_are_matched_by_dataset_and_percent(tmp_path):
         )
 
     assert supervised.load_test_results(tmp_path, "bert")[0] == "c_pet"
-    assert supervised.load_test_results(tmp_path, "bert", "conll2003")[0] == "b_conll"
-    assert supervised.load_test_results(tmp_path, "bert", "conll2003", 50.0)[0] == "a_conll_half"
+    assert supervised.load_test_results(tmp_path, "bert", "medical")[0] == "b_medical"
+    assert supervised.load_test_results(tmp_path, "bert", "medical", 50.0)[0] == "a_medical_half"
 
 
 def test_engine_uses_the_chosen_dataset_labels(monkeypatch):
@@ -383,7 +328,7 @@ def test_engine_uses_the_chosen_dataset_labels(monkeypatch):
         pool,
         gold,
         [],
-        dataset="conll2003",
+        dataset="quishpi",
         checkpoint="fake",
         model_seeds=[0],
         uq_metric="entropy",
@@ -400,5 +345,5 @@ def test_engine_uses_the_chosen_dataset_labels(monkeypatch):
         device=torch.device("cpu"),
     )
 
-    assert all(labels == CONLL_TAGS for labels in seen_labels)
-    assert {row["label"] for row in selections} == {"B-PER", "B-LOC"}
+    assert all(labels == QUISHPI_TAGS for labels in seen_labels)
+    assert {row["label"] for row in selections} == {"B-Action", "B-Condition"}

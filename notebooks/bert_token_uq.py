@@ -214,7 +214,6 @@ def _(DEFAULT_CHECKPOINTS, UQ_METRICS, default_config, mo):
             dataset=mo.ui.dropdown(
                 options={
                     "PET": "pet",
-                    "CoNLL-2003": "conll2003",
                     "Quishpi": "quishpi",
                     "MedicalProcessInstruks": "medical",
                 },

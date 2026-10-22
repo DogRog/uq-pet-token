@@ -1,8 +1,8 @@
 # AGENTS.md
 
 `uq-pet-token` compares sequential acquisition of uncertain NER words with random
-acquisition of the same number of words, on PET (default) or CoNLL-2003. Sentence-level
-LLM selection lives in the separate `DogRog/uq-pet` repository; never port code between
+acquisition of the same number of words, on PET (default), Quishpi, or
+MedicalProcessInstruks. Sentence-level LLM selection lives in the separate `DogRog/uq-pet` repository; never port code between
 the two.
 
 `llm-annotation-eval/` holds the LLM baseline for the same paper: a separate uv project with
