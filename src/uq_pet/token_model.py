@@ -12,6 +12,7 @@ import numpy as np
 import torch
 from seqeval.metrics import f1_score, precision_score, recall_score
 from seqeval.metrics.sequence_labeling import get_entities
+from tokenizers import pre_tokenizers
 from torch.utils.data import DataLoader
 from transformers import AutoConfig, AutoModelForTokenClassification, AutoTokenizer
 from transformers.utils import logging as transformers_logging
@@ -205,6 +206,12 @@ def load_tokenizer(checkpoint: str):
             f"checkpoint {checkpoint!r} did not provide a fast tokenizer; "
             "word-to-subword alignment requires one"
         )
+    # Byte-level BPE marks a word start with a leading space. ModernBERT's tokenizer leaves
+    # add_prefix_space off, and the from_pretrained argument does not reach it, so pre-split
+    # words were encoded as if glued to the previous one ("sends" as "s", "ends").
+    pre_tokenizer = tokenizer.backend_tokenizer.pre_tokenizer
+    if isinstance(pre_tokenizer, pre_tokenizers.ByteLevel):
+        pre_tokenizer.add_prefix_space = True
     return tokenizer
 
 

@@ -4,6 +4,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 from rich.console import Console
+from tokenizers import Tokenizer, models, pre_tokenizers, trainers
+from transformers import PreTrainedTokenizerFast
 
 import uq_pet.active_learning as active_learning
 import uq_pet.token_model as token_model
@@ -25,6 +27,7 @@ from uq_pet.token_model import (
     evaluate_model,
     evaluate_predictions,
     load_token_classifier,
+    load_tokenizer,
     score_token_uncertainty,
     token_uncertainty,
 )
@@ -256,7 +259,7 @@ def test_roberta_loader_requests_fast_pretokenized_compatible_tokenizer(monkeypa
 
     def fake_tokenizer(checkpoint, **kwargs):
         tokenizer_calls.append((checkpoint, kwargs))
-        return SimpleNamespace(is_fast=True)
+        return SimpleNamespace(is_fast=True, backend_tokenizer=SimpleNamespace(pre_tokenizer=None))
 
     monkeypatch.setattr("uq_pet.token_model.AutoTokenizer.from_pretrained", fake_tokenizer)
     monkeypatch.setattr(
@@ -267,6 +270,36 @@ def test_roberta_loader_requests_fast_pretokenized_compatible_tokenizer(monkeypa
     load_token_classifier("roberta-base", torch.device("cpu"), labels=NER_TAGS)
 
     assert tokenizer_calls == [("roberta-base", {"use_fast": True, "add_prefix_space": True})]
+
+
+def test_byte_level_tokenizers_mark_every_pre_split_word_as_a_word_start(monkeypatch):
+    # ModernBERT's byte-level BPE leaves add_prefix_space off, so a pre-split word was
+    # encoded as if glued to the previous one: "sends" became "s", "ends".
+    backend = Tokenizer(models.BPE())
+    backend.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    backend.train_from_iterator(
+        ["the clerk sends the order"] * 5,
+        trainers.BpeTrainer(vocab_size=300, initial_alphabet=pre_tokenizers.ByteLevel.alphabet()),
+    )
+    monkeypatch.setattr(
+        "uq_pet.token_model.AutoConfig.from_pretrained",
+        lambda checkpoint: SimpleNamespace(model_type="modernbert"),
+    )
+    monkeypatch.setattr(
+        "uq_pet.token_model.AutoTokenizer.from_pretrained",
+        lambda checkpoint, **kwargs: PreTrainedTokenizerFast(tokenizer_object=backend),
+    )
+
+    tokenizer = load_tokenizer("answerdotai/ModernBERT-base")
+    encoding = tokenizer(["the", "clerk", "sends"], is_split_into_words=True)
+    tokens = tokenizer.convert_ids_to_tokens(encoding["input_ids"])
+
+    first_subwords = [
+        tokens[position]
+        for position, word_idx in enumerate(encoding.word_ids())
+        if word_idx is not None and encoding.word_ids()[position - 1] != word_idx
+    ]
+    assert first_subwords == ["Ġthe", "Ġclerk", "Ġsends"]
 
 
 def pool_of(*sentences: str) -> list[dict]:
