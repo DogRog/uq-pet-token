@@ -269,7 +269,8 @@ bash scripts/run_all_experiments.sh
 
 It downloads every dataset first, so log in for MedicalProcessInstruks before starting.
 `SEED_WORKERS` sets concurrent seeds per chain (default 2, about six seed processes in
-all, sized for a 40 GB GPU), and `DATASETS` picks the chains. Each chain logs to
+all, sized for a 40 GB GPU), `DATASETS` picks the chains, and `MODELS` picks the
+checkpoints (`scripts/run_modernbert_experiments.sh` sets it to ModernBERT). Each chain logs to
 `logs/run_all/<dataset>.log`; a failed chain stops without stopping the others, and a
 rerun resumes completed work. Run it inside `tmux` or `nohup` on a remote machine.
 
