@@ -8,8 +8,10 @@ import argparse
 import json
 import math
 import random
+import threading
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 import polars as pl
@@ -52,6 +54,8 @@ from uq_pet.utils.wandb_logging import connect_wandb, wandb_comparison_logging
 from uq_pet.utils.wandb_tuning import ensure_sweep, mark_winner, publish_trial
 
 CONSOLE = Console()
+# Rich redraws progress bars only on a terminal; a log file gets a snapshot this often.
+LOG_SNAPSHOT_SECONDS = 30
 WANDB_FIELDS = {"wandb_enabled", "wandb_project", "wandb_run_name"}
 SEARCH_SPACE = {
     "k": (32, 64),
@@ -478,6 +482,32 @@ def _tuning_splits(
     return seed_examples, tune_pool, tune_gold, tune_evaluation
 
 
+@contextmanager
+def _log_snapshots(display: Progress, seconds: float = LOG_SNAPSHOT_SECONDS):
+    """Print timestamped progress bars every `seconds` when output goes to a file.
+
+    Without this, a log shows the bars only once they close, when the run ends or fails.
+    """
+    if display.console.is_terminal:
+        yield
+        return
+    stop = threading.Event()
+
+    def snapshot():
+        while not stop.wait(seconds):
+            display.console.print(
+                f"[{datetime.now():%H:%M:%S}]", display.make_tasks_table(display.tasks)
+            )
+
+    thread = threading.Thread(target=snapshot, name="log-snapshots", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join()
+
+
 class _SweepProgress:
     """The sweep's overall bar, labelled with the best tuning trial so far, and one per seed."""
 
@@ -689,15 +719,18 @@ def _run_configurations(
     rows = summary["trials" if tuning else "comparisons"]
     stage = config.tuning_split if tuning else "test"
     announced = False
-    with Progress(
-        TextColumn("{task.description}"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        TaskProgressColumn(),
-        TimeElapsedColumn(),
-        TimeRemainingColumn(),
-        console=CONSOLE,
-    ) as display:
+    with (
+        Progress(
+            TextColumn("{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TaskProgressColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+            console=CONSOLE,
+        ) as display,
+        _log_snapshots(display),
+    ):
         bars = _SweepProgress(
             display,
             f"{config.tuning_split.capitalize()} tuning" if tuning else "Comparisons",

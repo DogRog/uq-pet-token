@@ -1,10 +1,12 @@
 import argparse
 import json
 import random
+import time
 from io import StringIO
 
 import pytest
 from rich.console import Console
+from rich.progress import Progress
 
 from uq_pet import search
 from uq_pet.search import mean_entity_f1_gap_auc
@@ -553,3 +555,15 @@ def test_progress_tracks_each_seed_and_resets_between_configurations(
     assert snapshots[2][0][0] == pytest.approx(0.75)
     assert displays[0].tasks[0].completed == displays[0].tasks[0].total == 6
     assert displays[0].tasks[0].description == "Comparisons · config_0001 done"
+
+
+def test_log_files_get_timestamped_progress_snapshots_and_terminals_do_not():
+    for terminal, expect_snapshots in ((False, True), (True, False)):
+        output = StringIO()
+        console = Console(file=output, force_terminal=terminal, width=100)
+        with Progress(console=console, auto_refresh=False) as display:
+            with search._log_snapshots(display, seconds=0.01):
+                display.add_task("Validation tuning · config_0005", total=30, completed=5)
+                time.sleep(0.1)
+            snapshots = output.getvalue().count("config_0005")
+        assert (snapshots > 1) is expect_snapshots
