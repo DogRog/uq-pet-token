@@ -25,6 +25,7 @@ from uq_pet.token_model import (
     evaluate_model,
     evaluate_predictions,
     load_token_classifier,
+    make_optimizer,
     prepare_inference_batches,
     resolve_precision,
     score_token_uncertainty,
@@ -396,10 +397,11 @@ def run_metric_comparisons(
             f"(final round: {token_budget - (rounds - 1) * k})"
         )
 
-        bootstrap_optimizer = torch.optim.AdamW(
-            base_model.parameters(),
-            lr=bootstrap_learning_rate or learning_rate,
+        bootstrap_optimizer = make_optimizer(
+            base_model,
+            learning_rate=bootstrap_learning_rate or learning_rate,
             weight_decay=weight_decay,
+            device=device,
         )
         bootstrap_loss = train_items(
             base_model,
@@ -470,8 +472,8 @@ def run_metric_comparisons(
             models = {arm: copy.deepcopy(base_model).to(device) for arm in active_arms}
             optimizers = {}
             for arm, model in models.items():
-                optimizer = torch.optim.AdamW(
-                    model.parameters(), lr=learning_rate, weight_decay=weight_decay
+                optimizer = make_optimizer(
+                    model, learning_rate=learning_rate, weight_decay=weight_decay, device=device
                 )
                 optimizer.load_state_dict(copy.deepcopy(bootstrap_optimizer_state))
                 # Loading restores the bootstrap's own rate, decayed to zero when scheduled.

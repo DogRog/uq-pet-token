@@ -148,6 +148,18 @@ def _cached_targets(tokenizer, examples, max_length, cache):
     return inputs, labels
 
 
+def make_optimizer(model, *, learning_rate: float, weight_decay: float, device: torch.device):
+    """AdamW over the model, updating every parameter in one fused kernel on CUDA.
+
+    Fused steps round differently from the default per-tensor-group steps in the last
+    bits, as nondeterministic CUDA kernels already do; other devices keep the default.
+    """
+    fused = {"fused": True} if torch.device(device).type == "cuda" else {}
+    return torch.optim.AdamW(
+        model.parameters(), lr=learning_rate, weight_decay=weight_decay, **fused
+    )
+
+
 def train_items(
     model,
     optimizer,

@@ -393,7 +393,8 @@ sweep name. Run one process per sweep.
 processes on one device; saved rows keep seed order whatever the concurrency. Start with
 two and increase while throughput and GPU memory allow; on CUDA, more than one or two
 processes in all pay off only with the MPS daemon running. `score_batch_size` (default 256
-sentences) sets the inference batch for pool scoring and evaluation only.
+sentences) sets the inference batch for pool scoring and evaluation only. On CUDA, AdamW
+updates every parameter in one fused kernel per step.
 
 `precision: "auto"` uses native BF16 autocasting on supported CUDA GPUs and FP32
 elsewhere; parameters, optimizer state, and softmax stay FP32. `"fp32"` forces full

@@ -41,6 +41,7 @@ from uq_pet.token_model import (
     get_device,
     gold_tags,
     load_token_classifier,
+    make_optimizer,
     resolve_precision,
     scoreable_token_keys,
     set_seed,
@@ -164,7 +165,9 @@ def train_and_evaluate(
         *full_sentence_items(seed_examples),
         *pool_sentence_items(pool_indices, pool_inputs, pool_gold, scoreable),
     ]
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    optimizer = make_optimizer(
+        model, learning_rate=learning_rate, weight_decay=weight_decay, device=device
+    )
     loss = train_items(
         model,
         optimizer,

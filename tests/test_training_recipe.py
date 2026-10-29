@@ -9,7 +9,12 @@ import uq_pet.active_learning as active_learning
 from uq_pet.active_learning import WEIGHT_AVERAGE_DECAY, full_sentence_items
 from uq_pet.config import ExperimentConfig, omit_implicit_defaults
 from uq_pet.data_prep import NER_TAGS
-from uq_pet.token_model import load_token_classifier, train_items, update_weight_average
+from uq_pet.token_model import (
+    load_token_classifier,
+    make_optimizer,
+    train_items,
+    update_weight_average,
+)
 
 CPU = torch.device("cpu")
 RECIPE = {"bootstrap_learning_rate": 1e-3, "weight_averaging": True, "max_grad_norm": 1.0}
@@ -173,3 +178,13 @@ def test_recipe_defaults_stay_out_of_saved_settings():
     for bad in ({"bootstrap_learning_rate": 0}, {"max_grad_norm": -1.0}):
         with pytest.raises(ValueError):
             ExperimentConfig(**bad)
+
+
+def test_optimizer_is_fused_only_on_cuda(monkeypatch):
+    calls = []
+    monkeypatch.setattr(torch.optim, "AdamW", lambda *args, **kwargs: calls.append(kwargs))
+    model = torch.nn.Linear(2, 2)
+    for device in ("cuda", "cpu", "mps"):
+        make_optimizer(model, learning_rate=1e-4, weight_decay=0.01, device=torch.device(device))
+    assert [call.get("fused") for call in calls] == [True, None, None]
+    assert all(call["lr"] == 1e-4 and call["weight_decay"] == 0.01 for call in calls)
