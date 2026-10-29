@@ -25,6 +25,8 @@ from uq_pet.utils.truncation import (
 )
 
 UQ_METRICS = ("entropy", "least_confidence", "margin")
+# Share of a warmed-up update sequence spent rising to the peak learning rate.
+WARMUP_FRACTION = 0.1
 
 # Applied in each seed process before model downloads begin.
 logging.getLogger("huggingface_hub.utils._http").addFilter(
@@ -159,10 +161,19 @@ def train_items(
     seed: int,
     tokenization_cache: dict | None = None,
     precision: str = "fp32",
+    max_grad_norm: float | None = None,
+    warmup_and_decay: bool = False,
 ) -> float:
-    """Update with isolated seeded randomness, returning mean batch loss."""
+    """Update with isolated seeded randomness, returning mean batch loss.
+
+    With ``warmup_and_decay``, the optimizer's learning rate is the peak: it rises
+    linearly over the first ``WARMUP_FRACTION`` of these updates, then falls linearly so
+    the last update is the smallest. Otherwise it stays constant.
+    """
     if passes < 0:
         raise ValueError(f"passes must be non-negative, got {passes}")
+    if max_grad_norm is not None and max_grad_norm <= 0:
+        raise ValueError(f"max_grad_norm must be positive, got {max_grad_norm}")
     if not items or passes == 0:
         return float("nan")
 
@@ -176,6 +187,17 @@ def train_items(
         generator=torch.Generator().manual_seed(seed),
         collate_fn=collate,
     )
+    schedule = None
+    if warmup_and_decay:
+        total = passes * len(loader)
+        warmup = max(1, math.ceil(WARMUP_FRACTION * total))
+
+        def factor(step: int) -> float:
+            if step < warmup:
+                return (step + 1) / warmup
+            return max(0.0, (total - step) / max(1, total - warmup))
+
+        schedule = torch.optim.lr_scheduler.LambdaLR(optimizer, factor)
     losses = []
     model.train()
     optimizer.zero_grad()
@@ -186,12 +208,27 @@ def train_items(
                 with _autocast(device, precision):
                     loss = model(**inputs, labels=labels.to(device)).loss
                 loss.backward()
+                if max_grad_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
                 optimizer.step()
+                if schedule is not None:
+                    schedule.step()
                 optimizer.zero_grad()
                 losses.append(loss.detach())
     model.eval()
     losses = torch.stack(losses).cpu().tolist()
     return sum(losses) / len(losses)
+
+
+@torch.no_grad()
+def update_weight_average(average, model, decay: float) -> None:
+    """Keep ``decay`` of each averaged weight and take the rest from the live model."""
+    if not 0 <= decay < 1:
+        raise ValueError(f"decay must be in [0, 1), got {decay}")
+    for averaged, live in zip(average.parameters(), model.parameters(), strict=True):
+        averaged.lerp_(live, 1 - decay)
+    for averaged, live in zip(average.buffers(), model.buffers(), strict=True):
+        averaged.copy_(live)
 
 
 def load_tokenizer(checkpoint: str):

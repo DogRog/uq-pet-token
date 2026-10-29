@@ -31,11 +31,14 @@ from uq_pet.token_model import (
     scoreable_token_keys,
     set_seed,
     train_items,
+    update_weight_average,
 )
 
 CONSOLE = Console()
 # Fixed before any stochastic run so the test split never chooses it (ADR 0009).
 GUMBEL_BETA = 1.0
+# Per-round share of the averaged model kept; fixed, never tuned (ADR 0012).
+WEIGHT_AVERAGE_DECAY = 0.5
 
 
 def _round_progress_table(round_results: dict[str, dict], uq_metric: str) -> Table:
@@ -270,6 +273,9 @@ def run_metric_comparisons(
     score_batch_size: int,
     max_length: int,
     device: torch.device,
+    bootstrap_learning_rate: float | None = None,
+    weight_averaging: bool = False,
+    max_grad_norm: float | None = None,
     dataset: str = "pet",
     seed_workers: int = 1,
     precision: str = "auto",
@@ -285,7 +291,9 @@ def run_metric_comparisons(
     Each metric gets its evaluation rows, selections, and the predicted test tags behind
     each row. Learners execute sequentially. CPU bootstrap state and random records live
     only within this call. With ``snapshot_rounds``, the uncertainty arm's model is saved
-    under ``snapshot_dir`` after each of those rounds (see ``snapshot_path``).
+    under ``snapshot_dir`` after each of those rounds (see ``snapshot_path``). With
+    ``weight_averaging``, scoring, evaluation, and snapshots read each arm's averaged
+    model, while updates continue on its live weights.
     """
     if not uq_metrics or len(set(uq_metrics)) != len(uq_metrics):
         raise ValueError("uq_metrics must be nonempty and unique")
@@ -296,6 +304,8 @@ def run_metric_comparisons(
     precision = resolve_precision(precision, device)
     if bootstrap_epochs < 0:
         raise ValueError(f"bootstrap_epochs must be non-negative, got {bootstrap_epochs}")
+    if bootstrap_learning_rate is not None and bootstrap_learning_rate <= 0:
+        raise ValueError(f"bootstrap_learning_rate must be positive, got {bootstrap_learning_rate}")
     if not model_seeds:
         raise ValueError("model_seeds must not be empty")
     if seed_workers < 1:
@@ -329,6 +339,9 @@ def run_metric_comparisons(
         "batch_size": batch_size,
         "score_batch_size": score_batch_size,
         "max_length": max_length,
+        "bootstrap_learning_rate": bootstrap_learning_rate,
+        "weight_averaging": weight_averaging,
+        "max_grad_norm": max_grad_norm,
         "gumbel_noise": gumbel_noise,
         "max_per_word_form": max_per_word_form,
         "snapshot_dir": snapshot_dir,
@@ -384,7 +397,9 @@ def run_metric_comparisons(
         )
 
         bootstrap_optimizer = torch.optim.AdamW(
-            base_model.parameters(), lr=learning_rate, weight_decay=weight_decay
+            base_model.parameters(),
+            lr=bootstrap_learning_rate or learning_rate,
+            weight_decay=weight_decay,
         )
         bootstrap_loss = train_items(
             base_model,
@@ -398,6 +413,8 @@ def run_metric_comparisons(
             seed=model_seed,
             tokenization_cache=tokenization_cache,
             precision=precision,
+            max_grad_norm=max_grad_norm,
+            warmup_and_decay=bootstrap_learning_rate is not None,
         )
         baseline, baseline_predictions = evaluate_model(
             base_model,
@@ -457,10 +474,18 @@ def run_metric_comparisons(
                     model.parameters(), lr=learning_rate, weight_decay=weight_decay
                 )
                 optimizer.load_state_dict(copy.deepcopy(bootstrap_optimizer_state))
+                # Loading restores the bootstrap's own rate, decayed to zero when scheduled.
+                for group in optimizer.param_groups:
+                    group["lr"] = learning_rate
                 optimizers[arm] = optimizer
+            averaged = (
+                {arm: copy.deepcopy(model) for arm, model in models.items()}
+                if weight_averaging
+                else models
+            )
             if 0 in snapshot_rounds:
                 _save_snapshot(
-                    models["uncertainty"],
+                    averaged["uncertainty"],
                     tokenizer,
                     snapshot_path(snapshot_dir, model_seed, uq_metric, 0),
                 )
@@ -475,7 +500,7 @@ def run_metric_comparisons(
                 chosen = {}
                 if not random_only:
                     uq_scores = score_token_uncertainty(
-                        models["uncertainty"],
+                        averaged["uncertainty"],
                         tokenizer,
                         pool_inputs,
                         metric=uq_metric,
@@ -523,17 +548,20 @@ def run_metric_comparisons(
                         seed=update_seed,
                         tokenization_cache=tokenization_cache,
                         precision=precision,
+                        max_grad_norm=max_grad_norm,
                     )
+                    if weight_averaging:
+                        update_weight_average(averaged[arm], models[arm], WEIGHT_AVERAGE_DECAY)
                     acquired[arm].update(chosen[arm])
                     replay_banks[arm].extend(new_items)
                     if arm == "uncertainty" and round_idx in snapshot_rounds:
                         _save_snapshot(
-                            models[arm],
+                            averaged[arm],
                             tokenizer,
                             snapshot_path(snapshot_dir, model_seed, uq_metric, round_idx),
                         )
                     metrics, predicted = evaluate_model(
-                        models[arm],
+                        averaged[arm],
                         tokenizer,
                         test_examples,
                         labels=labels,
@@ -600,7 +628,7 @@ def run_metric_comparisons(
                     progress_callback(uq_metric, list(results))
                 if not random_only:
                     CONSOLE.print(_round_progress_table(round_results, uq_metric))
-            del models, optimizers, model, optimizer
+            del models, averaged, optimizers, model, optimizer
 
         del base_model, bootstrap_optimizer_state, tokenizer, pool_batches, test_batches
         if torch.backends.mps.is_available():

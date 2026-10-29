@@ -162,6 +162,16 @@ def sample_plan(config: RandomSearchConfig) -> dict:
         parameters = {key: rng.choice(values) for key, values in SEARCH_SPACE.items()}
         parameters["learning_rate"] = sample_learning_rate(rng)
         sampled.append(parameters)
+    search_space = {
+        **{key: list(values) for key, values in SEARCH_SPACE.items()},
+        "learning_rate": learning_rate_space(),
+    }
+    if config.tune_bootstrap_learning_rate:
+        # A separate stream keeps every other setting equal to the untuned sweep's.
+        bootstrap_rng = random.Random(f"bootstrap-{config.sampler_seed}")
+        for parameters in sampled:
+            parameters["bootstrap_learning_rate"] = sample_learning_rate(bootstrap_rng)
+        search_space["bootstrap_learning_rate"] = learning_rate_space()
     # Worker scheduling can change on resume; scientific settings cannot.
     fixed = omit_implicit_defaults(
         config.experiment_config().model_dump(
@@ -176,10 +186,7 @@ def sample_plan(config: RandomSearchConfig) -> dict:
         "sampler_seed": config.sampler_seed,
         "num_configs": config.num_configs,
         "fixed_config": fixed,
-        "search_space": {
-            **{key: list(values) for key, values in SEARCH_SPACE.items()},
-            "learning_rate": learning_rate_space(),
-        },
+        "search_space": search_space,
         "uq_metrics": list(UQ_METRICS),
         "configurations": [
             {
@@ -270,8 +277,8 @@ def scientific_plan(plan: dict) -> dict:
             {
                 **entry,
                 "parameters": {
-                    **entry["parameters"],
-                    "learning_rate": float(format(entry["parameters"]["learning_rate"], ".14g")),
+                    key: float(format(value, ".14g")) if key.endswith("learning_rate") else value
+                    for key, value in entry["parameters"].items()
                 },
             }
             for entry in plan["configurations"]

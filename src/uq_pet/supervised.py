@@ -81,6 +81,7 @@ def sample_plan(config: SupervisedConfig) -> dict:
                     "dataset_percent",
                     "model_seeds",
                     "epochs",
+                    "max_grad_norm",
                     "max_length",
                     "score_batch_size",
                 },
@@ -148,6 +149,7 @@ def train_and_evaluate(
     max_length: int,
     device: torch.device,
     precision: str,
+    max_grad_norm: float | None = None,
 ) -> tuple[dict, list[list[str]]]:
     """Train a fresh model on seed plus selected pool sentences, then evaluate once.
 
@@ -175,6 +177,7 @@ def train_and_evaluate(
         seed=seed,
         tokenization_cache={},
         precision=precision,
+        max_grad_norm=max_grad_norm,
     )
     metrics, predictions = evaluate_model(
         model,
@@ -278,6 +281,7 @@ def training_settings(config: SupervisedConfig, device: torch.device, precision:
         "max_length": config.max_length,
         "device": device,
         "precision": precision,
+        "max_grad_norm": config.max_grad_norm,
     }
 
 

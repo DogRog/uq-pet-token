@@ -12,7 +12,15 @@ import os
 
 import polars as pl
 
-AXES = ("learning_rate", "batch_size", "k", "update_passes", "replay_ratio", "weight_decay")
+AXES = (
+    "learning_rate",
+    "bootstrap_learning_rate",
+    "batch_size",
+    "k",
+    "update_passes",
+    "replay_ratio",
+    "weight_decay",
+)
 SUPERVISED_METRIC = "validation_entity_f1"
 SUPERVISED_AXES = ("learning_rate", "batch_size", "weight_decay")
 WINNER_TAG = "winner"
@@ -32,10 +40,13 @@ def objective_split(objective):
 def _sweep_parameters(plan, axes):
     parameters = {}
     for name in axes:
+        # Sweeps that never tuned the bootstrap learning rate leave it out of the plan.
+        if name not in plan["search_space"]:
+            continue
         values = plan["search_space"][name]
         parameters[name] = (
             {"distribution": "log_uniform_values", "min": values["low"], "max": values["high"]}
-            if name == "learning_rate"
+            if name.endswith("learning_rate")
             else {"values": values}
         )
     return parameters
@@ -138,7 +149,7 @@ def _tuning_workspace(entity, project, sweep_name, *, split, section, axes, metr
                         title=f"Mean {split} F1 across seeds: one line per configuration",
                         columns=[
                             wr.ParallelCoordinatesPlotColumn(
-                                metric=wr.Config(name), log=name == "learning_rate"
+                                metric=wr.Config(name), log=name.endswith("learning_rate")
                             )
                             for name in axes
                         ]

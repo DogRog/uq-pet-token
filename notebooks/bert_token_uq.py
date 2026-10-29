@@ -194,9 +194,11 @@ def _(DEFAULT_CHECKPOINTS, UQ_METRICS, default_config, mo):
 
         {gumbel_noise} {max_per_word_form}
 
-        {bootstrap_epochs} {update_passes} {replay_ratio}
+        {bootstrap_epochs} {bootstrap_learning_rate} {update_passes} {replay_ratio}
 
         {learning_rate} {weight_decay} {batch_size}
+
+        {weight_averaging} {max_grad_norm}
 
         {score_batch_size} {max_length} {precision}
 
@@ -253,6 +255,13 @@ def _(DEFAULT_CHECKPOINTS, UQ_METRICS, default_config, mo):
             bootstrap_epochs=numeric_control(
                 "bootstrap_epochs", "Bootstrap epochs", start=0, stop=100
             ),
+            bootstrap_learning_rate=mo.ui.number(
+                start=0,
+                stop=0.001,
+                step=1e-06,
+                value=0,
+                label="Bootstrap peak learning rate (0: the constant learning rate)",
+            ),
             update_passes=numeric_control(
                 "update_passes", "Update passes per round", start=1, stop=20
             ),
@@ -266,6 +275,16 @@ def _(DEFAULT_CHECKPOINTS, UQ_METRICS, default_config, mo):
                 "weight_decay", "Weight decay", start=0, stop=0.2, step=0.001
             ),
             batch_size=numeric_control("batch_size", "Training batch size", start=1, stop=64),
+            weight_averaging=mo.ui.checkbox(
+                value=default_config["weight_averaging"],
+                label="Score and evaluate the averaged model",
+            ),
+            max_grad_norm=mo.ui.number(
+                start=0,
+                step=0.1,
+                value=0,
+                label="Gradient clipping norm (0: no clipping)",
+            ),
             score_batch_size=numeric_control(
                 "score_batch_size", "Scoring batch size", start=1, stop=256
             ),
@@ -320,6 +339,8 @@ def _(
             **{
                 **params_form.value,
                 "max_per_word_form": params_form.value["max_per_word_form"] or None,
+                "bootstrap_learning_rate": params_form.value["bootstrap_learning_rate"] or None,
+                "max_grad_norm": params_form.value["max_grad_norm"] or None,
             }
         )
     return (experiment_config,)
@@ -462,22 +483,40 @@ def _(config, dataset_summary, mo, run_dir):
             else "",
         ]
     )
+    bootstrap_description = (
+        f" at a peak learning rate of {config['bootstrap_learning_rate']:.2e}, warmed up and "
+        "decayed to zero,"
+        if config["bootstrap_learning_rate"]
+        else ""
+    )
+    training_description = "".join(
+        [
+            f" Gradients were clipped to norm {config['max_grad_norm']:g}."
+            if config["max_grad_norm"]
+            else "",
+            " Scoring and evaluation read each arm's averaged model."
+            if config["weight_averaging"]
+            else "",
+        ]
+    )
     mo.vstack(
         [
             mo.md(f"""
             ## Run description
 
             **{config["checkpoint"]}** was bootstrapped for
-            **{config["bootstrap_epochs"]} epochs** with model seed(s)
+            **{config["bootstrap_epochs"]} epochs**{bootstrap_description} with model seed(s)
             **{seed_description}**. Acquisition was capped at
             **{config["max_pool_percent"]:g}%** of the scoreable pool. This produced
             **{config["rounds"]} rounds** of **up to {config["k"]} new tokens per arm**
             and an effective endpoint of **{config["effective_pool_percent"]:.2f}%**.
             Each round trained for
-            **{config["update_passes"]} pass(es)**, and replayed
+            **{config["update_passes"]} pass(es)** at a constant learning rate of
+            **{config["learning_rate"]:.2e}**, and replayed
             up to **{config["replay_ratio"]:g} older labels per new token**, including
             in the smaller final round when needed. The uncertainty arm used
             **{config["uq_metric"].replace("_", " ")}** scoring{selection_description}.
+            {training_description}
             """),
             mo.ui.table([dataset_summary], selection=None),
             mo.md(f"**Output:** `{output_location}`"),

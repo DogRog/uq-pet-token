@@ -47,6 +47,10 @@ def test_plan_samples_log_uniform_learning_rates_and_is_named_by_checkpoint():
     }
     assert plan == supervised.sample_plan(config)
     assert plan != supervised.sample_plan(config.model_copy(update={"sampler_seed": 1}))
+    assert "max_grad_norm" not in plan["fixed_config"]
+    clipped = config.model_copy(update={"max_grad_norm": 1.0})
+    assert supervised.sample_plan(clipped)["fixed_config"]["max_grad_norm"] == 1.0
+    assert supervised.training_settings(clipped, "cpu", "fp32")["max_grad_norm"] == 1.0
     assert "sentence_percents" not in json.dumps(plan)
     assert "wandb" not in json.dumps(plan)
     for bad in (
@@ -55,6 +59,7 @@ def test_plan_samples_log_uniform_learning_rates_and_is_named_by_checkpoint():
         {"epochs": 0},
         {"num_configs": 0},
         {"learning_rates": [1e-5]},
+        {"max_grad_norm": 0},
         {"wandb_enabled": True, "wandb_project": " "},
     ):
         with pytest.raises(ValueError):
@@ -132,6 +137,7 @@ def test_train_and_evaluate_uses_seed_and_selected_sentences(monkeypatch):
     assert seen["seed"] == 7
     assert seen["optimizer"] == {"lr": 3e-5, "weight_decay": 0.01}
     assert seen["train"]["passes"] == 20 and seen["train"]["batch_size"] == 16
+    assert seen["train"]["max_grad_norm"] is None
     assert seen["items"] == [
         {"tokens": ["s"], "targets": {0: 0}},
         {"tokens": ["b", "c"], "targets": {0: 2, 1: 3}},

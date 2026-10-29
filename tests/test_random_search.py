@@ -8,6 +8,7 @@ from rich.console import Console
 
 from uq_pet import search
 from uq_pet.search import mean_entity_f1_gap_auc
+from uq_pet.utils import wandb_tuning
 
 
 @pytest.fixture(autouse=True)
@@ -87,6 +88,40 @@ def test_plan_is_unique_reproducible_local_and_covers_all_metrics():
     assert "learning_rate" not in plan["fixed_config"]
     assert plan == search.sample_plan(config.model_copy(update={"learning_rate": 3e-5}))
     assert plan["fixed_config"]["model_seeds"] == [0, 1, 2, 3, 4]
+
+
+def test_tuned_bootstrap_rate_leaves_the_other_sampled_settings_unchanged():
+    config = search.RandomSearchConfig(num_configs=20)
+    tuned_config = config.model_copy(update={"tune_bootstrap_learning_rate": True})
+    plain, tuned = search.sample_plan(config), search.sample_plan(tuned_config)
+    assert tuned == search.sample_plan(tuned_config)
+    assert [
+        {key: value for key, value in row["parameters"].items() if key != "bootstrap_learning_rate"}
+        for row in tuned["configurations"]
+    ] == [row["parameters"] for row in plain["configurations"]]
+    rates = [row["parameters"]["bootstrap_learning_rate"] for row in tuned["configurations"]]
+    assert all(1e-5 <= rate <= 5e-4 for rate in rates) and len(set(rates)) == 20
+    assert "bootstrap_learning_rate" not in plain["search_space"]
+    assert (
+        tuned["search_space"]["bootstrap_learning_rate"] == plain["search_space"]["learning_rate"]
+    )
+    assert "bootstrap_learning_rate" not in tuned["fixed_config"]
+    assert "bootstrap_learning_rate" not in wandb_tuning._sweep_parameters(plain, wandb_tuning.AXES)
+    assert wandb_tuning._sweep_parameters(tuned, wandb_tuning.AXES)["bootstrap_learning_rate"] == {
+        "distribution": "log_uniform_values",
+        "min": 1e-5,
+        "max": 5e-4,
+    }
+    tuning = search.tuning_plan(
+        search.RandomBaselineSearchConfig(num_configs=3, tune_bootstrap_learning_rate=True)
+    )
+    assert all("bootstrap_learning_rate" in row["parameters"] for row in tuning["configurations"])
+    with pytest.raises(ValueError):
+        search.RandomSearchConfig(
+            num_configs=1, tune_bootstrap_learning_rate=True, bootstrap_learning_rate=1e-4
+        )
+    with pytest.raises(ValueError):
+        search.FixedComparisonConfig(tune_bootstrap_learning_rate=True)
 
 
 def test_file_config_and_explicit_overrides(tmp_path):

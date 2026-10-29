@@ -117,6 +117,14 @@ For every model seed:
    word-centred items plus limited replay.
 7. Evaluate on the test split and repeat.
 
+Three optional settings change training, all off by default
+([ADR 0012](docs/adr/0012-bootstrap-has-its-own-learning-rate-and-arms-report-averaged-models.md)):
+`bootstrap_learning_rate` gives step 1 its own peak rate, warmed up over the first tenth
+of the bootstrap's updates and decayed to zero, while the rounds keep the constant
+`learning_rate`; `weight_averaging` scores, evaluates, and snapshots each arm's averaged
+model, which moves halfway to the live weights after every round; and `max_grad_norm`
+clips every update, the supervised baseline's included.
+
 The full sentence remains model input, but each online training item labels exactly
 one word. Only its first subword contributes to loss; every other position is `-100`.
 By default, each round replays up to one older labelled word per new word, including
@@ -176,7 +184,8 @@ Two optional settings change only the uncertainty arm; random's draws stay ident
 - Continuation subwords, padding, and special tokens are ignored.
 - Truncated pool words are not selectable; truncated test words are an error.
 - A word is truncated if any of its subwords are missing, including at the left boundary.
-- Both arms begin from the same fitted state and receive the same update budget.
+- Both arms begin from the same fitted state and receive the same update budget; their
+  averaged models, when on, start from that state too.
 - The uncertainty and random arms keep separate weights and optimizer histories.
 - Selection, Gumbel noise, and replay use deterministic local random generators.
 - Training derives an RNG seed for each arm and round, used for dropout as well as
@@ -339,6 +348,10 @@ combinations can repeat with different learning rates.
 | `batch_size` | 32, 64 |
 | `replay_ratio` | 0, 1, 2 |
 | `weight_decay` | 0, 0.01 |
+
+With `tune_bootstrap_learning_rate: true`, each configuration also samples
+`bootstrap_learning_rate` over the learning-rate range, from a separate random stream, so
+the other settings match the same sampler seed's sweep without it.
 
 ### Resuming
 

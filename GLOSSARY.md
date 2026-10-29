@@ -76,6 +76,14 @@ _Avoid_: Deduplication (bare), diversity filter
 Previously labelled words mixed into a round's update alongside the newly acquired ones.
 _Avoid_: Rehearsal, memory
 
+**Bootstrap learning rate**:
+The bootstrap's own peak learning rate, warmed up and decayed to zero over its updates, apart from the constant learning rate every round uses.
+_Avoid_: Initial learning rate, warmup rate
+
+**Averaged model**:
+A copy of an arm whose weights move halfway toward the arm's live weights after each round; when weight averaging is on, it is the model that scores, is evaluated, and is snapshotted.
+_Avoid_: EMA model, shadow model, Polyak model
+
 **Acquisition budget**:
 The share of the pool's candidates that will be labelled by the end of the final round.
 _Avoid_: Pool percent (bare), max pool percent

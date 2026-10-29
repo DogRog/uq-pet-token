@@ -26,6 +26,9 @@ IMPLICIT_DEFAULTS = {
     "dataset_percent": 100.0,
     "gumbel_noise": False,
     "max_per_word_form": None,
+    "bootstrap_learning_rate": None,
+    "weight_averaging": False,
+    "max_grad_norm": None,
 }
 
 
@@ -112,9 +115,26 @@ class ExperimentConfig(BaseModel):
     learning_rate: float = Field(
         default=5e-5,
         gt=0,
-        description="AdamW learning rate for bootstrap and online updates.",
+        description="Constant AdamW learning rate for online updates, and for the bootstrap "
+        "unless bootstrap_learning_rate is set.",
+    )
+    bootstrap_learning_rate: float | None = Field(
+        default=None,
+        gt=0,
+        description="Peak bootstrap learning rate, warmed up and decayed to zero over the "
+        "bootstrap's updates; empty trains the bootstrap at the constant learning rate.",
     )
     weight_decay: float = Field(default=0.01, ge=0, description="AdamW weight decay.")
+    weight_averaging: bool = Field(
+        default=False,
+        description="Score, evaluate, and snapshot each arm's averaged model, updated after "
+        "every round, instead of its latest weights.",
+    )
+    max_grad_norm: float | None = Field(
+        default=None,
+        gt=0,
+        description="Clip each update's gradient to this norm; empty does not clip.",
+    )
     batch_size: int = Field(default=8, ge=1, description="Training item batch size.")
     score_batch_size: int = Field(
         default=256,
@@ -210,6 +230,11 @@ class RandomSearchConfig(ExperimentConfig):
     sweep_name: str = "bert-token-uq-random"
     sweeps_dir: Path = RESULTS_DIR / "random_search"
     sampler_seed: int = Field(default=0, ge=0)
+    tune_bootstrap_learning_rate: bool = Field(
+        default=False,
+        description="Sample each configuration's bootstrap learning rate from a separate "
+        "stream, leaving the other sampled settings unchanged.",
+    )
 
     @field_validator("sweep_name")
     @classmethod
@@ -219,6 +244,17 @@ class RandomSearchConfig(ExperimentConfig):
                 "sweep_name must contain only letters, numbers, hyphens or underscores"
             )
         return value
+
+    @model_validator(mode="after")
+    def validate_bootstrap_tuning(self) -> Self:
+        if self.tune_bootstrap_learning_rate and (
+            self.bootstrap_learning_rate is not None or self.mode == "compare-fixed"
+        ):
+            raise ValueError(
+                "tune_bootstrap_learning_rate samples the bootstrap learning rate; "
+                "a fixed comparison supplies it instead"
+            )
+        return self
 
     def experiment_config(self) -> ExperimentConfig:
         """Strip sweep settings while preserving the requested experiment logging."""
@@ -307,6 +343,11 @@ class SupervisedConfig(BaseModel):
     sampler_seed: int = Field(default=0, ge=0)
     batch_sizes: list[int] = Field(default_factory=lambda: [8, 16, 32], min_length=1)
     weight_decays: list[float] = Field(default_factory=lambda: [0.0, 0.01], min_length=1)
+    max_grad_norm: float | None = Field(
+        default=None,
+        gt=0,
+        description="Clip each update's gradient to this norm; empty does not clip.",
+    )
     score_batch_size: int = Field(default=256, ge=1)
     max_length: int = Field(default=256, ge=4)
     validation_sentences: int = Field(default=66, ge=1)
