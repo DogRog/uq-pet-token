@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run every paper experiment for ModernBERT only, e.g. after the byte-level BPE word-start
-# fix (6e9c128). Same chains, logs, and resume behaviour as run_all_experiments.sh; extra
+# fix (6e9c128). Same job queue, logs, and resume behaviour as run_all_experiments.sh; extra
 # arguments pass through, e.g. --dry-run.
 set -euo pipefail
 

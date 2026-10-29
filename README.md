@@ -48,7 +48,7 @@ environment or in a `.env` file at the project root.
 | Task | Entry point |
 | --- | --- |
 | Run one UQ metric against random | `notebooks/bert_token_uq.py` |
-| Run every paper experiment, one parallel chain per dataset | `scripts/run_all_experiments.sh` |
+| Run every paper experiment as one parallel job queue | `scripts/run_all_experiments.sh` |
 | Tune random acquisition on a validation holdout | `scripts/tune_random_all_models.sh` |
 | Compare all UQ metrics, top-K and with Gumbel noise, at the validation winners | `scripts/run_best_uq_all_models.sh` |
 | Compare word form caps with the winners | `scripts/run_stochastic_uq_all_models.sh` |
@@ -196,17 +196,24 @@ Two optional settings change only the uncertainty arm; random's draws stay ident
 The main study tunes the random baseline on a validation holdout, freezes each model's
 winner, and compares all UQ metrics against random on the test split. The supervised
 baseline adds an upper bound. `scripts/run_all_experiments.sh` runs steps 1–3 and the
-random sweep as one chain per dataset, in parallel on the same GPU; the oracle appendix
-and word form caps are not included:
+random sweep for every dataset and model as one job queue on the same GPU
+(`scripts/run_queue.py`); the oracle appendix and word form caps are not included:
 
 ```bash
 bash scripts/run_all_experiments.sh --dry-run
 bash scripts/run_all_experiments.sh
 ```
 
-`SEED_WORKERS` sets concurrent seeds per chain (default 2, sized for a 40 GB GPU). Each
-chain logs to `logs/run_all/<dataset>.log`, and a failed chain does not stop the others.
-Run it inside `tmux` or `nohup` on a remote machine.
+`SLOTS` sets the jobs running at once (default 3) and `SEED_WORKERS` the concurrent seeds
+per job (default 2), sized for a 40 GB GPU. Each model's best-UQ comparisons start once its
+tuning finishes; every other job is independent, and the longest start first. Jobs share
+the CPU cores through `OMP_NUM_THREADS` unless it is already set. Each job logs to
+`logs/run_all/<stage>-<dataset>-<model>.log`, and a failed job stops only the comparisons
+that need it. Run it inside `tmux` or `nohup` on a remote machine.
+
+`uv run scripts/profile_runs.py` measures, on the GPU machine, where one seed's time goes
+and how throughput grows with parallel seed processes (GPU and CPU use included), to
+choose `SLOTS` and `SEED_WORKERS`; it writes CSV files to `logs/profile/`, never results.
 
 All launchers take `--dry-run`, which prints the plan without loading data or models;
 `MODELS` picks checkpoints (see `scripts/models.sh`), and all but the oracle take
