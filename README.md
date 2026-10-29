@@ -332,6 +332,21 @@ training, so scores never change it. Outputs go to `results/random_search/<sweep
 `summary.json` gives per-metric mean test F1 gap AUC, final gap, and wins, ties, and
 losses.
 
+### Training-recipe pilot
+
+```bash
+bash scripts/run_pilot.sh
+uv run scripts/pilot_report.py
+```
+
+Before the next rerun, the pilot decides whether to adopt the training settings of
+[ADR 0012](docs/adr/0012-bootstrap-has-its-own-learning-rate-and-arms-report-averaged-models.md).
+It tunes random selection on the validation holdout again for PET and Quishpi with BERT
+and ModernBERT, over the first 30 configurations of each tuning sweep, and compares
+each finished configuration with its constant-rate trial. The criteria were fixed
+beforehand in [configs/README.md](configs/README.md#training-recipe-pilot-in-pilot);
+the report prints them and, once every run is done, the verdict.
+
 ## Reference
 
 ### Search space

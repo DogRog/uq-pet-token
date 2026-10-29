@@ -1,0 +1,22 @@
+{
+  "checkpoint": "answerdotai/ModernBERT-base",
+  "sweep_name": "modernbert-base-pilot-split-30",
+  "sweeps_dir": "results/pilot",
+  "wandb_enabled": false,
+
+  "model_seeds": [0, 1, 2, 3, 4],
+  "precision": "auto",
+  "seed_workers": 2,
+
+  "mode": "tune-random",
+  "num_configs": 30,
+  "sampler_seed": 0,
+  "objective": "random_validation_entity_f1_auc",
+  "validation_sentences": 66,
+  "validation_seed": 1729,
+
+  "max_pool_percent": 100.0,
+  "tune_bootstrap_learning_rate": true,
+  "max_grad_norm": 1.0,
+  "weight_averaging": false
+}
