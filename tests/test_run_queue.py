@@ -1,5 +1,6 @@
 """Check the experiment queue's jobs, order, and failure handling without running them."""
 
+import subprocess
 import threading
 import time
 
@@ -124,3 +125,26 @@ def test_jobs_share_the_cores_unless_threads_are_already_set(monkeypatch):
     assert run_queue.job_environment(3)["OMP_NUM_THREADS"] == "10"
     monkeypatch.setenv("OMP_NUM_THREADS", "4")
     assert run_queue.job_environment(3)["OMP_NUM_THREADS"] == "4"
+
+
+def test_mps_is_checked_only_on_nvidia_machines(monkeypatch):
+    tools = {"nvidia-smi": "/usr/bin/nvidia-smi", "nvidia-cuda-mps-control": "/usr/bin/mps"}
+    monkeypatch.setattr(run_queue.shutil, "which", lambda name: None)
+    assert run_queue.mps_running() is None
+    monkeypatch.setattr(run_queue.shutil, "which", tools.get)
+
+    def answer(returncode, stdout):
+        return lambda *args, **kwargs: subprocess.CompletedProcess(args, returncode, stdout, "")
+
+    monkeypatch.setattr(run_queue.subprocess, "run", answer(0, "4868\n"))
+    assert run_queue.mps_running() is True
+    monkeypatch.setattr(run_queue.subprocess, "run", answer(0, ""))
+    assert run_queue.mps_running() is True
+    monkeypatch.setattr(
+        run_queue.subprocess, "run", answer(1, "Cannot find MPS control daemon process\n")
+    )
+    assert run_queue.mps_running() is False
+    monkeypatch.setattr(
+        run_queue.subprocess, "run", answer(0, "Cannot find MPS control daemon process\n")
+    )
+    assert run_queue.mps_running() is False

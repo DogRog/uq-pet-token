@@ -197,9 +197,13 @@ The main study tunes the random baseline on a validation holdout, freezes each m
 winner, and compares all UQ metrics against random on the test split. The supervised
 baseline adds an upper bound. `scripts/run_all_experiments.sh` runs steps 1–3 and the
 random sweep for every dataset and model as one job queue on the same GPU
-(`scripts/run_queue.py`); the oracle appendix and word form caps are not included:
+(`scripts/run_queue.py`); the oracle appendix and word form caps are not included. On
+the GPU machine, start the CUDA MPS daemon first, and again after the machine restarts:
+without it, parallel seed processes take turns on the GPU (on the 40 GB A100, six ran no
+faster than one, and 1.9 times faster with MPS). The queue warns when it is not running.
 
 ```bash
+nvidia-cuda-mps-control -d
 bash scripts/run_all_experiments.sh --dry-run
 bash scripts/run_all_experiments.sh
 ```
@@ -212,8 +216,9 @@ the CPU cores through `OMP_NUM_THREADS` unless it is already set. Each job logs 
 that need it. Run it inside `tmux` or `nohup` on a remote machine.
 
 `uv run scripts/profile_runs.py` measures, on the GPU machine, where one seed's time goes
-and how throughput grows with parallel seed processes (GPU and CPU use included), to
-choose `SLOTS` and `SEED_WORKERS`; it writes CSV files to `logs/profile/`, never results.
+and how throughput grows with parallel seed processes (GPU and CPU use, and whether MPS
+ran), to choose `SLOTS` and `SEED_WORKERS`. It stops at the first process count that runs
+out of GPU memory and writes CSV files to `logs/profile/`, never results.
 
 All launchers take `--dry-run`, which prints the plan without loading data or models;
 `MODELS` picks checkpoints (see `scripts/models.sh`), and all but the oracle take
@@ -386,7 +391,8 @@ sweep name. Run one process per sweep.
 
 `seed_workers` (notebook: **Concurrent seeds**) trains seeds in separate spawned
 processes on one device; saved rows keep seed order whatever the concurrency. Start with
-two and increase while throughput and GPU memory allow. `score_batch_size` (default 256
+two and increase while throughput and GPU memory allow; on CUDA, more than one or two
+processes in all pay off only with the MPS daemon running. `score_batch_size` (default 256
 sentences) sets the inference batch for pool scoring and evaluation only.
 
 `precision: "auto"` uses native BF16 autocasting on supported CUDA GPUs and FP32

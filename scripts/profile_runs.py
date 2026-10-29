@@ -5,6 +5,8 @@ times each phase, with the device synchronized around every timed call, plus how
 fresh seed process takes to import and start the device. Part B runs the same short job
 with 1, 2, 4, 6, and 8 seed processes side by side, sampling GPU use (nvidia-smi) and
 CPU use (Linux), to show where throughput stops growing and which resource limits it.
+It stops at the first process count that runs out of GPU memory and records it, and it
+records whether the CUDA MPS daemon was running, which decides whether processes overlap.
 
 The job is a run config (default: PET's frozen ModernBERT best-UQ settings) cut to
 --pool-percent of the scoreable pool. Nothing is written under results/; tables print,
@@ -24,6 +26,7 @@ from pathlib import Path
 import polars as pl
 import torch
 
+from run_queue import mps_running
 from uq_pet import active_learning, token_model
 from uq_pet.config import ExperimentConfig
 from uq_pet.data_prep import load_splits
@@ -178,35 +181,58 @@ def _mean(values: list[float]) -> float | None:
     return sum(values) / len(values) if values else None
 
 
-def scaling_profile(splits: tuple, settings: dict, counts: list[int], threads: int | None):
-    """Run the job with each number of parallel seed processes and record throughput and load."""
+def out_of_memory(error: Exception) -> bool:
+    """Whether a run failed for GPU memory, in this process or in a seed process."""
+    return isinstance(error, torch.OutOfMemoryError) or "OutOfMemoryError" in str(error)
+
+
+def scaling_profile(
+    splits: tuple, settings: dict, counts: list[int], threads: int | None, mps: bool | None
+):
+    """Run the job with each number of parallel seed processes and record throughput and load.
+
+    The first count that runs out of GPU memory is recorded and ends the profile.
+    """
     rows = []
     for count in counts:
         if threads is not None:
             # Seed workers get the parent's thread count divided by their number.
             torch.set_num_threads(threads * count)
+        row = {"processes": count, "threads_per_process": max(1, torch.get_num_threads() // count)}
         with LoadSampler() as load:
             start = time.perf_counter()
-            comparisons = active_learning.run_metric_comparisons(
-                *splits,
-                **{**settings, "model_seeds": list(range(count)), "seed_workers": count},
-                uq_metrics=["entropy"],
-            )
+            try:
+                comparisons = active_learning.run_metric_comparisons(
+                    *splits,
+                    **{**settings, "model_seeds": list(range(count)), "seed_workers": count},
+                    uq_metrics=["entropy"],
+                )
+            except RuntimeError as error:  # torch.OutOfMemoryError is one too
+                if not out_of_memory(error):
+                    raise
+                comparisons = None
             wall = time.perf_counter() - start
-        rounds = sum(row["round"] > 0 for row in comparisons["entropy"][0])
-        rows.append(
-            {
-                "processes": count,
-                "threads_per_process": max(1, torch.get_num_threads() // count),
-                "wall_seconds": wall,
-                "arm_rounds_per_minute": 60 * rounds / wall,
-                "per_process": 60 * rounds / wall / count,
-                "gpu_use_percent": _mean(load.gpu),
-                "gpu_memory_peak_mb": max(load.memory) if load.memory else None,
-                "cpu_use_percent": _mean(load.cpu),
-            }
-        )
+        if comparisons is None:
+            rounds = None
+        else:
+            rounds = sum(result["round"] > 0 for result in comparisons["entropy"][0])
+        row |= {
+            "outcome": "out of memory" if comparisons is None else "finished",
+            "mps": mps,
+            "wall_seconds": wall,
+            "arm_rounds_per_minute": None if rounds is None else 60 * rounds / wall,
+            "per_process": None if rounds is None else 60 * rounds / wall / count,
+            "gpu_use_percent": _mean(load.gpu),
+            "gpu_memory_peak_mb": max(load.memory) if load.memory else None,
+            "cpu_use_percent": _mean(load.cpu),
+        }
+        rows.append(row)
         print(pl.DataFrame(rows[-1:]))
+        if comparisons is None:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            print(f"{count} processes ran out of GPU memory; larger counts are skipped.")
+            break
     frame = pl.DataFrame(rows)
     return frame.with_columns(
         speedup=pl.col("arm_rounds_per_minute") / pl.col("arm_rounds_per_minute").first()
@@ -245,9 +271,11 @@ def main(argv: list[str] | None = None) -> int:
     active_learning.CONSOLE.quiet = True
     LOGS.mkdir(parents=True, exist_ok=True)
     stem = f"{datetime.now():%Y%m%d_%H%M%S}-{config.checkpoint.rsplit('/', 1)[-1]}-{config.dataset}"
+    mps = mps_running() if device.type == "cuda" else None
+    mps_note = {True: "MPS on", False: "MPS off", None: "no MPS"}[mps]
     print(
         f"{config.checkpoint} on {config.dataset} · {args.pool_percent:g}% of the pool · "
-        f"{device} · {settings['precision']} · {torch.get_num_threads()} CPU threads"
+        f"{device} · {settings['precision']} · {torch.get_num_threads()} CPU threads · {mps_note}"
     )
     with pl.Config(tbl_rows=-1, tbl_cols=-1, tbl_width_chars=200, float_precision=2):
         if not args.skip_phases:
@@ -255,7 +283,9 @@ def main(argv: list[str] | None = None) -> int:
             phases.write_csv(LOGS / f"{stem}-phases.csv")
             print("\nPart A: one seed by phase\n", phases)
         if not args.skip_scaling:
-            scaling = scaling_profile(splits, settings, args.processes, args.threads_per_process)
+            scaling = scaling_profile(
+                splits, settings, args.processes, args.threads_per_process, mps
+            )
             scaling.write_csv(LOGS / f"{stem}-scaling.csv")
             print("\nPart B: parallel seed processes\n", scaling)
     print(f"\nCSV files: {LOGS}/{stem}-*.csv")

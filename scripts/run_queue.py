@@ -13,6 +13,7 @@ through to every job.
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -227,6 +228,31 @@ def available_cores() -> int:
     return len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count() or 1
 
 
+def mps_running() -> bool | None:
+    """Whether the CUDA MPS control daemon answers, or None off an NVIDIA machine.
+
+    Without MPS, seed processes on one GPU take turns instead of running at once: on the
+    40 GB A100, six processes ran no faster than one, and 1.9 times faster with MPS.
+    """
+    control = shutil.which("nvidia-cuda-mps-control")
+    if shutil.which("nvidia-smi") is None or control is None:
+        return None
+    try:
+        answer = subprocess.run(
+            [control], input="get_server_list\n", capture_output=True, text=True, timeout=10
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    reply = (answer.stdout + answer.stderr).lower()
+    return answer.returncode == 0 and "cannot" not in reply and "error" not in reply
+
+
+MPS_WARNING = (
+    "WARNING: CUDA MPS is not running, so parallel seed processes take turns on the GPU "
+    "(six ran 1.9 times slower than with MPS). Start it with: nvidia-cuda-mps-control -d"
+)
+
+
 def job_environment(slots: int) -> dict[str, str]:
     """Share the CPU between parallel jobs unless the caller already chose a thread count."""
     environment = dict(os.environ)
@@ -256,6 +282,8 @@ def main(argv: list[str] | None = None) -> int:
         f" · logs in {logs}",
         flush=True,
     )
+    if "--dry-run" not in extra and mps_running() is False:
+        print(MPS_WARNING, flush=True)
     status = run_queue(jobs, args.slots, make_executor(logs, environment))
     failed = [name for name, state in status.items() if state in {"failed", "blocked"}]
     if failed:
