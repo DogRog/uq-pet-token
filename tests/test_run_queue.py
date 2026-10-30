@@ -57,6 +57,21 @@ def test_pilot_jobs_cover_both_variants_of_every_checked_in_config():
     assert not run_queue.build_jobs(["pilot"], ["medical"], ["bert_base"], [])
 
 
+def test_gap_checks_wait_for_their_follow_up_tuning():
+    jobs = run_queue.build_jobs(
+        ["pilot_constant_avg", "pilot_gap"], ["pet"], ["bert_base"], ["--dry-run"]
+    )
+    tuning, gap = jobs
+    assert tuning.commands[0][-3:] == [
+        "--config",
+        "configs/pet/pilot/bert_base_constant_avg.json",
+        "--dry-run",
+    ]
+    assert gap.needs == [tuning.name]
+    assert gap.commands[0][2] == "scripts/pilot_gap.py"
+    assert not run_queue.build_jobs(["pilot_gap"], ["medical"], ["bert_base"], [])
+
+
 def test_longest_jobs_and_tuning_with_waiting_comparisons_start_first():
     jobs = run_queue.build_jobs(
         ["tune_random", "best_uq", "random_search"],

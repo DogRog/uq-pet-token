@@ -17,3 +17,7 @@ A learning rate decayed over all rounds was rejected. Nothing pointed to instabi
 ## Consequences
 
 Both arms still start from one identical state (ADR 0003): the averaged copies start from the cloned bootstrap weights. Averaging keeps one more model per arm on the device. Results that use any of these settings need fresh random-baseline tuning, best-UQ, supervised, and sweep runs; they are not comparable with the 2026-10 rerun's results, which keep the constant rate.
+
+## Pilot outcome
+
+The first pilot (`configs/README.md`) kept the constant learning rate on 2026-10-30. The split bootstrap and clipping improved in 2 of 4 settings: drop share did not fall for ModernBERT, and the Quishpi ModernBERT winner lost 0.025 of validation AUC. The bootstrap learning rate also raised the share of failed bootstraps, nearly all below 5e-5, where warmup and decay leave these few updates a lower mean rate. Averaged models improved on the split in all 4 settings, with a mean per-configuration AUC gain of 0.012 to 0.020, but the fixed rules did not let them count without the split. That result is exploratory, and the first pilot did not test them alone or measure the uncertainty arm, so a follow-up does both before any rerun.

@@ -357,7 +357,17 @@ It tunes random selection on the validation holdout again for PET and Quishpi wi
 and ModernBERT, over the first 30 configurations of each tuning sweep, and compares
 each finished configuration with its constant-rate trial. The criteria were fixed
 beforehand in [configs/README.md](configs/README.md#training-recipe-pilot-in-pilot);
-the report prints them and, once every run is done, the verdict.
+the report prints them and, once every run is done, the verdict. It kept the constant
+learning rate.
+
+```bash
+bash scripts/run_pilot_constant_avg.sh
+uv run scripts/pilot_report.py
+```
+
+The follow-up tests averaged models at the constant rate over the same configurations,
+then checks at each winner that the uncertainty-minus-random gap on the holdout survives.
+The report needs the 2026-10 tuning results and the pilot results on one machine.
 
 ## Reference
 

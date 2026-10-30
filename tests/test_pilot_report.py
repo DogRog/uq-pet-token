@@ -68,6 +68,21 @@ def test_verdict_needs_three_settings_and_averaging_needs_the_split():
     assert result["averaging_improves"] == ["a", "b", "c", "d"]
 
 
+def test_follow_up_needs_improvement_and_the_gap_in_three_settings():
+    better = {"constant": recipe(0.8, 0.50), "constant_avg": recipe(0.5, 0.495)}
+    worse = {**better, "constant_avg": recipe(0.9, 0.60)}
+    kept = {"constant": 0.03, "averaged": 0.021}
+    lost = {"constant": 0.03, "averaged": 0.01}
+    summaries = {"a": better, "b": better, "c": better, "d": worse}
+    gaps = {"a": kept, "b": kept, "c": kept, "d": lost}
+    result = pilot_report.follow_up_verdict(summaries, gaps)
+    assert result["averaging_improves"] == ["a", "b", "c"]
+    assert result["gap_kept"] == ["a", "b", "c"]
+    assert result["adopt"]
+    assert not pilot_report.follow_up_verdict(summaries, {**gaps, "c": lost})["adopt"]
+    assert not pilot_report.follow_up_verdict({**summaries, "c": worse}, gaps)["adopt"]
+
+
 def test_every_pilot_config_pairs_with_its_tuning_sweep():
     _, summaries, _ = pilot_report.collect(CONFIGS)
     assert len(summaries) == 4

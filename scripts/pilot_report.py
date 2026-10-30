@@ -3,9 +3,11 @@
 Each pilot setting (a dataset and model with configs under configs/<dataset>/pilot/)
 tunes the first 30 configurations of its random-baseline tuning sweep again, once with
 the bootstrap learning rate split off and clipping (`split`), once also with averaged
-models (`split_avg`). This script checks that every pilot sweep pairs config for config
-with the constant-rate sweep, prints the criteria fixed in configs/README.md for every
-recipe, and gives the verdict once all runs are complete (ADR 0012). Nothing is trained.
+models (`split_avg`). A follow-up tunes them with averaged models alone (`constant_avg`)
+and checks the uncertainty-minus-random gap at its winner (scripts/pilot_gap.py). This
+script checks that every pilot sweep pairs config for config with the constant-rate sweep,
+prints the criteria fixed in configs/README.md for every recipe, and gives each verdict
+once its runs are complete (ADR 0012). Nothing is trained.
 """
 
 import argparse
@@ -20,13 +22,17 @@ from uq_pet.config import RandomBaselineSearchConfig
 from uq_pet.paths import PROJECT_ROOT
 from uq_pet.search import random_tuning_score, tuning_plan
 
-RECIPES = ("constant", "split", "split_avg")
+RECIPES = ("constant", "split", "split_avg", "constant_avg")
+FIRST_PILOT = ("constant", "split", "split_avg")
+FOLLOW_UP = ("constant", "constant_avg")
 # A run drops when its entity F1 falls this far below its best so far after round 0.
 DROP = 0.10
 # Round-0 entity F1 below this means the bootstrap failed.
 FAILED_BOOTSTRAP = 0.05
 # A recipe may lose at most this much winner validation F1 AUC to the one it extends.
 AUC_TOLERANCE = 0.01
+# Averaging may shrink the winner's validation uncertainty-minus-random F1 AUC by at most this.
+GAP_TOLERANCE = 0.01
 SETTINGS_NEEDED = 3
 NEW_SETTINGS = {"bootstrap_learning_rate", "weight_averaging", "max_grad_norm"}
 
@@ -149,17 +155,51 @@ def _check_pairing(base: tuple, pilot: tuple) -> None:
         raise ValueError(f"{pilot_config.sweep_name} holds out other validation sentences")
 
 
-def collect(configs_dir: Path) -> tuple[pl.DataFrame, dict[str, dict[str, dict]], bool]:
-    """Summarize every recipe of every pilot setting; also say whether every run finished."""
-    rows, summaries, complete = [], {}, True
+def follow_up_verdict(
+    summaries: dict[str, dict[str, dict]], gaps: dict[str, dict[str, float]]
+) -> dict:
+    """Adopt averaged models at the constant rate if they improve and keep the gap."""
+    improved = [
+        setting for setting, s in summaries.items() if improves(s["constant_avg"], s["constant"])
+    ]
+    kept = [
+        setting
+        for setting, gap in gaps.items()
+        if gap["averaged"] >= gap["constant"] - GAP_TOLERANCE
+    ]
+    return {
+        "averaging_improves": improved,
+        "gap_kept": kept,
+        "adopt": len(improved) >= SETTINGS_NEEDED and len(kept) >= SETTINGS_NEEDED,
+    }
+
+
+def read_gaps(configs_dir: Path) -> dict[str, dict[str, float]]:
+    """The finished gap checks, by setting, from each follow-up sweep."""
+    gaps = {}
+    for path in sorted(configs_dir.glob("*/pilot/*_constant_avg.json")):
+        _, root = _sweep(path)
+        files = {name: root / "gap_check" / f"{name}.json" for name in ("constant", "averaged")}
+        if all(file.is_file() for file in files.values()):
+            setting = f"{path.parent.parent.name}/{path.name.removesuffix('_constant_avg.json')}"
+            gaps[setting] = {
+                name: json.loads(file.read_text())["gap_auc"] for name, file in files.items()
+            }
+    return gaps
+
+
+def collect(configs_dir: Path) -> tuple[pl.DataFrame, dict[str, dict[str, dict]], set[str]]:
+    """Summarize every recipe of every pilot setting; also name the recipes not yet finished."""
+    rows, summaries, unfinished = [], {}, set()
     for split_path in sorted(configs_dir.glob("*/pilot/*_split.json")):
         dataset, model = split_path.parent.parent.name, split_path.name.removesuffix("_split.json")
         sweeps = {
             "constant": _sweep(configs_dir / dataset / "tune_random" / f"{model}.json"),
             "split": _sweep(split_path),
             "split_avg": _sweep(split_path.with_name(f"{model}_split_avg.json")),
+            "constant_avg": _sweep(split_path.with_name(f"{model}_constant_avg.json")),
         }
-        for recipe in ("split", "split_avg"):
+        for recipe in RECIPES[1:]:
             _check_pairing(sweeps["constant"], sweeps[recipe])
         planned = [
             entry["config_id"] for entry in tuning_plan(sweeps["split"][0])["configurations"]
@@ -169,14 +209,15 @@ def collect(configs_dir: Path) -> tuple[pl.DataFrame, dict[str, dict[str, dict]]
         for recipe in RECIPES:
             config, root = sweeps[recipe]
             trials = _completed_trials(root, planned)
-            complete &= len(trials) == len(planned)
+            if len(trials) != len(planned):
+                unfinished.add(recipe)
             row = {"setting": setting, "recipe": recipe, "configs": len(trials)}
             if trials:
                 summary = recipe_summary(trials, config.objective)
                 summaries[setting][recipe] = summary
                 row |= summary
             rows.append(row)
-    return pl.DataFrame(rows), summaries, complete and bool(summaries)
+    return pl.DataFrame(rows), summaries, unfinished
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -184,30 +225,49 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--configs-dir", type=Path, default=PROJECT_ROOT / "configs")
     args = parser.parse_args(argv)
     try:
-        table, summaries, complete = collect(args.configs_dir)
+        table, summaries, unfinished = collect(args.configs_dir)
+        gaps = read_gaps(args.configs_dir)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     with pl.Config(tbl_rows=-1, tbl_cols=-1, tbl_width_chars=200, float_precision=3):
         print(table)
-    if not complete:
-        print("\nNo verdict until every pilot and baseline configuration is complete.")
-        return 0
     if len(summaries) != SETTINGS_NEEDED + 1:
         print(f"\nThe criteria cover 4 settings; found {len(summaries)}, so no verdict.")
         return 0
-    result = verdict(summaries)
-    print(
-        f"\nSplit improves on the constant rate in: {', '.join(result['split_improves']) or 'none'}"
-    )
-    print(
-        f"Averaging improves on the split in: {', '.join(result['averaging_improves']) or 'none'}"
-    )
-    if not result["adopt_split"]:
-        print("Verdict: keep the constant learning rate.")
-    elif result["adopt_averaging"]:
-        print("Verdict: adopt the split bootstrap, clipping, and averaged models.")
+    if unfinished & set(FIRST_PILOT):
+        print("\nNo first-pilot verdict until every configuration is complete.")
     else:
-        print("Verdict: adopt the split bootstrap and clipping; leave averaging off.")
+        result = verdict(summaries)
+        print(
+            "\nSplit improves on the constant rate in: "
+            f"{', '.join(result['split_improves']) or 'none'}"
+        )
+        print(
+            "Averaging improves on the split in: "
+            f"{', '.join(result['averaging_improves']) or 'none'}"
+        )
+        if not result["adopt_split"]:
+            print("First-pilot verdict: keep the constant learning rate.")
+        elif result["adopt_averaging"]:
+            print("First-pilot verdict: adopt the split bootstrap, clipping, and averaged models.")
+        else:
+            print("First-pilot verdict: adopt the split bootstrap and clipping; no averaging.")
+    if unfinished & set(FOLLOW_UP) or len(gaps) != SETTINGS_NEEDED + 1:
+        print("\nNo follow-up verdict until every sweep and gap check is complete.")
+        return 0
+    result = follow_up_verdict(summaries, gaps)
+    print("\nWinner gap AUC, without and with averaging:")
+    for setting, gap in gaps.items():
+        print(f"  {setting}: {gap['constant']:+.4f} -> {gap['averaged']:+.4f}")
+    print(
+        "Averaging improves on the constant rate in: "
+        f"{', '.join(result['averaging_improves']) or 'none'}"
+    )
+    print(f"Averaging keeps the gap in: {', '.join(result['gap_kept']) or 'none'}")
+    if result["adopt"]:
+        print("Follow-up verdict: rerun the paper's experiments with averaged models.")
+    else:
+        print("Follow-up verdict: keep the constant learning rate without averaging.")
     return 0
 
 

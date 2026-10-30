@@ -23,7 +23,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-STAGES = ("tune_random", "best_uq", "supervised", "random_search", "pilot")
+STAGES = (
+    "tune_random",
+    "best_uq",
+    "supervised",
+    "random_search",
+    "pilot",
+    "pilot_constant_avg",
+    "pilot_gap",
+)
 DATASETS = ("pet", "quishpi", "medical")
 MODELS = ("distilbert", "bert_base", "roberta_base", "deberta_v3_base", "modernbert_base")
 PILOT_VARIANTS = ("split", "split_avg")
@@ -43,6 +51,8 @@ STAGE_COST = {
     "supervised": 0.3,
     "random_search": 0.8,
     "pilot": 0.3,
+    "pilot_constant_avg": 0.3,
+    "pilot_gap": 0.1,
 }
 
 
@@ -142,6 +152,33 @@ def build_jobs(stages, datasets, models, extra: list[str]) -> list[Job]:
                                     [_uv("run_search.py", "--config", str(config), *extra)],
                                 )
                             )
+                elif stage == "pilot_constant_avg":
+                    config = configs / "pilot" / f"{model}_constant_avg.json"
+                    if config.is_file():
+                        jobs.append(
+                            Job(
+                                f"pilot_constant_avg/{dataset}/{model}",
+                                stage,
+                                dataset,
+                                model,
+                                [_uv("run_search.py", "--config", str(config), *extra)],
+                            )
+                        )
+                elif stage == "pilot_gap":
+                    config = configs / "pilot" / f"{model}_constant_avg.json"
+                    if config.is_file():
+                        jobs.append(
+                            Job(
+                                f"pilot_gap/{dataset}/{model}",
+                                stage,
+                                dataset,
+                                model,
+                                [_uv("pilot_gap.py", "--config", str(config), *extra)],
+                                needs=[f"pilot_constant_avg/{dataset}/{model}"]
+                                if "pilot_constant_avg" in stages
+                                else [],
+                            )
+                        )
     return jobs
 
 

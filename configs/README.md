@@ -79,3 +79,30 @@ Drop share decides because median jitter falls under averaging by construction; 
 failed bootstraps, and the winner's seed spread are reported to explain the result.
 Quishpi's 31-sentence holdout makes its numbers noisy, which is why no single setting
 decides.
+
+**Outcome (2026-10-30): keep the constant learning rate.** The split improved in 2 of 4
+settings (PET and Quishpi BERT). Averaging improved on the split in all 4, but rule 2
+does not let it count without the split.
+
+## Averaged-model follow-up in `pilot/`
+
+The first pilot only measured averaged models on top of the split, and only on random
+selection. Having seen those results, this follow-up tests averaged models alone. Each
+`pilot/<model>_constant_avg.json` tunes random selection on the validation holdout over
+the same 30 configurations, with `weight_averaging` on and no bootstrap learning rate or
+clipping. `scripts/pilot_gap.py` then trains both arms (entropy, top-K) on the same
+holdout at that sweep's winner, once with averaging and once without. The test split is
+never read.
+
+These criteria were fixed before any follow-up run:
+
+- Averaging improves in a setting when, over the same 150 runs, its drop share is below
+  the constant rate's and its winner's AUC is at most 0.01 below the constant rate's.
+- Averaging keeps the gap in a setting when, at its winner, the seed-mean validation
+  entity-F1 gap AUC with averaging is at most 0.01 below the gap without it.
+- Rerun the paper's experiments with averaged models only if averaging improves in at
+  least 3 of the 4 settings and keeps the gap in at least 3 of the 4. Otherwise keep the
+  constant learning rate without averaging.
+
+The paper must report that this follow-up came from an exploratory result of the first
+pilot.
